@@ -123,6 +123,7 @@ typedef struct {
                             // "virtual" (no controller, transport 10), "hidl" (the phone's controller, transport 1, H4)
                             // or "sim" (a stand-in controller, bridges/bt/hci_sim.c, transport 1: a boot with no phone;
                             // works with the bridges off)
+  int   haptics_native_impacts; // explicit session opt-in: 1 enables Treble HAL presets and guest boot arg; 0 off, -1 unset
   char  haptics[8];         // "auto" (the phone's force-feedback device when the bridges are on), "off" (none: the guest
                             // has no actuator, no Actuator audio device, no /product/haptics) or "sim" (a stand-in
                             // actuator, bridges/haptics/haptic.c, that counts and logs: a boot with no phone; works
@@ -641,6 +642,8 @@ int   xh_input_start(xh_virtio *dev, const struct xh_input_pen *pen, unsigned wi
 void  xh_input_stop(void);
 // The display showed a guest frame (display.c): the end of input.c's touch-to-frame measurement.
 void  xh_input_frame_shown(void);
+// A candidate evdev direct touchscreen, against a native Samsung touchscreen when present.
+bool  xh_input_accept_touch(const char *name, bool direct, bool have_touch, bool native_present);
 // Called on the input thread at each press of the power key (KEY_POWER down) that is passed to the guest: the brightness
 // bridge wakes the touch IC (br_bright_key). NULL: nothing.
 extern void (*xh_input_power_key)(void);

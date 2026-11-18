@@ -104,6 +104,9 @@ typedef struct {
   int  (*upload)(void *ctx, int id, unsigned length_ms, unsigned period_ms, unsigned magnitude);
   int  (*play)(void *ctx, int id, bool on);
   int  (*gain)(void *ctx, unsigned gain);            // 0..10000 (Samsung's scale)
+  // An EXPLICIT single impact, not a 20/50ms fragment of a long vibration.
+  // 0 and duration_ms (1..1000), or a negative errno. NULL: unsupported.
+  int  (*impact)(void *ctx, unsigned kind, unsigned *duration_ms);
   void (*close)(void *ctx);
 } br_haptic_backend;
 
@@ -120,6 +123,12 @@ br_haptic *br_haptic_open_backend(const br_haptic_backend *backend, void *ctx);
 // Vibrate from now for on_ms (0 = stop) at intensity 0..1000 and frequency_hz (0 = resonance).
 // Never blocks: the newest request replaces one that has not started.
 void br_haptic_vib(br_haptic *h, uint32_t on_ms, unsigned intensity, unsigned frequency_hz);
+// Explicit semantic impact events, using the same host-side queue as VIB and STOP.
+// Only offered after opt-in and a successful native HAL preset inventory.
+// LIGHT/medium mappings are experimental; only HEAVY has a tactile S26 acceptance.
+enum { BR_HAPTIC_IMPACT_LIGHT = 1, BR_HAPTIC_IMPACT_MEDIUM = 2, BR_HAPTIC_IMPACT_HEAVY = 3 };
+bool br_haptic_impacts_available(br_haptic *h);
+int  br_haptic_impact(br_haptic *h, unsigned kind);
 void br_haptic_stop(br_haptic *h);
 // Waits until the worker has carried out everything asked so far (tests, shutdown).
 void br_haptic_flush(br_haptic *h);
@@ -130,7 +139,7 @@ br_haptic *br_haptic_open_sim(void);
 // What reached this side: requests from the guest (vibrate, stop, and those a newer one replaced before the worker
 // started them) and what the device then did. br_haptic_report logs them as one "haptics: counters:" line; the
 // worker also logs the first 8 effects and every power of two after that.
-typedef struct { uint64_t vib, stop, replaced, played, stopped, failed; } br_haptic_stats;
+typedef struct { uint64_t vib, stop, replaced, played, stopped, failed, impacts; } br_haptic_stats;
 void br_haptic_stats_get(br_haptic *h, br_haptic_stats *out);
 void br_haptic_report(br_haptic *h);
 // The mapping, exposed for tests: iOS intensity/frequency to the effect's parameters.

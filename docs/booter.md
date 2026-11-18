@@ -11,6 +11,34 @@ into its own address space, gives it CPUs (host threads), interrupts and a timer
 test kernel under `qemu-aarch64`. Nothing has run on the phone, and iOS does not boot: the kernel that
 uses this host (the hosted machine layer inside XNU) does not exist yet. Section 8 lists what is missing.
 
+### Explicit native haptic impacts in an OneOS session (SM8850)
+
+The OneOS switch uses a fixed xnuhost command line and does not pass
+`ONEIOS_HAPTIC_NATIVE_IMPACTS=1` to its process. Enable native impacts only
+for an explicitly configured test image by adding these settings to the
+image set's `xnuhost.conf` (through the normal manifest-checked image staging):
+
+```ini
+hw-backend-haptics=treble
+hw-backend-fallback=0
+haptics-native-impacts=1
+```
+
+`haptics-native-impacts=1` defaults to off; it sets the host's existing
+`ONEIOS_HAPTIC_NATIVE_IMPACTS=1` before opening the bridge and appends
+`oneios_native_impacts=1` to the guest's existing kernel boot arguments.
+The complete existing boot arguments are preserved; do not replace them with
+only the native impact switch. It refuses a Samsung haptics backend, a
+fallback-enabled backend, a disabled/simulated haptics bridge or a conflicting
+`oneios_native_impacts=0` argument. Disabling the setting restores the prior
+behavior. The HAL must still pass its preset capability preflight and advertise
+`OB_FEAT_HAPTIC_IMPACT`, or the guest cannot use native impacts.
+
+**This does not stage or boot the phone.** The image's manifest and checksums,
+a matching guest kernel with the haptics change, the current OneOS return
+scripts and preflight must all be checked before a separate manual phone
+session. Runtime CI PASS alone does not prove the guest kernel was rebuilt or
+that live iOS feedback reached the physical vibrator.
 ## 1. Use
 
 ```sh

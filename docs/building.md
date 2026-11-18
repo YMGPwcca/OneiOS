@@ -9,6 +9,56 @@ inside the command (`scripts/bg.sh x env VAR=1 cmd`).
 Nothing of Apple's is ever committed or released: the IPSW parts, the image set and `kernel.kc` stay in `inputs/`
 and `out/`.
 
+## Standalone CachyOS local CI (SM8850, 2026-11-16)
+
+On the SM8850 branch, **CI no longer runs through GitHub Actions**. GitHub
+remains a Git remote for source code only. The CachyOS PC checks the trusted
+`feat/oneios-sm8850-m3q` branch on a user-level systemd timer and builds
+each new commit in a clean detached Git worktree. No self-hosted runner,
+GitHub runner registration token or inbound port is needed.
+
+Once, on the owner's CachyOS machine with this checkout at
+`~/projects/OneiOS`: 
+
+```sh
+sudo pacman -S --needed qemu-user shellcheck binutils
+rustup target add aarch64-linux-android
+cd ~/projects/OneiOS
+git pull --ff-only
+scripts/install-ci-timer.sh
+systemctl --user start oneios-local-ci.service  # optional immediate first run
+```
+
+The timer polls for a new commit approximately one minute after the
+previous CI run finishes. It runs `scripts/ci-local.sh all 0.0.0-ci`, which
+requires NDK 28.2.13676358, SDK build-tools `d8`, Java, Rust's Android target
+and `qemu-aarch64`. The script fetches the pinned `virglrenderer`, runs the
+host runtime and kernel regressions, the driver's and userland's portable host tests (including PCM native-impact classification), builds the ARM64 runtime, then verifies
+its ELF dependencies and SHA-256. No device access, ADB, root or OneOS
+session switch is performed automatically. A binderfs-unavailable test can
+still be skipped; that skip must not be reported as a hardware PASS.
+
+Results are stored outside the repository at
+`~/oneios-m3q-ci/standalone/runs/<commit>/run.log` and `artifacts/`,
+with `last-result.txt` recording the last tested commit, exit code and verdict.
+
+```sh
+cd ~/projects/OneiOS
+scripts/ci-watch.sh status     # latest PASS/FAIL and log path
+scripts/ci-watch.sh force      # retry the same commit after fixing dependencies
+scripts/ci-local.sh test       # manually run host tests without packaging
+journalctl --user -u oneios-local-ci.service -n 100 --no-pager
+systemctl --user list-timers oneios-local-ci.timer
+```
+
+Do not run the timer as root. If the CI source or build dependencies are not
+fully trusted, use a separate unprivileged Unix user or isolated VM: a plain
+worktree is **build isolation, not a security sandbox**. GitHub Actions
+cannot see the local result, and neither can a remote coding agent without
+a separately authorized log-sharing mechanism. The user can share
+`run.log` and `result.txt` to review failures. The timer runs while the
+user's systemd user manager is active; persistent operation across logout
+requires the owner to enable user lingering separately.
 ## 0. Prerequisites
 
 | Tool | For | Notes |
@@ -107,9 +157,13 @@ scripts/bg.sh kernel-hosted env HOSTED_OUT=me kernel/build-hosted.sh
   `llvm-objdump -d --disassemble-symbols=_oneios_drivers_start xnu.macho | grep oneios_hid_input_start`.
 - `HOSTED_OUT=<name>` gives you your own tree and output; without it the build uses the default tree
   (`out/kernel-hosted`, `out/kernel/current-hosted/`), which belongs to the lead.
-- The build compiles UniXNU's sources from `external/` (`scripts/setup/get-references.sh`): among them
-  `NativeHidInput` at 24f1f3f for the touch screen and buttons; a checkout from before 2026-11-11 is older and the
-  build says so (remove `external/NativeHidInput` and fetch again).
+- The build calls `kernel/fetch.sh` for the pinned UniXNU base and
+  `scripts/setup/get-references.sh` for the pinned GPU, HID and display source dependencies
+  (`NativeHidInput`, `NativeMobileDisplay`, `NativeAdreno`, `NativeMetal`, `AdrenoPM4`, `ArmSmmu4K`).
+  An empty fresh `external/` is supported: no separate manual reference-fetch step is required.
+  `NativeMetal/OriginalAcceleratorABI.h` is needed for the Adreno/Metal kernel accelerator archive.
+  Existing reference checkouts are never silently advanced; if one is at an older pin (e.g.
+  `NativeHidInput` before 24f1f3f), inspect and replace that checkout explicitly before rebuilding.
 - Incremental work on one patch: `kernel/hosted-dev.sh` (see [kernel/patches/oneios-hosted/README.md](../kernel/patches/oneios-hosted/README.md)).
 - The reference for the prelink (optional, worth thousands of paired functions; rebuild only when the source
   changes): `XNU_FILESET_REFERENCE=1` in the build's command. It lands next to the kernel as
@@ -480,6 +534,19 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   phone's GPU, panel, HALs, SELinux and KernelSU.
 
 ## 6. On the phone
+
+### Native haptic test preflight
+
+After standalone CI passes for the current runtime commit, use
+`oneios-tool phone status`, `phone sums`, `phone image-check` and
+`cycle --dry-run` to inspect the staged phone image and rollback path.
+Do not run `phone switch` until the image is known to contain the
+matching guest kernel, the return scripts have been verified, and the
+image manifest includes the opt-in `xnuhost.conf`. In that config,
+`hw-backend-haptics=treble`, `hw-backend-fallback=0`, and
+`haptics-native-impacts=1` enable host and guest native preset opt-in
+without overriding essential guest boot args. See `docs/booter.md`.
+The automatic CI watcher must never perform these phone operations.
 
 ### Test cycle on the phone
 

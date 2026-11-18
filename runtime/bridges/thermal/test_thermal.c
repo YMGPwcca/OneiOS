@@ -220,21 +220,57 @@ static void test_sysfs(void)
   zone(5, "xo-therm", 33204);
   zone(6, "epm0", -273000);
   zone(7, "cpu-0-0-0", -273000);            // an off sensor is not the hottest
+  // SM8850: advertised by the kernel at 105 C while CPU sensors read 35-37 C.
+  // Trip/threshold pseudo-zones must not count as live measurements.
+  zone(8, "cpu-hw-trip-0", 105000);
+  zone(9, "cpu-hw-trip-1", 105000);
   put("/sys/class/sec/sec-ap-thermistor/temperature", "362\n");
   put("/sys/class/power_supply/battery/temp", "331\n");
   br_thermal_sensors s;
   CHECK(br_thermal_find(base, &s) == 0);
-  CHECK(s.nzone == 6);
+  CHECK(s.nzone == 6);                     // the two hardware trips are excluded
+  for (unsigned i = 0; i < s.nzone; i++)
+    CHECK(strncmp(s.zone[i].type, "cpu-hw-trip-", sizeof("cpu-hw-trip-") - 1) != 0);
   br_thermal_raw r;
   br_thermal_read(&s, &r);
   CHECK(r.cpu == 615 && r.gpu == 550 && r.ddr == 450 && r.xo == 332 && r.soc == 615 && !strcmp(r.soc_zone, "cpu-1-2-1"));
   CHECK(r.ap == 362 && r.battery == 331 && r.lrp == BR_THERMAL_UNKNOWN && r.skin == 362);      // no lrp: the board thermistor
+  br_thermal_limits limits;
+  br_thermal_limits_default(&limits);
+  br_thermal_state state;
+  br_thermal_decide(&limits, &r, NULL, &state);
+  CHECK(state.level == BR_THERMAL_NOMINAL && state.cap == 0 && state.soc_level == BR_THERMAL_NOMINAL);
+  // An actual CPU sensor at 105.5 C must still produce the real SoC TRAPPING
+  // pressure: rejecting trip zones may NOT mask legitimate high temperatures.
+  zone(1, "cpu-1-2-1", 105500);
+  br_thermal_read(&s, &r);
+  br_thermal_decide(&limits, &r, NULL, &state);
+  CHECK(r.cpu == 1055 && r.soc == 1055 &&
+        state.level == BR_THERMAL_TRAPPING &&
+        state.reason == BR_THERMAL_BY_SOC && state.cap == 0);
+  zone(1, "cpu-1-2-1", 61500);
   put("/sys/class/power_supply/battery/lrp", "401\n");
   br_thermal_read(&s, &r);
   CHECK(r.lrp == 401 && r.skin == 401);
   zone(3, "gpuss-0", 71000);
   br_thermal_read(&s, &r);
   CHECK(r.soc == 710 && !strcmp(r.soc_zone, "gpuss-0"));
+  // The user's real SM8850 snapshot: real CPU 37.4 C / GPU 35.9 C /
+  // DDR 35.5 C / case 32.1 C / battery 30.1 C, despite 105 C trip nodes.
+  zone(1, "cpu-1-2-1", 37400);
+  zone(2, "cpuss-0", 35900);
+  zone(3, "gpuss-0", 35900);
+  zone(4, "ddr", 35500);
+  put("/sys/class/sec/sec-ap-thermistor/temperature", "322\n");
+  put("/sys/class/power_supply/battery/temp", "301\n");
+  put("/sys/class/power_supply/battery/lrp", "321\n");
+  br_thermal_read(&s, &r);
+  CHECK(r.cpu == 374 && r.gpu == 359 && r.ddr == 355 && r.soc == 374 &&
+        !strcmp(r.soc_zone, "cpu-1-2-1"));
+  CHECK(r.ap == 322 && r.battery == 301 && r.lrp == 321 && r.skin == 321);
+  br_thermal_decide(&limits, &r, NULL, &state);
+  CHECK(state.level == BR_THERMAL_NOMINAL && state.cap == 0 &&
+        state.soc_level == BR_THERMAL_NOMINAL);
   // nothing at all
   char empty[300];
   snprintf(empty, sizeof empty, "%s/none", base);

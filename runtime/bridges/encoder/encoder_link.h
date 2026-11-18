@@ -19,7 +19,7 @@ enum {
   ENC_MSG_CLOSE = 6,        // device -> helper: session
   ENC_MSG_CODED = 7,        // helper -> device: session, pts, flags (bit0 key, bit1 eos), payload = Annex-B AU
   ENC_MSG_EOS = 8,          // helper -> device: session (the drain finished, no more coded buffers)
-  ENC_MSG_ERROR = 9,        // helper -> device: session
+  ENC_MSG_ERROR = 9,        // helper -> device: session, a = positive errno; terminal, never fake EOS
 };
 
 // Every message: this header, then `len` payload bytes.

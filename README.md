@@ -1,8 +1,14 @@
 # OneiOS
 
-iOS 27 next to One UI on a rooted Samsung Galaxy S24 Ultra (SM-S928, SM8650), switched to and back
-the way [OneOS](https://github.com/fahadalijaved/OneOS) switches to another Android: nothing flashed,
-the image lives in a folder, One UI's kernel keeps running.
+**Current development target: Samsung Galaxy S26 Ultra (SM-S948B / m3q / SM8850).** OneiOS
+is an experimental effort to run iOS 27 alongside One UI on a rooted Samsung phone, using
+[OneOS](https://github.com/akshaynexus/OneOS)'s Android-side session model: the image lives in a
+folder and One UI's Linux kernel keeps running. **An iOS switch on the S26 Ultra is not yet
+supported or approved:** device-specific return/recovery gates have not been validated.
+
+The **Galaxy S24 Ultra (SM-S928 / e3q / SM8650)** is the historical guest-boot and
+switch/return baseline. Its results are not proof that the S26 Ultra can boot iOS or safely
+return to One UI.
 
 OneOS's guests are Android systems that run unchanged on One UI's Linux kernel. iOS's userland needs
 Apple's kernel (XNU), so OneiOS runs a source-built XNU **as a process on One UI's kernel**
@@ -11,6 +17,41 @@ image, the switch and the return stay OneOS-shaped. How it fits together: [docs/
 How to build and test it: [docs/building.md](docs/building.md).
 
 ## Status
+
+### Galaxy S26 Ultra — current target (2026-11-18)
+
+- **Local build:** `scripts/ci-local.sh all 0.0.0-ci` passed at commit
+  `015b065b8899ed93197e095c984f11ee09f7152a`; host encoder regression passed
+  69/69 checks and the ARM64 runtime package passed ELF and SHA-256 checks. This is not a
+  guest boot test.
+- **On-device diagnostics under One UI:** SM-S948B/m3q/SM8850 identity was confirmed;
+  HEVC and H.264 MediaCodec keyframe/EOS tests passed through the production encoder
+  helper; a standalone HEAVY_CLICK was physically felt. Host GPU probes, input
+  inventory and display diagnostic results are documented in
+  [the SM8850 validation report](docs/SM8850_PORT.md).
+- **Passive safety audits (2026-11-18):** preflight reported 71 PASS, 1 WARN, 0 FAIL,
+  24 BLOCKED; follow-up reported 3 PASS, 1 WARN, 0 FAIL, 5 BLOCKED. The stage was
+  not initialized and no `kernel.kc` was found in the checked local output.
+  Recovery/USB continuity/volume-chord and physical switch/return remain unverified.
+  The stopped `hwservicemanager` is a warning to investigate, not a reason to start it
+  automatically.
+- **Fail-closed:** the companion [OneOS SM8850 branch](https://github.com/YMGPwcca/OneOS/tree/feat/oneios-sm8850-m3q)
+  offers S26 Ultra diagnostics but does not permit its OneiOS switch. Do not bypass the
+  phone/model gate or interpret a passing host CI as switch approval. No firmware is
+  flashed by the intended model, but a failed recovery could still require a reboot.
+
+The OneOS fork's upstream changes through `akshaynexus/OneOS` `oneios`
+`bdf3db05` have been integrated into
+[the SM8850 OneOS branch](https://github.com/YMGPwcca/OneOS/pull/3)
+at `270230df`. The `app/` submodule now pins `590b4a6`, which fixes
+Tribalfs Maven registry routing and excludes these dependencies from JitPack. A classic GitHub
+PAT with `read:packages` is required to download the pinned SESL9 dependencies.
+The S26 Ultra switch remains fail-closed at the model, UI/job and root-script
+boundaries. **The integrated APK has not yet passed a fresh local CachyOS
+Gradle build/test run and must not be installed for an S26U switch**; host
+CI PASS from before the sync does not validate the newly merged app code.
+
+### Galaxy S24 Ultra — historical guest-boot record (2026-11-11 to 2026-11-12)
 
 **Experimental. On the phone (S24 Ultra, 2026-11-11) the boot reaches launchd, backboardd and SpringBoard, and backboardd's first frames are on the panel: the Apple boot logo at 1440x3120. Whether it goes on to SpringBoard's own screen is not yet seen.**
 

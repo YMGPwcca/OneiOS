@@ -41,6 +41,7 @@ void xh_config_defaults(xh_config *c)
   c->gpu_priority = -1;
   strcpy(c->bluetooth, "auto");
   strcpy(c->haptics, "auto");
+  c->haptics_native_impacts = -1;
   strcpy(c->pen, "off");
   strcpy(c->pen_rotate, "auto");
   strcpy(c->encoder, "off");
@@ -160,6 +161,11 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "wifi")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "tap") || !strcmp(value, "sim"); if (ok) strcpy(c->wifi, value); }
   else if (!strcmp(key, "bluetooth")) { ok = !strcmp(value, "auto") || !strcmp(value, "virtual") || !strcmp(value, "hidl") || !strcmp(value, "sim"); if (ok) strcpy(c->bluetooth, value); }
   else if (!strcmp(key, "haptics")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "sim"); if (ok) strcpy(c->haptics, value); }
+  else if (!strcmp(key, "haptics-native-impacts")) {
+    bool enabled;
+    if (flag(value, &enabled)) return -1;
+    c->haptics_native_impacts = enabled ? 1 : 0;
+  }
   else if (!strcmp(key, "legacy-boot-args")) return flag(value, &c->legacy_boot_args);
   else if (!strcmp(key, "setway-skip")) { bool on; if (flag(value, &on)) return -1; c->setway_skip = on; }
   else if (!strcmp(key, "perf-log")) { ok = number(value, 0, 86400, &c->perf_log); }
@@ -214,6 +220,30 @@ int xh_config_file(xh_config *c, const char *path)
   return rc;
 }
 
+// One explicit session opt-in enables the host preset bridge and the guest
+// boot switch together. Never replace other boot arguments and never override
+// a contradictory oneios_native_impacts=0 from the image/command line.
+static int native_impact_boot_arg(char *args, size_t capacity)
+{
+  static const char key[] = "oneios_native_impacts=";
+  bool seen = false;
+  for (const char *p = args; *p;) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+    size_t len = strcspn(p, " ");
+    if (len >= sizeof key - 1 && !strncmp(p, key, sizeof key - 1)) {
+      if (seen || len != sizeof key || p[sizeof key - 1] != '1') return -1;
+      seen = true;
+    }
+    p += len;
+  }
+  if (seen) return 0;
+  const char *add = *args ? " oneios_native_impacts=1" : "oneios_native_impacts=1";
+  if (strlen(args) + strlen(add) >= capacity) return -1;
+  strcat(args, add);
+  return 0;
+}
+
 static void usage(void)
 {
   fputs("usage: xnuhost --image DIR [--kernel FILE] [--data DIR] [--session DIR] [--runtime DIR]\n"
@@ -221,6 +251,7 @@ static void usage(void)
         "               [--boot-args TEXT] [--display shm|drm|none] [--gpu auto|3d|2d] [--width W --height H]\n"
         "               [--hz N] [--scale 2|3] [--display-format bgrx|rgba16f]\n"
         "               [--hw-backend samsung|treble] [--hw-backend-BRIDGE samsung|treble] [--hw-backend-fallback 0|1]\n"
+        "               [--haptics-native-impacts 0|1] (requires Treble haptics without fallback)\n"
         "               [--no-input] [--input-script FILE] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n"
         "       xnuhost --selftest      checks of this host (trap layer, PAC, memory), no kernel\n"
         "docs/booter.md describes the image set's files, the session files and the exit codes.\n", stderr);
@@ -297,6 +328,15 @@ int xh_config_finish(xh_config *c)
   if (c->map_defer < 0) c->map_defer = from_image.map_defer;
   if (c->cpu_pin < 0) c->cpu_pin = from_image.cpu_pin < 0 ? 1 : from_image.cpu_pin;
   br_hw_settings_merge(&c->hw, &from_image.hw);     // each hw-backend setting: the command line's, else the image set's
+  if (c->haptics_native_impacts < 0)
+    c->haptics_native_impacts = from_image.haptics_native_impacts < 0 ? 0 : from_image.haptics_native_impacts;
+  if (c->haptics_native_impacts &&
+      (!c->bridges || strcmp(c->haptics, "auto") ||
+       br_hw_choose(&c->hw, BR_HW_HAPTICS, BR_HW_UNSET, NULL, 0) != BR_HW_TREBLE ||
+       br_hw_fallback_allowed(&c->hw))) {
+    fprintf(stderr, "xnuhost: haptics-native-impacts=1 requires bridges=1, haptics=auto, hw-backend-haptics=treble and hw-backend-fallback=0\n");
+    return -1;
+  }
   if (c->map_defer < 0) c->map_defer = 1;
   if (!c->height) c->height = from_image.height;
   if (!c->hz) c->hz = from_image.hz;
@@ -315,6 +355,10 @@ int xh_config_finish(xh_config *c)
     strcpy(c->boot_args, "debug=0x14e serial=3 -v kt_fixed_zones=120 -no_slto_panic ml-timeout-lock-panic-scale=40 tlto_us=0 "
            "sheng-smp=1 armcpu-self-ipi=1 armcpu-spi-ipi=1 use_contiguous_hint=0 interrupt-masked-debug-mode=0 "
            "sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 droidvm-gpu-metal=1");
+  if (c->haptics_native_impacts && native_impact_boot_arg(c->boot_args, sizeof c->boot_args)) {
+    fprintf(stderr, "xnuhost: haptics-native-impacts=1 conflicts with the guest boot args or they are too long\n");
+    return -1;
+  }
   if (c->ndisk == 0) { memcpy(c->disk, from_image.disk, sizeof c->disk); c->ndisk = from_image.ndisk; }
   if (!*c->kernel && !exists(c->image, "kernel.kc", c->kernel, sizeof c->kernel) &&
       !exists(c->image, "kernel.macho", c->kernel, sizeof c->kernel)) {

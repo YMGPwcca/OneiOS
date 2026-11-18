@@ -6,7 +6,16 @@ iOS's brightness (Control Center, Settings, the dim before the display sleeps, a
 message on the bridge channel (`OB_CH_BRIGHTNESS`, `drivers/bridge/oneios_bridge_proto.h`); this bridge writes the
 panel. The phone's light sensor goes the other way.
 
-**Never run on the phone.** Host tests pass; the first run is `brightctl` below.
+**SM8850 safety note:** `brightctl inspect` is a *passive*, read-only sysfs probe and may run while One UI is up. The historical `brightctl info` **is not passive**: it calls `br_bright_open()`, which can write a 50% initial brightness when sysfs reads zero, wake the touchscreen IC, and enable ALS. Do not run `info`, `levels`, or `als` on S26 Ultra while validating its unproven brightness backend.
+
+```sh
+# Only with a newly built SM8850 branch brightctl binary already staged on the phone:
+adb shell su -c '/data/local/tmp/brightctl inspect'
+```
+
+The inspect command reports named backlight devices (including zero-max nodes), `max_brightness`, `brightness`, `actual_brightness` and `bl_power` when readable. It uses only `O_RDONLY` on sysfs, never calls the bridge, and does not touch ALS or the touchscreen power interface. A zero brightness reading on a lit S26 Ultra is flagged as unverified and unsafe for active testing. The fake-sysfs regression test `test_inspect.sh` checks selection, warning and file checksums.
+
+**Session-mode brightness writes are not yet tested on the S26 Ultra.** The active tests below originally targeted the S24 Ultra.
 
 ```sh
 make test          # 81 checks: the curve, the fade, the sensor's events, a session and the touch IC on a fake sysfs

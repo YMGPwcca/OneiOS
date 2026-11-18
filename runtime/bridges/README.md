@@ -82,7 +82,9 @@ br_virtio_snd_create(base2, spi2, audio, audio_ctx);    // /arm-io/virtio-snd
 ```sh
 adb push build/android/bridgectl build/android/oneios-audio /data/local/tmp/
 adb shell su -c '/data/local/tmp/bridgectl cpu'
-adb shell su -c '/data/local/tmp/bridgectl haptic 200 1000'
+adb shell su -c '/data/local/tmp/bridgectl haptic-inspect'      # O_RDONLY: input capabilities
+adb shell su -c '/data/local/tmp/bridgectl haptic-hal-inspect'  # AIDL getCapabilities only; no on/off/amplitude
+adb shell su -c '/data/local/tmp/bridgectl haptic 200 1000' # ACTIVE: only after device-specific validation
 adb shell su -c '/data/local/tmp/bridgectl haptic-pattern'
 adb shell su -c '/data/local/tmp/bridgectl bt'            # with Bluetooth off in One UI's settings (see below)
 adb shell su -c '/data/local/tmp/bridgectl audio /data/local/tmp/oneios-audio'          # 2 s, then 0.5 s
@@ -98,6 +100,38 @@ bridge's own lines (`error: bluetooth: ...`) say which step failed: not register
 refused, or no `initializationComplete` in 15 s (then look for `avc: denied` lines with `hal_bluetooth` in dmesg). `haptic`
 and `audio` are harmless beside One UI.
 
+**SM8850 haptic warning (2026-11-16).** The S26 Ultra reports `sec_vibrator_inputff` at `/dev/input/event7` with `FF_PERIODIC`, `FF_SINE`, `FF_CUSTOM`, `FF_GAIN`. The first actual `bridgectl haptic 80 150` trial selected the correct device, but the worker reported **`EINVAL`**, **0 effects played** and **1 failed**. The old `bridgectl` incorrectly returned `ok` despite failure. **Do not retry stronger vibrations or pattern mode.** A new `haptic-inspect` subcommand opens the input devices `O_RDONLY`, queries the name, supported waveform flags and maximum effect slots, and exits without issuing `FF_GAIN`, `EVIOCSFF` or play events. Worker error logging now distinguishes upload and playback, includes parameters (80 ms/150 maps to period 6 ms, level 72); the CLI waits for the worker and returns failure on any rejected effect. This is **diagnostic hardening, not a hardware haptics fix**. Active S26 haptic waveform support remains blocked pending verified driver behavior. In contrast, the S24 `haptic` commands above are historical references for a previously tested device.
+
+**SM8850 haptics root-cause stage and HAL diagnostic (2026-11-16).** A second physical trial with the instrumented `bridgectl` **definitively** returned `haptics: effect upload failed: Invalid argument (80 ms, intensity 150, period 6 ms, level 72, effect id -1)`, `0 effects played, 1 failed`, and shell exit code **1**. The failing operation is **`EVIOCSFF` for `FF_PERIODIC/FF_SINE`**, before any play event was submitted. Samsung's Android path in a nearby kernel `dmesg` capture uploaded `FF_CUSTOM` with `custom_len=2` and played effect ID 0 successfully; this is evidence of a working vendor haptic path, **not** a validated `FF_CUSTOM` payload for OneiOS. Do not replay the logged internal firmware trigger indices or make an automatic waveform fallback. The S26 vendor's SINE contract remains unverified.
+
+The new **`haptic-hal-inspect`** checks the alternative stock **`android.hardware.vibrator.IVibrator/default`** AIDL path using `br_hal_open()`, interface version and `getCapabilities()` only, then closes the binder handle **without `off()`**. It issues no vibration, gain, stop, or evdev calls, and returns failure if the service is absent or inaccessible. It does **not** establish that the HAL can safely play guest vibrations while One UI still owns it. Stand-in binder tests verify no `on/off/setAmplitude` calls. Avoid running the active `treble` backend until separately validated.
+
+**S26 physical Vibrator HAL playback PASS (2026-11-16), intensity calibration pending.** After the read-only AIDL v3 `getCapabilities()` probe passed with mask `0x3c`, the owner explicitly ran `ONEIOS_HW_BACKEND_HAPTICS=treble ONEIOS_HW_FALLBACK=0 bridgectl haptic 80 150` while One UI was active. HAL `on(80)` and `setAmplitude` succeeded; the CLI reported `1 effects played, 0 failed`, `ok` and exit 0. The owner **felt a nearly imperceptible vibration**. This verifies **basic active HAL playback**, not a useful iOS haptic strength/shape. The S24-derived intensity map converts 150/1000 to **72/255 ≈ 28% requested amplitude**, and 80 ms is a very brief pulse. A carefully observed next candidate is **200 ms, intensity 400** (126/255 ≈ 49% requested amplitude), only once on an idle phone, with the same explicitly selected `treble` and `ONEIOS_HW_FALLBACK=0`. No auto fallback to Samsung evdev, `FF_CUSTOM` guessing, `haptic-pattern`, or production default change is justified yet. The HAL `CAP_COMPOSE_EFFECTS` flag also suggests a future way to improve crispness, but supported primitives and guest experience remain untested.
+
+**S26 Samsung settings and native-primitive inventory (2026-11-16).** `dumpsys vibrator` is **not** the framework service name on this Android 17 device; use `adb shell dumpsys vibrator_manager` instead. Read-only Samsung settings showed `haptic_feedback_enabled=1`, `keyboard_vibration_enabled=1`, `SEM_VIBRATION_FORCE_TOUCH_INTENSITY=4`, `SEM_VIBRATION_NOTIFICATION_INTENSITY=5`, `media_vibration_intensity=5`. These values are *not* physical vibration amplitude percentages and do not explain the two weak HAL `on(ms)` pulses by themselves.
+
+The new **`bridgectl haptic-hal-primitives`** queries `getCapabilities`, composition size/delay maxima, `getSupportedPrimitives`, `getPrimitiveDuration` and `getSupportedEffects` over AIDL, without sending **any actuation or motor-setting calls**. Supported ID names come from AOSP `CompositePrimitive`; actual Samsung support must be read from the device. When `CAP_COMPOSE_EFFECTS` is absent it reports no composition support and exits. Fake HAL tests exercise a short list of primitive IDs, durations and preset effects and verify that no `vibrator.log` entries were produced. This command is not a `compose()` test and does not enable external control. Avoid active effects until the physical inventory and framework state are reviewed.
+
+**Optional SM8850 native impact bridge (guest protocol, experimental; disabled by default).** The real S26 physically accepted one `perform(HEAVY_CLICK, STRONG)` with a clear ~110 ms tick, while the old duration-based HAL route was too weak. The host-side `haptic.c` worker now also supports an **explicit** `OB_HAPTIC_IMPACT` event with a native preset backend; the existing `OB_HAPTIC_VIB` and `OB_HAPTIC_STOP` retain duration/frequency semantics. Enable only if using the explicitly selected `hw-backend-haptics=treble`, host environment `ONEIOS_HAPTIC_NATIVE_IMPACTS=1` and guest boot argument `oneios_native_impacts=1`. The host will advertise `OB_FEAT_HAPTIC_IMPACT` in an extended v1 HELLO **only after** querying the native HAL and confirming TICK, CLICK and HEAVY_CLICK are supported. Guest identifies a single short isolated PCM burst only after 10 ms silence; 30ms+ sustained vibrations retain VIB/STOP, with an experimental initial 30 ms classification delay. Mapping: isolated low peak TICK LIGHT, mid peak CLICK MEDIUM, high peak HEAVY_CLICK STRONG. Only HEAVY has a physically confirmed strong tick. No blind `FF_SINE` fallback or `FF_CUSTOM` uploads. After a preset naturally finishes, reset and close do not call a stale `off()`; an immediate STOP during an active preset still cancels it. Legacy defaults unchanged; no iOS guest boot validation yet.
+
+**Production AIDL native-impact preflight (strictly passive).** The SM8850 CI host lacks binderfs, so fake Binder tests compile but skip on GitHub's runner. The on-phone `bridgectl haptic-native-inspect` is an explicit read-only verification of the *production* `br_haptic_open_as(..., treble, ...)` path, not the standalone HAL getter helper. Run with `ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_FALLBACK=0`. It reports whether the live AIDL HAL supports TICK/CLICK/HEAVY_CLICK, starts no effects, never uses evdev and closes without `off()` when native opt-in was requested and no continuous effect played. It refuses fallback=1. The default non-native close still stops legacy continuous vibration. This validates native feature negotiation before any separately authorized guest integration trial.
+
+**Native impact telemetry correction (2026-11-16).** The host's `haptics: counters`
+now counts native impacts in total guest requests (`vib + stop + impacts`),
+while still reporting discrete impacts separately. Guest-side counters include
+impacts sent and the first 24 successfully sent impact kinds are logged.
+This is an observability fix and test hardening, **not** guest E2E validation.
+Physical guest playback still requires a separately authorized phone session.
+**PCM-to-VirtIO host regression (2026-11-16).** The bridge tests now feed a
+stand-in guest's Actuator PCM periods through the *production* `oa_period`
+classifier, send the resulting impact or duration events over the real
+`xh_virtio` guest/host queues, and verify the fake HAL's callbacks.
+Cases cover isolated heavy/light/medium bursts, legacy operation without
+guest opt-in, sustained VIB/STOP, malformed impact frames, and active-impact
+cancellation on guest reset. The guest's `oneios_haptic_impact()` also
+requires `oh_native_impacts`, so the host's advertised feature alone
+cannot bypass the guest boot opt-in. These are deterministic host tests;
+they neither access a phone nor prove live iOS/Android actuation.
 **Wi-Fi** (`build/android/wifictl`, `bin/wifictl` in the runtime package):
 
 ```sh

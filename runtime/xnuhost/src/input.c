@@ -43,6 +43,14 @@ static int64_t down_ns;               // a touch-down on a still screen that wai
 static int64_t down_frame_ns = -1;       // the wait of the last such touch-down, -1 = none measured
 static int64_t monotonic_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec; }
 
+// Choose the phone's own direct touchscreen when present. An attached wearable
+// can advertise INPUT_PROP_DIRECT and multi-touch axes too (e.g. HUAWEI Band 11
+// on the S26 Ultra): evdev event numbers are not stable across reconnects.
+bool xh_input_accept_touch(const char *name, bool direct, bool have_touch, bool native_present)
+{
+  return direct && !have_touch && (!native_present || (name && strcmp(name, "sec_touchscreen") == 0));
+}
+
 // The screen counts as still when the guest showed no frame for this long before a touch-down.
 #define STILL_NS 100000000
 
@@ -228,6 +236,29 @@ static volatile bool running;
 
 static bool bit(const unsigned long *bits, unsigned n) { return bits[n / (8 * sizeof(long))] >> (n % (8 * sizeof(long))) & 1; }
 
+// Prefer Samsung's own direct touchscreen over a connected wearable's direct
+// virtual display, regardless of which eventN was allocated first. Read-only.
+static bool native_touch_present(void)
+{
+  for (unsigned i = 0; i < 32; i++) {
+    char path[32], name[64] = "";
+    snprintf(path, sizeof path, "/dev/input/event%u", i);
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) continue;
+    ioctl(fd, EVIOCGNAME(sizeof name - 1), name);
+    if (strcmp(name, "sec_touchscreen") != 0) { close(fd); continue; }
+    unsigned long abs[(ABS_MAX + 8 * sizeof(long)) / (8 * sizeof(long))] = { 0 };
+    unsigned long props[(INPUT_PROP_MAX + 8 * sizeof(long)) / (8 * sizeof(long))] = { 0 };
+    bool valid = ioctl(fd, EVIOCGBIT(EV_ABS, sizeof abs), abs) >= 0 &&
+                 ioctl(fd, EVIOCGPROP(sizeof props), props) >= 0 &&
+                 bit(abs, ABS_MT_POSITION_X) && bit(abs, ABS_MT_POSITION_Y) &&
+                 bit(props, INPUT_PROP_DIRECT);
+    close(fd);
+    if (valid) return true;
+  }
+  return false;
+}
+
 // The device's state now, by ioctl (after SYN_DROPPED).
 static int read_state(xh_input_source *s, xh_input_state *st)
 {
@@ -280,6 +311,7 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
 {
   (void)width; (void)height;
   bool have_touch = false;
+  const bool native_touch = native_touch_present();
   for (unsigned i = 0; i < 32 && nfds < MAX_DEVICES - 1; i++) {     // one place kept for the pen
     char path[32], name[64] = "";
     snprintf(path, sizeof path, "/dev/input/event%u", i);
@@ -297,8 +329,11 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
     if (touch) {
       unsigned long props[(INPUT_PROP_MAX + 8 * sizeof(long)) / (8 * sizeof(long))] = { 0 };
       bool direct = ioctl(fd, EVIOCGPROP(sizeof props), props) >= 0 && bit(props, INPUT_PROP_DIRECT);
-      if (!direct || have_touch) {
-        LOGI("input: %s \"%s\": multitouch, not taken (%s)", path, name, direct ? "a touchscreen is already taken" : "not the screen: no INPUT_PROP_DIRECT");
+      if (!xh_input_accept_touch(name, direct, have_touch, native_touch)) {
+        const char *reason = !direct ? "not the screen: no INPUT_PROP_DIRECT" :
+                             have_touch ? "a touchscreen is already taken" :
+                             "the native sec_touchscreen takes priority over a virtual direct touchscreen";
+        LOGI("input: %s \"%s\": multitouch, not taken (%s)", path, name, reason);
         touch = false;
       }
     }

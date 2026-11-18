@@ -689,6 +689,15 @@ static int boot(void)
     bool hidl = !strcmp(config.bluetooth, "hidl"), sim = !strcmp(config.bluetooth, "sim");
     int hal = 0;
     if (!strcmp(config.bluetooth, "auto")) { hal = br_hci_hidl_probe(); hidl = hal > 0; }
+    // The session configuration opts in both guest and host. Keep the HAL
+    // preset path disabled unless explicitly requested: normal sessions use
+    // their existing legacy vibration path.
+    if (setenv("ONEIOS_HAPTIC_NATIVE_IMPACTS", config.haptics_native_impacts ? "1" : "0", 1)) {
+      LOGE("haptics: cannot configure native impacts in the host environment");
+      return -1;
+    }
+    if (config.haptics_native_impacts)
+      LOGI("haptics: native impacts requested by session config (treble, fallback off; guest boot arg enabled)");
     // Haptics: the phone's force-feedback device (auto), none (off), or the stand-in actuator (sim).
     haptic = !strcmp(config.haptics, "sim") ? br_haptic_open_sim() : !strcmp(config.haptics, "off") ? NULL : br_haptic_open(NULL);
     if (!haptic && !strcmp(config.haptics, "off")) LOGI("haptics: off (haptics=off): iOS gets no actuator");

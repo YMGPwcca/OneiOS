@@ -2807,3 +2807,43 @@ kernel without it is unchanged.
 
 Only single files were fetched from the kernel and device repositories (raw downloads at the pinned commit) and one
 shallow clone of the 748 KiB devicetrees repository; nothing of them is in this repository.
+
+### SM8850 native-impact telemetry and local CI (2026-11-16)
+
+The standalone S26 Ultra HAL heavy-click was felt and the production native
+preflight passed. Guest-to-host impact delivery is **not yet physically
+verified**. The host now counts native impacts in total guest haptic requests;
+the guest counts and logs successful impact transmissions. Native opt-ins,
+fallback and shutdown semantics remain unchanged. Host regression tests
+exercise impact dispatch and counters. SM8850 builds on the owner's
+CachyOS self-hosted runner (see `docs/building.md`); automatic CI
+does not touch ADB or root, nor prove physical guest behavior.
+
+### SM8850 PCM-to-native-impact regression (2026-11-16)
+
+`runtime/bridges/tests/test_bridges.c` now drives the same `oa_period`
+Actuator classifier used by the guest through the real host VirtIO device
+model into a fake vibrator backend. The regression exercises isolated
+heavy, medium and light taps; a guest with native opt-in disabled;
+sustained VIB/STOP; malformed impact requests; and reset cancellation.
+`oneios_haptic_impact` additionally refuses an impact unless the guest's
+`oneios_native_impacts=1` opt-in was accepted during boot.
+
+The standalone `scripts/ci-local.sh` now calls driver/userland host suites
+as well as runtime and kernel tests. That includes the standalone native
+PCM classifier test (`drivers/haptics/test_actuator.c`) that had been
+omitted from local CI. These tests use fake devices on Linux; a live
+S26 Ultra guest boot remains necessary to prove actual iOS haptics.
+
+### Native impacts: session opt-in path (2026-11-16)
+
+An ordinary OneOS switch starts `xnuhost` without forwarding the
+`ONEIOS_HAPTIC_NATIVE_IMPACTS` host environment variable; until now the
+host's preflight therefore could not be enabled by the image settings alone.
+`haptics-native-impacts=1` in the staged image's `xnuhost.conf` now enables
+the host's native preset capability check and adds `oneios_native_impacts=1`
+to the existing guest boot arguments. It refuses non-Treble haptics or
+`hw-backend-fallback=1` and never defaults on. This is the explicit session
+opt-in; staging still requires normal image manifest and checksum verification
+before any device switch. Tested by host configuration regressions; actual
+guest-to-HAL tactile behavior remains unverified.

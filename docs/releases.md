@@ -169,62 +169,31 @@ runtime/package.sh 0.1.7-dev                           # -> out/release/oneios-r
 
 ## CI and releases
 
-One workflow, `.github/workflows/release.yml` ("build and release"; `ci.yml` and the runtime-only `release.yml` of
-before 2026-11-15 were merged into it). Its jobs:
+**Current SM8850 build validation (2026-11-16):** standalone local CI on
+the owner's CachyOS PC. `scripts/ci-watch.sh` polls the trusted branch with
+`git fetch`, creates an isolated Git worktree, invokes
+`scripts/ci-local.sh all`, and stores the result and verified runtime
+artifact under `~/oneios-m3q-ci/standalone/runs/<commit>/`.
+See `docs/building.md` for one-time systemd timer installation and commands.
 
-```
-plan ──┬── runtime    ubuntu-24.04   the runtime package and its checks
-       ├── apk        ubuntu-24.04   the OneOS app (submodule app/) and its checks
-       ├── apk-macos  macos-15       ./gradlew test of the same app on a Mac
-       └───────────── release        needs runtime and apk; a tag or a dispatch only
-```
+**The SM8850 branch no longer has an automatically triggered Actions
+workflow.** The previous `sm8850-ci.yml` was removed, avoiding the need
+to register a self-hosted runner. Routine local CI compilation and tests
+use neither GitHub-hosted nor self-hosted Actions runners. The existing
+default-branch workflow may still run for main/PR events until that branch
+is updated or Actions are disabled in repository settings. The feature
+branch's `.github/workflows/release.yml` is manual-only as a legacy
+release mechanism, and is not used for standalone CI.
 
-`runtime`, `apk` and `apk-macos` start together after `plan` and run on their own runners.
+The local watcher never runs ADB/root or switches the phone. Its results are
+local files, not GitHub checks or GitHub Actions logs. A remote agent cannot
+read them until an authorized log-sharing mechanism is provided. Fork PRs
+do not trigger the local watcher. It does execute code fetched from the
+trusted branch with the rights of its Unix user, so a dedicated account
+or an isolated VM remains recommended.
 
-| Trigger | Builds | Releases |
-|---|---|---|
-| a pull request, a push to `main` | runtime, apk, apk-macos | nothing (the runtime package and the APK are artifacts for 14 days) |
-| a tag `vN.N.N` or `vN.N.N-suffix` on `main` | all three | the runtime and the APK on the release of the tag |
-| a dispatch on `main` (Actions, "build and release", Run workflow; inputs `version` and `both` / `runtime only` / `apk only`) | what was asked (apk-macos with the APK) | the release `v<version>`, its tag made at the dispatched commit when missing |
-
-- **plan**: whether the run releases, the version (`0.0.0-ci` when not), what it builds. A release's version must be
-  `N.N.N[-suffix]` and its commit on `main`.
-- **runtime**: what `ci.yml` and the old `release.yml` did, on every build. `app/` must be an empty submodule
-  folder (this job never checks the fork out); no firmware in git (`check-tracked-files.sh`); `bash -n`,
-  `py_compile`, `shellcheck -S error`; NDK 28.2.13676358, the `aarch64-linux-android` Rust target and
-  **oneios-tool** (`.github/scripts/setup-build.sh`: a current stable Rust, `cargo build --release --manifest-path
-  tools/oneios-tool/Cargo.toml`, a few minutes); Droid-VM's virglrenderer (below); the host tests
-  (`runtime/package/elf-check-test.sh`: the link rule of shared objects and the NEEDED and symbol check, above;
-  `runtime/package/test.sh`; `kernel/tests/host.sh`, which runs `kernel series-check` and `kernel build-record
-  --self-test`; every executable `*/tests/host.sh` of another area); the pinned kernel when
-  `kernel/release-kernel.txt` names one; `runtime/package.sh <version>` (the Apple-file refusal and the elf-check of
-  the stage); the drm2kgsl check and `runtime/package/elf-check.sh` on the unpacked archive; the members check
-  (above). Artifact `oneios-runtime`: the `.tar.zst`, its `.sha256` and `.runtime.json`.
-- **apk**: what the fork's `.github/workflows/oneios-apk.yml` does, from OneiOS. `git submodule update --init
-  --remote app` (the head of the branch `.gitmodules` names, `oneios`; the commit recorded in OneiOS is printed beside
-  it); the token for tribalfs' packages (below); JDK 21 (Temurin); Gradle (`setup-gradle`, its open-source `basic`
-  cache); Android SDK platform 37 and build-tools 37.0.0; the debug key of the secret `ONEIOS_DEBUG_KEYSTORE_B64`
-  when this repository has it (else a key of the run's own); `app/scripts/build-guest-manager.sh --debug`; mksh;
-  `./gradlew --max-workers=3 test assembleFullDebug` in `app/app-android` (what `oneios-tool app build` runs); the
-  APK's versionName and versionCode from `aapt2 dump badging` (the versionCode must be `app/build.gradle.kts`'s);
-  `check-apk.sh` (above). Artifact `oneos-apk`: `OneOS-oneios-<versionName>-debug.apk` and its `.sha256`.
-- **apk-macos**: the same checkout, token, JDK, SDK and guest app on `macos-15`, then `./gradlew --continue test`
-  with Homebrew's folders taken off `PATH`, so that core:root's script tests use the harness's stand-ins over
-  macOS's own `stat`, `shasum`, `perl` and `awk` (a Mac without coreutils). Every test's start and end is in the
-  log (`--init-script .github/scripts/gradle-test-events.gradle`, failures with their whole exception). A watchdog
-  stops Gradle after 30 minutes and first prints the processes and the test JVMs' threads (`jstack`), so a hung
-  test is named and the reports still come out. On a failure the job summary lists the failed tests; the reports
-  and results are the artifact `oneos-tests-macos`. Not a gate of the release. The macOS results are in
-  "macOS: the fork's unit tests" below.
-- **release**: needs runtime and apk (each a success, or skipped because the dispatch asked for the other only).
-  Checks the commit is on `main` and that the tag, when it exists, is at the built commit (a tag is never moved);
-  downloads the artifacts, checks their `.sha256` (and that the APK is the file the apk job checked), writes the
-  notes, creates the release (a pre-release when the version has a suffix; `--latest=false` without a runtime), or
-  adds this run's notes to an existing one. Assets are added, never replaced: an asset already on the release with
-  the same SHA-256 (GitHub's `digest`) is left, one with other bytes stops the job.
-- Nothing of Apple's is downloaded. Actions are pinned by commit. A rerun needs Actions write, which the agents'
-  token may not have; a push starts a new run.
-
+Older APK/macOS GitHub Actions descriptions below are historical records
+of previous CI, not current branch behavior.
 **tribalfs' packages.** The SESL9 and oneui-design libraries come from GitHub Packages
 (`maven.pkg.github.com/tribalfs`), whose Maven registry wants a login even for public packages.
 `.github/scripts/packages-token.sh` (the fork's first step, shared by apk and apk-macos) tries the run's own

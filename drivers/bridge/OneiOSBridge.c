@@ -51,6 +51,7 @@ static struct {
     uint16_t tx_head, rx_used;
     bool up, interrupt;
     volatile uint32_t channels;     // from the host's hello
+    volatile uint32_t features;     // optional extended HELLO; zero on old hosts
     struct { oneios_bridge_handler fn; void *context; } listener[OB_CH_COUNT];
 } ob;
 
@@ -185,6 +186,7 @@ void oneios_bridge_listen(uint16_t channel, oneios_bridge_handler fn, void *cont
 
 bool oneios_bridge_ready(void) { return ob.up && ob.channels != 0; }
 uint32_t oneios_bridge_channels(void) { return ob.channels; }
+uint32_t oneios_bridge_features(void) { return ob.features; }
 
 static void ob_dispatch(const uint8_t *message, uint32_t written) {
     struct ob_header header;
@@ -197,6 +199,12 @@ static void ob_dispatch(const uint8_t *message, uint32_t written) {
             struct ob_ctl_hello hello;
             memcpy(&hello, payload, sizeof(hello));
             ob.channels = hello.channels;
+            ob.features = 0;
+            if (header.length >= sizeof(struct ob_ctl_hello_ext)) {
+                struct ob_ctl_hello_ext ext;
+                memcpy(&ext, payload, sizeof(ext));
+                if (ext.version == OB_PROTO_VERSION) ob.features = ext.features;
+            }
             oneios_bridge_stage = 5;
             snprintf(oneios_bridge_status, sizeof(oneios_bridge_status), "up, host channels %#x", hello.channels);
             printf("ONEIOS BRIDGE: on: host protocol %u, channels %#x (1 control, 2 haptics, 4 Bluetooth)\n", hello.version, hello.channels);

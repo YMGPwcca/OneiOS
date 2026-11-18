@@ -32,8 +32,21 @@
 #define HAL_VIB_GET_CAPABILITIES 1u               // getCapabilities(): int
 #define HAL_VIB_OFF          2u                   // off()
 #define HAL_VIB_ON           3u                   // on(int timeoutMs, IVibratorCallback callback): callback null here
+#define HAL_VIB_PERFORM      4u                   // perform(Effect, EffectStrength, IVibratorCallback): duration in ms
+#define HAL_VIB_EFFECT_CLICK 0                    // android.hardware.vibrator.Effect.CLICK
+#define HAL_VIB_EFFECT_TICK 2                     // android.hardware.vibrator.Effect.TICK
+#define HAL_VIB_EFFECT_HEAVY_CLICK 5              // android.hardware.vibrator.Effect.HEAVY_CLICK
+#define HAL_VIB_STRENGTH_LIGHT 0                  // android.hardware.vibrator.EffectStrength.LIGHT
+#define HAL_VIB_STRENGTH_MEDIUM 1                 // android.hardware.vibrator.EffectStrength.MEDIUM
+#define HAL_VIB_STRENGTH_STRONG 2                 // android.hardware.vibrator.EffectStrength.STRONG
+#define HAL_VIB_SUPPORTED_EFFECTS 5u              // getSupportedEffects(): Effect[] (read only)
 #define HAL_VIB_SET_AMPLITUDE 6u                  // setAmplitude(float 0 < a <= 1)
+#define HAL_VIB_COMPOSE_DELAY_MAX 8u              // getCompositionDelayMax(): int (read only)
+#define HAL_VIB_COMPOSE_SIZE_MAX 9u               // getCompositionSizeMax(): int (read only)
+#define HAL_VIB_SUPPORTED_PRIMITIVES 10u          // getSupportedPrimitives(): CompositePrimitive[] (read only)
+#define HAL_VIB_PRIMITIVE_DURATION 11u            // getPrimitiveDuration(CompositePrimitive): int (read only)
 #define HAL_VIB_CAP_AMPLITUDE 4                   // IVibrator.CAP_AMPLITUDE_CONTROL
+#define HAL_VIB_CAP_COMPOSE 32                    // IVibrator.CAP_COMPOSE_EFFECTS
 
 // ---- the connection -----------------------------------------------------------------------------
 typedef struct br_hal br_hal;

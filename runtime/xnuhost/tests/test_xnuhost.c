@@ -1160,6 +1160,14 @@ static void count_power_press(void) { power_presses++; }
 
 static void test_input_filter(void)
 {
+  // S26 Ultra: both the internal sec_touchscreen and a connected HUAWEI Band
+  // advertise INPUT_PROP_DIRECT. Native input wins even if event IDs change.
+  CHECK(xh_input_accept_touch("sec_touchscreen", true, false, true));
+  CHECK(!xh_input_accept_touch("HUAWEI Band 11-F88", true, false, true));
+  CHECK(!xh_input_accept_touch("sec_touchpad", false, false, true));
+  CHECK(!xh_input_accept_touch("sec_touchscreen", true, true, true));
+  CHECK(xh_input_accept_touch("generic touchscreen", true, false, false));
+  CHECK(!xh_input_accept_touch("generic touchscreen", false, false, false));
   driver d = { .dev = xh_virtio_input_create(0, 45) };
   CHECK(d.dev && driver_init(&d, 0, 2, GUEST_PA + 0x10000));
   for (unsigned i = 0; i < 8; i++) driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0x50000 + i * 8, 8, 1 } }, 1, false);
@@ -1269,6 +1277,28 @@ static void test_pen(void)
   SETBIT(abs, 0x1a); SETBIT(keys, 0x14b);
   int full = xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why);
   CHECK(full > plain && full == 1 + 2 + 4);                                     // tilt, the side button, a pen's name
+  // Samsung SM-S948B getevent calls key 0x140 "BTN_DIGI".
+  // linux/input-event-codes.h calls that same code BTN_TOOL_PEN: no
+  // tool-less Samsung exception is needed or desirable.
+  uint8_t s26keys[96] = { 0 }, s26abs[8] = { 0 };
+  SETBIT(s26keys, 0x140);                              // BTN_DIGI / BTN_TOOL_PEN
+  SETBIT(s26keys, 0x14a); SETBIT(s26keys, 0x14b);      // tip and side button capability
+  SETBIT(s26abs, 0); SETBIT(s26abs, 1);               // X / Y
+  SETBIT(s26abs, 0x18); SETBIT(s26abs, 0x19);         // pressure / distance
+  SETBIT(s26abs, 0x1a); SETBIT(s26abs, 0x1b);         // tilt X / Y
+  CHECK(xh_pen_rank("sec_e-pen", s26keys, sizeof s26keys, s26abs, sizeof s26abs, &why) == 1 + 3 + 4 && why == NULL);
+  s26keys[0x140 / 8] &= (uint8_t)~(1u << (0x140 % 8));
+  CHECK(xh_pen_rank("sec_e-pen", s26keys, sizeof s26keys, s26abs, sizeof s26abs, &why) == 0 &&
+        why && strstr(why, "BTN_TOOL_PEN"));
+  SETBIT(s26keys, 0x140);
+  SETBIT(s26abs, 0x35);                              // never take a multitouch source
+  CHECK(xh_pen_rank("sec_e-pen", s26keys, sizeof s26keys, s26abs, sizeof s26abs, &why) == 0 &&
+        why && strstr(why, "multitouch"));
+  s26abs[0x35 / 8] &= (uint8_t)~(1u << (0x35 % 8));
+  SETBIT(s26keys, 115);                              // never take a physical volume-key device
+  CHECK(xh_pen_rank("sec_e-pen", s26keys, sizeof s26keys, s26abs, sizeof s26abs, &why) == 0 &&
+        why && strstr(why, "side keys"));
+
   uint8_t mt[8];
   memcpy(mt, abs, sizeof mt);
   SETBIT(mt, 0x35);
@@ -1277,6 +1307,42 @@ static void test_pen(void)
   CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why) == 0 && strstr(why, "side keys"));
 #undef SETBIT
   CHECK(xh_pen_lookup == xh_pen_lookup_evdev);                                  // the default lookup, replaceable
+
+  // A captured SM8850 event sequence: BTN_DIGI(0x140) DOWN while hovering,
+  // BTN_TOUCH(0x14a) DOWN/UP for contact, then BTN_DIGI UP out of range.
+  // Its coordinates/pressure/distance are in the evdev units measured on phone.
+  xh_pen_device m3q = { .fd = -1, .stylus = true };
+  m3q.axis[XH_PEN_X] = (xh_pen_axis){ 0, 7330, 0, true };
+  m3q.axis[XH_PEN_Y] = (xh_pen_axis){ 0, 15881, 0, true };
+  m3q.axis[XH_PEN_PRESSURE] = (xh_pen_axis){ 0, 4095, 0, true };
+  m3q.axis[XH_PEN_DISTANCE] = (xh_pen_axis){ 0, 255, 0, true };
+  m3q.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -63, 63, 0, true };
+  m3q.axis[XH_PEN_TILT_Y] = (xh_pen_axis){ -63, 63, 0, true };
+  xh_pen_state m3q_hover = { .tool = true };
+  m3q_hover.value[XH_PEN_X] = 5924;
+  m3q_hover.value[XH_PEN_Y] = 10584;
+  m3q_hover.value[XH_PEN_DISTANCE] = 77;
+  m3q_hover.value[XH_PEN_TILT_X] = -1;
+  m3q_hover.value[XH_PEN_TILT_Y] = 13;
+  xh_pen_sample m3q_sample;
+  xh_pen_sample_of(&m3q, 0, false, &m3q_hover, &m3q_sample);
+  CHECK(m3q_sample.in_range && !m3q_sample.touch && m3q_sample.distance == 77 &&
+        m3q_sample.pressure == 0 && m3q_sample.x == 5924 * 32767 / 7330 &&
+        m3q_sample.y == 10584 * 32767 / 15881);
+  m3q_hover.touch = true;
+  m3q_hover.value[XH_PEN_PRESSURE] = 156;            // observed max in first stroke
+  m3q_hover.value[XH_PEN_DISTANCE] = 0;
+  xh_pen_sample_of(&m3q, 0, false, &m3q_hover, &m3q_sample);
+  CHECK(m3q_sample.in_range && m3q_sample.touch && m3q_sample.pressure == 156 &&
+        m3q_sample.distance == 0);
+  m3q_hover.touch = false;
+  m3q_hover.value[XH_PEN_PRESSURE] = 0;
+  m3q_hover.value[XH_PEN_DISTANCE] = 28;
+  xh_pen_sample_of(&m3q, 0, false, &m3q_hover, &m3q_sample);
+  CHECK(m3q_sample.in_range && !m3q_sample.touch && m3q_sample.distance == 28);
+  m3q_hover.tool = false;
+  xh_pen_sample_of(&m3q, 0, false, &m3q_hover, &m3q_sample);
+  CHECK(!m3q_sample.in_range && !m3q_sample.touch && m3q_sample.distance == 0);
 
   // The sample: a digitizer of 0..16000 x 0..34000, pressure 0..8191, height 0..255, tilt +-63 without a resolution.
   xh_pen_device d = { .fd = -1, .stylus = true };
@@ -1632,7 +1698,8 @@ static void test_config(const char *dir)
   CHECK(strstr(c.kernel, "/image/kernel.kc") && c.ndisk == 4 && strstr(c.disk[3].path, "data.seed") && !c.disk[3].writable && !c.disk[0].writable && strstr(c.disk[1].path, "systemos.img"));
   CHECK(c.disk[2].data_store && c.disk[2].writable && strstr(c.disk[2].path, "/data.img") && strstr(c.disk[2].seed, "data.seed"));
   CHECK(c.ncpu >= 1 && c.ncpu <= XH_MAX_CPUS && !strcmp(c.display, "shm") && c.input && c.tasks);
-  CHECK(c.bridges == 1 && !strcmp(c.bluetooth, "auto") && !strcmp(c.wifi, "auto"));                       // on in a session; the phone's HAL when it is there
+  CHECK(c.bridges == 1 && !strcmp(c.bluetooth, "auto") && !strcmp(c.wifi, "auto"));
+  CHECK(c.haptics_native_impacts == 0 && strstr(c.boot_args, "oneios_native_impacts=") == NULL);                       // on in a session; the phone's HAL when it is there
   CHECK(c.touch_sleep && xh_config_set(&c, "touch-sleep", "0") == 0 && !c.touch_sleep && xh_config_set(&c, "touch-sleep", "maybe") != 0);
   c.touch_sleep = true;
   // the image set's own settings, and what the command line overrides
@@ -1870,6 +1937,47 @@ static void test_config(const char *dir)
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, hw2) == 0 && xh_config_finish(&c) == 0 && br_hw_choose(&c.hw, BR_HW_THERMAL, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG);
   CHECK(br_hw_choose(&c.hw, BR_HW_KEYS, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG && br_hw_fallback_allowed(&c.hw));
+  // The ordinary OneOS switch cannot inject host environment variables:
+  // xnuhost.conf must opt in the guest boot argument and Treble HAL together.
+  f = fopen(path, "w");
+  fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\nhw-backend-fallback=0\n", f);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0);
+  CHECK(c.haptics_native_impacts == 1 &&
+        br_hw_choose(&c.hw, BR_HW_HAPTICS, BR_HW_UNSET, NULL, 0) == BR_HW_TREBLE &&
+        strstr(c.boot_args, "oneios_native_impacts=1") != NULL &&
+        strstr(c.boot_args, "native-source-storage=1") != NULL);  // existing essential args kept
+  // Existing explicit guest opt-in is preserved once, not duplicated.
+  f = fopen(path, "w");
+  fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\nboot-args=-v oneios_native_impacts=1\n", f);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0);
+  CHECK(!strcmp(c.boot_args, "-v oneios_native_impacts=1"));
+  // A conflicting guest disable, Samsung fallback or missing Treble option fails closed.
+  f = fopen(path, "w");
+  fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\nboot-args=-v oneios_native_impacts=0\n", f);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == -1);
+  f = fopen(path, "w");
+  fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\nhw-backend-fallback=1\n", f);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == -1);
+  f = fopen(path, "w");
+  fputs("haptics-native-impacts=1\nhw-backend-haptics=samsung\n", f);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == -1);
+  // A command-line override can disable an image opt-in and must not append the guest arg.
+  char *hwopt[] = { "xnuhost", "--image", image, "--set", "haptics-native-impacts=0" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, hwopt) == 0 && xh_config_finish(&c) == 0 &&
+        c.haptics_native_impacts == 0 && strstr(c.boot_args, "oneios_native_impacts=") == NULL);
+  CHECK(xh_config_set(&c, "haptics-native-impacts", "maybe") != 0);
+  
   char *hw3[] = { "xnuhost", "--image", image, "--hw-backend", "pixel" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, hw3) == -1);

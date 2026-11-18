@@ -18,8 +18,9 @@ build/host/test_brightness: test_brightness.c $(SRC) $(HDR)
 build/host/brightctl: brightctl.c $(SRC) $(HDR)
 	@mkdir -p $(dir $@)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined brightctl.c $(SRC) -lpthread -o $@
-test: build/host/test_brightness build/host/brightctl
+test: build/host/test_brightness build/host/brightctl test_inspect.sh
 	build/host/test_brightness
+	sh ./test_inspect.sh build/host/brightctl
 clean:
 	rm -rf build
 .PHONY: all test clean

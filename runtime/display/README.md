@@ -93,8 +93,9 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   and the panel was black until iOS's Apple logo (phone, main 3233fed, 2026-11-15). Lines: `the first frame waits
   for DIR/ready (xnuhost's first frame of the guest's own with content); the boot screen stays`, then `first frame
   posted (...; held T s for session/ready, N wakes for flushes not shown)`. A helper started again in a session that is ready
-  (`oneios-tool phone display-restart`) posts at once. `--socket PATH` (and `displayctl`) never waits. Not run on
-  the phone yet; the host test is `test_hold_first`. The bars' black background layer (only for a frame that is not
+  (`oneios-tool phone display-restart`) posts at once. `--socket PATH` (and `displayctl` after the SM8850 diagnostic fix) never waits.
+  The production session's first-frame hold is covered by `test_hold_first`, while the standalone test's
+  socket selection is checked by `test_displayctl`. The bars' black background layer (only for a frame that is not
   the panel's size) is still drawn before the hold: in a session the frame is the panel's size, so there is none.
 - **Colour.** The buffers are tagged with a dataspace (`ANativeWindow_setBuffersDataSpace`, libnativewindow's: the
   library links `-lnativewindow` and `-Wl,-z,defs`; without the first, `1f7dd1f`'s library could not be loaded on the
@@ -144,7 +145,7 @@ In the runtime package: `bin/oneios-display`, `bin/liboneios-display.so`, `lib/o
 With One UI running, as root. `displayctl` makes a session folder of its own under `/data/local/tmp`, serves a
 1440x3120 frame the way xnuhost does, starts the helper on it and draws for 5 s: eight colour bars, darker at the
 top, inside a white frame two pixels wide, with a white square that bounces. Then it closes the socket; the
-helper removes its layer and One UI is back. Nothing of the display's state is changed (no `--takeover`).
+helper removes its layer and One UI is back. Nothing of the display's state is changed (no `--takeover`). The `displayctl test` command **explicitly rejects** forwarding `--takeover` to the helper, even after `--`; regression tests enforce this, so a diagnostic cannot accidentally select the session-only mode. It still displays a transient top layer: close any sensitive app content before testing and be prepared to restart the display helper if it misbehaves.
 
 ```sh
 make -C runtime/display
@@ -162,9 +163,9 @@ or HD+ the test, which changes nothing of the display, shows the frame scaled to
 order from the left: white, yellow, cyan, green, magenta, red, blue, dark grey. Red and blue swapped means the
 buffer format is not what the copy assumed.
 
-What to send back: the command's whole output. It ends with `displayctl: ok` when the helper connected, took
-the frames and exited 0 after the socket closed. The helper's own lines (`oneios-display: ...`) say the guest
-frame, the panel, the placement, the buffer it got and the number of frames.
+**SM8850 first physical diagnostic and fix (2026-11-16):** The initial `displayctl test --seconds 5` connected and detected the S26 Ultra panel (1440x3120/120 Hz) and SurfaceControl layer, but the helper logged `the first frame waits for .../displayctl.*/ready` and `the socket closed after 0 frames`, despite the test sending 482 flushes. Root cause: `displayctl` launched the helper with `--session DIR`, so the helper awaited the **real XNU boot's** `session/ready` marker, which a standalone display test never creates. The test now launches with `--socket DIR/display.sock`: the helper's existing diagnostic mode has **no ready hold**. This does not change how an actual XNU session uses `--session`, and does not allow `--takeover`. The CLI now allowlists forwarded diagnostic-only options, preventing `--session` and `--socket` from overriding the safe endpoint.
+
+What to send back: the command's whole output **and** a visual confirmation that the bars/square actually appeared. `displayctl: ok` only means the command connected and the helper exited cleanly: **it is not alone proof that any frame reached the display**. The acceptance log must include `oneios-display: first frame posted` and a subsequent `oneios-display: the socket closed after N frames` with `N > 0`. The helper's lines also report the panel resolution, buffer format and actual layer geometry.
 
 Variants:
 
@@ -185,6 +186,8 @@ adb shell su -c 'rm -rf /data/local/tmp/oneios-display-test'
 
 If the helper hangs, `displayctl` ends it 3 s after the test; if `displayctl` itself is killed,
 `adb shell su -c 'pkill -f OneiOSDisplay'` removes the layer.
+
+**SM8850 physical result, 2026-11-16:** The owner confirmed the BGRX moving-square flicker was eliminated by one union damage flush per animation step in the new `displayctl`. A second on-phone test with `displayctl test --seconds 5 --format rgba16f` verified native Android `format 22 RGBA_FP16` buffer posting (actual stride 1472 pixels), `scrgb-linear` dataspace `0x18410000`, **459 posted buffers** and **496 diagnostic animation steps in 5.00s**, with clean layer removal and `displayctl: ok`. No fallback was logged. The result proves the **format and SurfaceFlinger presentation path**, not observable P3 gamut differences, HDR headroom, a stable 120 application FPS, or absence of FP16 flicker: the user has not yet described those visual aspects.
 
 **Wide colour (`--format rgba16f`).** The same bars in half floats, and in the lowest quarter of the screen eight
 patches from the left: sRGB's red, Display P3's red, sRGB's green, P3's green, sRGB's blue, P3's blue (P3's as linear

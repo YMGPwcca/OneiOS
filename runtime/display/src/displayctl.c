@@ -111,6 +111,19 @@ int main(int argc, char **argv)
     else return usage();
   }
   if (W < 16 || H < 16 || W > 8192 || H > 8192 || seconds <= 0 || seconds > 3600) return usage();
+  // Only non-disruptive display options may reach the helper. In particular
+  // --takeover changes panel ownership and --session/--socket override the
+  // diagnostic endpoint (and can re-enable the production ready-file hold).
+  for (int i = extra; i < argc; i++) {
+    const char *opt = argv[i];
+    if (!strcmp(opt, "--no-projection")) continue;
+    if (!strcmp(opt, "--hz") || !strcmp(opt, "--format") || !strcmp(opt, "--dataspace")) {
+      if (++i >= argc) return usage();
+      continue;
+    }
+    fprintf(stderr, "displayctl: refusing %s: test mode only accepts --hz, --format, --dataspace or --no-projection\n", opt);
+    return 2;
+  }
   if (!*helper) {
     char self[PATH_MAX];
     ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
@@ -142,8 +155,11 @@ int main(int argc, char **argv)
     char **args = calloc((size_t)(argc - extra) + 6, sizeof *args);
     int k = 0;
     args[k++] = helper;
-    args[k++] = "--session";
-    args[k++] = session;
+    // A test pattern is already ready; only a real guest session needs
+    // session/ready. --socket tells OneiOSDisplay to post the first frame
+    // immediately instead of waiting for an XNU-created marker forever.
+    args[k++] = "--socket";
+    args[k++] = path;
     args[k++] = "--wait";
     args[k++] = "5";
     for (int i = extra; i < argc; i++) args[k++] = argv[i];
@@ -175,7 +191,19 @@ int main(int argc, char **argv)
     if ((int)y + dy < 2 || y + side + (uint32_t)(dy > 0 ? dy : 0) > H - 2) dy = -dy;
     x = (uint32_t)((int)x + dx); y = (uint32_t)((int)y + dy);
     box(x, y, side);
-    if (xhd_send_flush(client, old_x, old_y, side, side) == -EPIPE || xhd_send_flush(client, x, y, side, side) == -EPIPE) { gone = 1; break; }
+    // Present one *complete* animation step. Two separate flush packets allow
+    // the helper to post after only the old square's damage is copied, leaving
+    // the new square's moving edge stale for an intermediate visible buffer.
+    // The union covers both the erased old position and the newly drawn one.
+    struct xhd_rect changed = { old_x, old_y, side, side };
+    struct xhd_rect next = { x, y, side, side };
+    xhd_rect_union(&changed, &next);
+    int rc = xhd_send_flush(client, changed.x, changed.y, changed.w, changed.h);
+    if (rc < 0) {
+      fprintf(stderr, "displayctl: frame flush failed: %s\n", strerror(-rc));
+      gone = 1;
+      break;
+    }
     old_x = x; old_y = y;
     frames++;
     struct timespec nap = { 0, 1000000000 / 120 };

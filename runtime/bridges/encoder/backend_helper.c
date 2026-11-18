@@ -29,6 +29,7 @@ struct br_enc_session {
   struct coded ring[HELPER_CODED_RING];
   unsigned head, tail;
   bool got_eos;
+  int error;                            // sticky positive errno from ENC_MSG_ERROR or ring overflow
 };
 
 static struct {
@@ -44,7 +45,7 @@ static struct {
 
 static int write_all(int fd, const void *p, size_t n) {
   const uint8_t *b = p;
-  while (n) { ssize_t w = write(fd, b, n); if (w <= 0) { if (w < 0 && errno == EINTR) continue; return -1; } b += w; n -= (size_t)w; }
+  while (n) { ssize_t w = send(fd, b, n, MSG_NOSIGNAL); if (w <= 0) { if (w < 0 && errno == EINTR) continue; return -1; } b += w; n -= (size_t)w; }
   return 0;
 }
 static int read_all(int fd, void *p, size_t n) {
@@ -70,12 +71,15 @@ static void *receive(void *arg) {
     struct br_enc_session *s = session_by_id(m.session);
     if (m.type == ENC_MSG_OPEN_REPLY && s) { s->open_ok = m.session != 0 && m.a != 0; s->open_done = true; }
     else if (m.type == ENC_MSG_CODED && s && payload) {
-      if (s->head - s->tail < HELPER_CODED_RING) {
+      if (s->head - s->tail < HELPER_CODED_RING && !s->error) {
         s->ring[s->head % HELPER_CODED_RING] = (struct coded){ payload, m.len, m.pts, (int)(m.a & 1), (int)((m.a >> 1) & 1) };
         s->head++;
         payload = NULL;
-      }
-    } else if (m.type == ENC_MSG_EOS && s) s->got_eos = true;
+      } else if (!s->error) s->error = ENOBUFS;
+    } else if (m.type == ENC_MSG_ERROR && s) {
+      s->error = m.a && m.a < 4096 ? (int)m.a : EIO;
+      s->got_eos = false;
+    } else if (m.type == ENC_MSG_EOS && s && !s->error) s->got_eos = true;
     pthread_cond_broadcast(&H.cond);
     pthread_mutex_unlock(&H.lock);
     free(payload);
@@ -91,7 +95,10 @@ static void *receive(void *arg) {
 static int helper_start(void) {
   if (H.started) return H.gone ? -EPIPE : 0;
   int sv[2];
-  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv)) return -errno;
+  // Both endpoints must be CLOEXEC: the child receives only the dup2'ed
+  // helper fd 3. Inheriting the parent endpoint would prevent EOF when
+  // xnuhost (or encctl --helper) exits and could orphan a helper process.
+  if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv)) return -errno;
   posix_spawn_file_actions_t fa;
   posix_spawn_file_actions_init(&fa);
   posix_spawn_file_actions_adddup2(&fa, sv[1], 3);
@@ -157,7 +164,14 @@ static int helper_poll(br_enc_session *s, uint8_t *buf, uint32_t cap, int *key, 
     bytes = (int)c->size;
     free(c->bytes); c->bytes = NULL;
     s->tail++;
-  } else if (s->got_eos) { *eos = 1; s->got_eos = false; }
+  } else if (s->error) {
+    bytes = -s->error;
+  } else if (H.gone) {
+    bytes = -EPIPE;                   // helper exited without clean EOS
+  } else if (s->got_eos) {
+    *eos = 1;
+    s->got_eos = false;
+  }
   pthread_mutex_unlock(&H.lock);
   return bytes;
 }

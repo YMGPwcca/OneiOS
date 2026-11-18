@@ -163,6 +163,121 @@ hw_backend_checks() {
     mkdir -p "$S24/dev/input"
     echo 4 > "$S24/.fake/hal/vibrator"
     rm -f "$VL"
+    # This AIDL getCapabilities probe must never call on/off/amplitude.
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 "$BCTL" haptic-hal-inspect 2>&1); st=$?
+    if [ "$st" = 0 ] && printf '%s\n' "$out" | grep -Fq "haptic-hal-inspect: android.hardware.vibrator.IVibrator/default version 2 capabilities 0x4 (amplitude=yes)" && printf '%s\n' "$out" | grep -Fq "haptic-hal-inspect: ok (getCapabilities only; no on, off, amplitude or FF events)" && [ ! -e "$VL" ]; then
+      ok "hw-backend: passive vibrator AIDL probe reports capabilities without any on/off/amplitude"
+    else
+      bad "hw-backend: passive vibrator HAL probe" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+    # A composition-capable AIDL HAL returns primitives and preset effects
+    # to getters, without any on/off/setAmplitude/compose/perform calls.
+    echo 36 > "$S24/.fake/hal/vibrator"   # CAP_COMPOSE_EFFECTS | CAP_AMPLITUDE_CONTROL
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 "$BCTL" haptic-hal-primitives 2>&1); st=$?
+    if [ "$st" = 0 ] && printf '%s\n' "$out" | grep -Fq 'max delay 500 ms, max composition entries 16' \
+      && printf '%s\n' "$out" | grep -Fq '3 supported primitive(s)' \
+      && printf '%s\n' "$out" | grep -Fq 'primitive 1 CLICK' \
+      && printf '%s\n' "$out" | grep -Fq 'duration 20 ms' \
+      && printf '%s\n' "$out" | grep -Fq '3 supported preset effect(s): 0 2 5' \
+      && [ ! -e "$VL" ]; then
+      ok "hw-backend: passive AIDL primitive inventory, duration and presets without any vibration"
+    else
+      bad "hw-backend: passive AIDL primitive inventory" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+    echo 4 > "$S24/.fake/hal/vibrator"
+    # A native effect MUST require explicit opt-in; the blocked path sends no
+    # active HAL request. Only CLICK/MEDIUM is allowed when the test is enabled.
+    rm -f "$VL"
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 "$BCTL" haptic-hal-click 2>&1); st=$?
+    if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'blocked; set ONEIOS_HAPTIC_ACTIVE_TEST=1' && [ ! -e "$VL" ]; then
+      ok "hw-backend: native haptic CLICK is opt-in and refuses without actuation"
+    else
+      bad "hw-backend: haptic CLICK opt-in" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-click 2>&1); st=$?
+    if [ "$st" = 0 ] && printf '%s\n' "$out" | grep -Fq 'HAL accepted one CLICK MEDIUM (reported duration 20 ms)' \
+      && printf '%s\n' "$out" | grep -Fq 'done (one perform; no off, gain, compose or fallback' \
+      && [ "$(cat "$VL" 2>/dev/null)" = "perform 0 1" ]; then
+      ok "hw-backend: one native preset CLICK with no on/off/gain/compose"
+    else
+      bad "hw-backend: native preset CLICK" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+
+    rm -f "$VL"
+    echo 1 > "$S24/.fake/hal/vibrator_effects_no_click"
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-click 2>&1); st=$?
+    if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'CLICK not in supported effects; no actuation attempted' && [ ! -e "$VL" ]; then
+      ok "hw-backend: native CLICK refuses unsupported effect without playback"
+    else
+      bad "hw-backend: native CLICK unsupported" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+    rm -f "$S24/.fake/hal/vibrator_effects_no_click"
+
+    # Stronger single preset for S26: still explicit opt-in, one perform only.
+    rm -f "$VL"
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 "$BCTL" haptic-hal-heavy-click 2>&1); st=$?
+    if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'haptic-hal-heavy-click: blocked; set ONEIOS_HAPTIC_ACTIVE_TEST=1' && [ ! -e "$VL" ]; then
+      ok "hw-backend: HEAVY_CLICK is opt-in with zero calls otherwise"
+    else
+      bad "hw-backend: HEAVY_CLICK opt-in" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-heavy-click 2>&1); st=$?
+    if [ "$st" = 0 ] && printf '%s\n' "$out" | grep -Fq 'HAL accepted one HEAVY_CLICK STRONG (reported duration 60 ms)' \
+      && printf '%s\n' "$out" | grep -Fq 'done (one perform; no off, gain, compose or fallback' \
+      && [ "$(cat "$VL" 2>/dev/null)" = "perform 5 2" ]; then
+      ok "hw-backend: exactly one strong HEAVY_CLICK and no ancillary motor actions"
+    else
+      bad "hw-backend: single strong HEAVY_CLICK" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+
+    rm -f "$VL"
+    echo 1 > "$S24/.fake/hal/vibrator_effects_no_heavy_click"
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-heavy-click 2>&1); st=$?
+    if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'HEAVY_CLICK not in supported effects; no actuation attempted' && [ ! -e "$VL" ]; then
+      ok "hw-backend: HEAVY_CLICK not advertised fails closed before playback"
+    else
+      bad "hw-backend: unsupported HEAVY_CLICK" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+    rm -f "$S24/.fake/hal/vibrator_effects_no_heavy_click"
+
+    # Real production Treble bridge: read-only HAL getters even on close.
+    rm -f "$VL"
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 "$BCTL" haptic-native-inspect 2>&1); st=$?
+    if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'blocked; set ONEIOS_HAPTIC_NATIVE_IMPACTS=1' && [ ! -e "$VL" ]; then
+      ok "hw-backend: native production impact preflight is opt-in"
+    else
+      bad "hw-backend: native preflight opt-in" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_FALLBACK=0 "$BCTL" haptic-native-inspect 2>&1); st=$?
+    if [ "$st" = 0 ] && printf '%s\n' "$out" | grep -Fq 'haptics: native impacts enabled' \
+      && printf '%s\n' "$out" | grep -Fq 'haptic-native-inspect: ready (native impact preflight PASS' \
+      && [ ! -e "$VL" ]; then
+      ok "hw-backend: native production AIDL preflight PASS, no motor commands on close"
+    else
+      bad "hw-backend: native production AIDL preflight" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+
+    echo 1 > "$S24/.fake/hal/vibrator_effects_no_heavy_click"
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_FALLBACK=0 "$BCTL" haptic-native-inspect 2>&1); st=$?
+    if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'native preset preflight FAILED (no actuation)' \
+      && [ ! -e "$VL" ]; then
+      ok "hw-backend: failed native preflight also closes without motor off"
+    else
+      bad "hw-backend: failed native preflight closes safely" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+    rm -f "$S24/.fake/hal/vibrator_effects_no_heavy_click"
+
+    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_FALLBACK=1 "$BCTL" haptic-native-inspect 2>&1); st=$?
+    if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'blocked; disable ONEIOS_HW_FALLBACK' \
+      && [ ! -e "$VL" ]; then
+      ok "hw-backend: native production probe blocks fallback to evdev"
+    else
+      bad "hw-backend: native probe must not allow fallback" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
+    fi
+
     out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_INPUT_DIR="$S24/dev/input" "$BCTL" haptic 40 2>&1); st=$?
     [ $st = 1 ] && printf '%s\n' "$out" | grep -q 'hw: haptics: backend samsung (the default)' && printf '%s\n' "$out" | grep -q 'haptics: off: no force-feedback device with FF_PERIODIC + FF_SINE under' \
       && [ ! -e "$VL" ] && ok "hw-backend: haptics samsung (the default): the evdev search, the vibrator HAL never called" || bad "hw-backend: haptics samsung" "status $st: $(printf '%s' "$out" | tr '\n' '|')"

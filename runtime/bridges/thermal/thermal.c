@@ -162,6 +162,12 @@ static int32_t read_deci(const char *root, const char *rel)
 
 static int group_of(const char *type)
 {
+  // SM8850 advertises cpu-hw-trip-0/1 as thermal zones at a fixed 105000
+  // millidegrees even while real CPU sensors are ~35-37 C. These are
+  // hardware trip/threshold pseudo-zones, NOT live CPU temperatures.
+  // Exclude by exact family before the broad cpu-* sensor match: otherwise
+  // iOS falsely receives TRAPPING pressure at idle (and hides real spikes).
+  if (!strncmp(type, "cpu-hw-trip-", sizeof("cpu-hw-trip-") - 1)) return -1;
   if (!strncmp(type, "cpu-", 4) || !strncmp(type, "cpuss-", 6)) return 0;
   if (!strncmp(type, "gpuss-", 6)) return 1;
   if (!strcmp(type, "ddr")) return 2;
