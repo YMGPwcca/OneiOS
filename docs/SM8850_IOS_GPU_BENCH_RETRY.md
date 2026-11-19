@@ -24,12 +24,29 @@ This prints the existing `gpu-bench/{state,run.log,device-run.log,xnuhost.log}`
 (tails), the `attempted` marker, and the trust paths. **Do not infer the
 blocker from `blocked:2` alone.** Read the original `ERROR=...` first.
 
-## Retry only the proven false trustcache-sidecar block
+## Retry only one of two exact preboot failures
 
-If and only if the previous run state is **exactly** `blocked:2`, its original
-`run.log` contains **exactly** `ERROR=trusted_addon_missing`, there is no
-`gpu-bench/attempted` marker and no nonempty `gpu-bench/xnuhost.log`, this
-command is allowed:
+Observed on S26 Ultra (2026-11-19): `run.log` contains exactly
+`ERROR=locked` and `device-run.log` contains exactly
+`flock: flock: Bad file descriptor`. The Android runtime could not use
+the old `exec 8>...; flock -n 8` lock. The trustcache **was present**
+(`TRUST_SIDECAR=YES`). This attempt ended before any guest boot, leaving
+`BENCH_ATTEMPTED=NO` and no `xnuhost.log`.
+
+The fixed runner uses an **atomic `mkdir -m 700` one-shot launch claim**,
+never a numeric file descriptor. The claim is not deleted, even after exit;
+attempts cannot overlap or replay silently.
+
+Retry is allowed if and only if the previous state is exactly `blocked:2`,
+there is **no** `gpu-bench/attempted`, **no** original session directory and
+**no nonempty** `gpu-bench/xnuhost.log`, and `run.log` is exactly one of:
+
+- `ERROR=trusted_addon_missing` (the older incorrect trustcache gate)
+- `ERROR=locked` **only when** `device-run.log` contains exactly
+  `flock: flock: Bad file descriptor`
+
+The device validates these conditions again even if the caller has already
+inspected the logs. For that exact preboot failure, the command is:
 
 ```sh
 python3 scripts/phone/sm8850-ios-gpu-bench.py retry-preboot \
@@ -38,7 +55,9 @@ python3 scripts/phone/sm8850-ios-gpu-bench.py retry-preboot \
 ```
 
 These conditions are independently enforced **on the phone**; they cannot be
-overridden by an argument. If any condition fails, the tool refuses to run a
+overridden by an argument. The original `ERROR=locked` is not treated as a
+transient lock conflict; only the complete and exact bad-descriptor evidence
+qualifies, preventing a retry after a competing guest might have run. If any condition fails, the tool refuses to run a
 guest or reuse the snapshot. The original diagnostic files are never moved or
 deleted. Only if the exact gate passes does the tool place a distinct copy of
 the fixed xnuhost at `bin/xnuhost-gpu-retry`, generate the separate

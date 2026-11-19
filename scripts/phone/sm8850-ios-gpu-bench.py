@@ -62,8 +62,24 @@ def safe_shell(stage, host_sha, nonce, *, retry_preboot=False):
 [ ! -e "$STAGE/gpu-bench/attempted" ] || fail 'guest already attempted on this Data clone'
 [ -f "$STAGE/gpu-bench/run.log" ] && [ ! -L "$STAGE/gpu-bench/run.log" ] || fail 'missing previous blocker evidence'
 [ "$(cat "$STAGE/gpu-bench/state" 2>/dev/null)" = blocked:2 ] || fail 'previous bench was not blocked:2'
-grep -Fxq 'ERROR=trusted_addon_missing' "$STAGE/gpu-bench/run.log" || fail 'previous blocker was not trustcache sidecar gate'
+# A precise preboot failure can be retried once, never a booted guest.
+previous_error=$(grep '^ERROR=' "$STAGE/gpu-bench/run.log" || :)
 [ "$(grep -c '^ERROR=' "$STAGE/gpu-bench/run.log" || :)" = 1 ] || fail 'previous run had ambiguous errors'
+[ "$(cat "$STAGE/gpu-bench/run.log")" = "$previous_error" ] || fail 'previous run log was not a single exact blocker'
+case "$previous_error" in
+    'ERROR=trusted_addon_missing')
+        # Historical false trust-sidecar requirement (before imageset fallback).
+        ;;
+    'ERROR=locked')
+        # Android /system/bin/sh did not preserve descriptor 8 for "flock -n 8".
+        [ -f "$STAGE/gpu-bench/device-run.log" ] && [ ! -L "$STAGE/gpu-bench/device-run.log" ] || fail 'missing flock failure evidence'
+        [ "$(cat "$STAGE/gpu-bench/device-run.log")" = 'flock: flock: Bad file descriptor' ] || fail 'not the confirmed preboot fd-lock failure'
+        ;;
+    *)
+        fail 'previous blocker is not an approved exact preboot failure'
+        ;;
+esac
+[ ! -e "$STAGE/gpu-bench/session" ] && [ ! -L "$STAGE/gpu-bench/session" ] || fail 'previous guest session tree exists'
 [ ! -s "$STAGE/gpu-bench/xnuhost.log" ] || fail 'previous guest log exists: never retry a booted Data clone'
 [ ! -e "$STAGE/gpu-bench/retry-preboot" ] && [ ! -L "$STAGE/gpu-bench/retry-preboot" ] || fail 'preboot retry already exists'
 [ ! -e "$STAGE/bin/xnuhost-gpu-retry" ] && [ ! -e "$STAGE/bin/run-gpu-retry.sh" ] || fail 'retry executable already exists'
@@ -100,7 +116,6 @@ fail() {{ echo "BENCH_BLOCKED=$*" >&2; exit 2; }}
 if pidof xnuhost xnuhost-gui-bench xnuhost-tasks oneios-display OneiOSDisplay >/dev/null 2>&1; then fail 'guest already running'; fi
 command -v timeout >/dev/null || fail 'missing device-side timeout'
 command -v nohup >/dev/null || fail 'missing nohup; no disconnected execution permitted'
-command -v flock >/dev/null || fail 'missing flock'
 {guard}
 cp "$UP" "$STAGE/bin/{binary}"
 chmod 700 "$STAGE/bin/{binary}"
@@ -130,8 +145,12 @@ finish_state() {{
     case "$value" in finished:*|blocked*) ;; *) printf 'blocked:%s\n' "$code" > "$STATUS" ;; esac
 }}
 trap finish_state EXIT
-exec 8>"$STAGE/{log_dir}/launch.lock"
-if ! flock -n 8; then echo 'ERROR=locked' >> "$FAIL"; exit 2; fi
+# An atomic, permanent one-shot claim avoids Android shell FD inheritance
+# problems with flock -n 8. Never remove it: retry requires new audited evidence.
+if ! mkdir -m 700 "$STAGE/{log_dir}/launch.claim"; then
+    echo 'ERROR=launch_already_claimed' >> "$FAIL"
+    exit 2
+fi
 printf 'preparing\n' > "$STATUS"
 [ "$(id -u)" = 0 ] || exit 2
 [ "$(getprop sys.boot_completed)" = 1 ] && [ "$(getprop init.svc.zygote)" = running ] && pidof system_server >/dev/null 2>&1 || exit 2

@@ -148,5 +148,61 @@ class FixedBenchTests(unittest.TestCase):
         self.assertNotIn('rm -',harness.root.call_args[0][1])
         self.assertNotIn('cp ',harness.root.call_args[0][1])
 
+
+    def test_android_lock_replaced_with_atomic_one_shot_claim(self):
+        # Android returned "flock: Bad file descriptor" before the guest boot.
+        for retry in (False, True):
+            script = bench.device_run_script(STAGE, 240, 4096, retry_preboot=retry)
+            self.assertNotIn('flock -n 8', script)
+            self.assertNotIn('exec 8>', script)
+            self.assertIn('launch.claim', script)
+            self.assertIn('mkdir -m 700 "$STAGE/', script)
+            self.assertNotIn('rmdir "$STAGE/', script)
+            p = subprocess.run(['sh','-n'],input=script,text=True,capture_output=True)
+            self.assertEqual(0,p.returncode,p.stderr)
+
+        # A mkdir is atomic and permanent: a second launcher fails closed.
+        script = bench.device_run_script(STAGE, 240, 4096)
+        begin = script.index('# An atomic, permanent one-shot claim')
+        end = script.index("printf 'preparing", begin)
+        claim = script[begin:end]
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / 'gpu-bench'
+            d.mkdir()
+            prefix = 'set -u\nSTAGE="' + td + '"\nFAIL="' + str(d / 'run.log') + '"\n'
+            p = subprocess.run(['sh'],input=prefix+claim,text=True,capture_output=True)
+            self.assertEqual(0,p.returncode,p.stderr)
+            self.assertTrue((d / 'launch.claim').is_dir())
+            p = subprocess.run(['sh'],input=prefix+claim,text=True,capture_output=True)
+            self.assertEqual(2,p.returncode,p.stderr)
+            self.assertIn('ERROR=launch_already_claimed', (d/'run.log').read_text())
+
+    def test_exact_fd_error_retry_only_without_any_guest_evidence(self):
+        _, retry_shell = bench.safe_shell(STAGE,'a'*64,'b'*16,retry_preboot=True)
+        self.assertIn('ERROR=locked', retry_shell)
+        self.assertIn('flock: flock: Bad file descriptor', retry_shell)
+        self.assertIn('previous guest session tree exists', retry_shell)
+        begin = retry_shell.index("previous_error=$(grep")
+        end = retry_shell.index('[ ! -e "$STAGE/gpu-bench/session" ]', begin)
+        gate = retry_shell[begin:end]
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / 'gpu-bench'
+            d.mkdir()
+            (d/'run.log').write_text('ERROR=locked\n')
+            (d/'device-run.log').write_text('flock: flock: Bad file descriptor\n')
+            prefix = 'STAGE="' + td + '"\nfail() { exit 2; }\n'
+            def check():
+                return subprocess.run(['sh'],input=prefix+gate,text=True,capture_output=True)
+            self.assertEqual(0,check().returncode)
+            (d/'device-run.log').write_text('other: Failure\n')
+            self.assertEqual(2,check().returncode)
+            (d/'device-run.log').write_text('flock: flock: Bad file descriptor\n')
+            (d/'run.log').write_text('ERROR=locked\nERROR=other\n')
+            self.assertEqual(2,check().returncode)
+            (d/'run.log').write_text('ERROR=unexpected\n')
+            self.assertEqual(2,check().returncode)
+            (d/'run.log').write_text('ERROR=trusted_addon_missing\n')
+            self.assertEqual(0,check().returncode)
+
 if __name__=='__main__':
     unittest.main()
