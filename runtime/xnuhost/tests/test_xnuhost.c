@@ -12,6 +12,7 @@
 #include "xnuhost.h"
 #include "xnuhost/free_report.h"
 #include "xnuhost/free_report_runs.h"
+#include "xnuloader/boot.h"
 #include "stub_abi.h"
 // The oneios-cpu window's arithmetic, the kernel's own file (gpu/OneiOSAdreno.cpp includes it).
 #include "../../kernel/patches/oneios-hosted/gpu/cpu_window.h"
@@ -1743,6 +1744,9 @@ static void test_config(const char *dir)
   char *argv[] = { "xnuhost", "--session-abi", "1", "--mode", "takeover", "--runtime", "/data/runtime", "--image", image, "--data", (char *)dir, "--session", (char *)dir };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0);
+  CHECK(strstr(c.boot_args, "vgpu-3d=") == NULL);
+  CHECK(xh_gpu_boot_args(c.boot_args, sizeof c.boot_args, false) == 0 && strstr(c.boot_args, "vgpu-3d=") == NULL);
+  CHECK(xh_gpu_boot_args(c.boot_args, sizeof c.boot_args, true) == 0 && strstr(c.boot_args, " vgpu-3d=1") != NULL);
   CHECK(strstr(c.kernel, "/image/kernel.kc") && c.ndisk == 4 && strstr(c.disk[3].path, "data.seed") && !c.disk[3].writable && !c.disk[0].writable && strstr(c.disk[1].path, "systemos.img"));
   CHECK(c.disk[2].data_store && c.disk[2].writable && strstr(c.disk[2].path, "/data.img") && strstr(c.disk[2].seed, "data.seed"));
   CHECK(c.ncpu >= 1 && c.ncpu <= XH_MAX_CPUS && !strcmp(c.display, "shm") && c.input && c.tasks);
@@ -1759,6 +1763,23 @@ static void test_config(const char *dir)
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 10, argv2) == 0 && xh_config_finish(&c) == 0);
   CHECK(!strcmp(c.boot_args, "-v debug=0x8") && c.ncpu == 6 && c.ram_bytes == 6ull << 30 && !strcmp(c.display, "none") && !c.input && c.ndisk == 3);
+  char *gpu_2d[] = { "xnuhost", "--image", image, "--gpu", "2d", "--boot-args", "-v vgpu-3d=1" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 7, gpu_2d) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.gpu, "2d"));
+  CHECK(xh_gpu_boot_args(c.boot_args, sizeof c.boot_args, false) == 0 && !strcmp(c.boot_args, "-v vgpu-3d=1"));
+
+  char *gpu_legacy[] = { "xnuhost", "--image", image, "--gpu", "auto", "--set", "legacy-boot-args=1", "--boot-args", "-v vgpu-3d=0" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 9, gpu_legacy) == 0 && xh_config_finish(&c) == 0 && c.legacy_boot_args);
+  CHECK(xh_gpu_boot_args(c.boot_args, XL_BOOT_LINE_LENGTH_LEGACY, true) == 0 && !strcmp(c.boot_args, "-v vgpu-3d=0"));
+  memset(c.boot_args, 'x', XL_BOOT_LINE_LENGTH_LEGACY - sizeof " vgpu-3d=1");
+  c.boot_args[XL_BOOT_LINE_LENGTH_LEGACY - sizeof " vgpu-3d=1"] = 0;
+  CHECK(xh_gpu_boot_args(c.boot_args, XL_BOOT_LINE_LENGTH_LEGACY, true) == 0 && strlen(c.boot_args) == XL_BOOT_LINE_LENGTH_LEGACY - 1);
+  c.boot_args[XL_BOOT_LINE_LENGTH_LEGACY - sizeof " vgpu-3d=1"] = 'x';
+  c.boot_args[XL_BOOT_LINE_LENGTH_LEGACY - sizeof " vgpu-3d=1" + 1] = 0;
+  CHECK(xh_gpu_boot_args(c.boot_args, XL_BOOT_LINE_LENGTH_LEGACY, true) == -1);
+  CHECK(xh_gpu_boot_args(c.boot_args, XL_BOOT_LINE_LENGTH, true) == 0 &&
+        strstr(c.boot_args, " vgpu-3d=1") != NULL);
   // ram=auto (docs/booter.md 1): min(90% of MemTotal, MemTotal - 1.5 GiB) in 256 MiB steps, at least 1 GiB, at most 64 GiB.
   // 11,746,000 kB stands for a 12 GB phone's MemTotal (about 11.2 GiB; the phone's own number is read at the start).
   const uint64_t G = 1ull << 30, M = 1ull << 20, phone = 11746000ull << 10;

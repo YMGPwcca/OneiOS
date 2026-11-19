@@ -350,11 +350,12 @@ int xh_config_finish(xh_config *c)
   // machine (the session's command line has no boot arguments). From Droid-VM's ipados27/board.toml
   // kernel_args, the ones about the machine: SMP and ArmCpu's IPIs, no contiguous-hint mappings (the
   // collection's layout: arm_vm_init.c:1107 asserts without it), no interrupt-masked or preemption watchdogs
-  // (a vCPU is a host thread), the source storage, the GPU's 3D context, the console in the log.
+  // (a vCPU is a host thread), the source storage, the Metal service, the console in the log.
+  // The 3D backend default is added after the host renderer opens (xh_gpu_boot_args).
   if (!*c->boot_args)
     strcpy(c->boot_args, "debug=0x14e serial=3 -v kt_fixed_zones=120 -no_slto_panic ml-timeout-lock-panic-scale=40 tlto_us=0 "
            "sheng-smp=1 armcpu-self-ipi=1 armcpu-spi-ipi=1 use_contiguous_hint=0 interrupt-masked-debug-mode=0 "
-           "sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 droidvm-gpu-metal=1");
+           "sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 droidvm-gpu-metal=1");
   if (c->haptics_native_impacts && native_impact_boot_arg(c->boot_args, sizeof c->boot_args)) {
     fprintf(stderr, "xnuhost: haptics-native-impacts=1 conflicts with the guest boot args or they are too long\n");
     return -1;
