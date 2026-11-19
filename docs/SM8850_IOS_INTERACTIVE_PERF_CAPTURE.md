@@ -189,3 +189,40 @@ Compare `GPU_VERBOSE_TRACE_LINES`, `SPOTLIGHT_CPU_PEAK_PERCENT`,
 observed cold/warm Settings opening times against the preceding
 trace-enabled run. The trace-off option is an experiment, not a claimed
 FPS fix.
+
+
+### CPU scheduling/clock evidence with USB unplugged (opt-in, read-only)
+
+After comparing the two 600s runs (trace ON vs OFF), disable GPU
+verbose tracing and enable `--cpu-probe` for a new, one-shot 600s run:
+
+```sh
+python3 scripts/phone/sm8850-ios-gpu-visual.py run \
+  --touch --duration 600 --ram-mib 4096 --detach \
+  --no-gpu-trace --cpu-probe
+```
+
+Only unplug when `DETACH_READY=YES`. The bounded device-side sampler
+writes `gpu-bench/cpu-probe.log` to the same private stage every five seconds:
+host process allowed CPU list, `/proc/PID/stat` user/system jiffies and last
+CPU, `/proc/PID/schedstat` runtime/wait time, MemAvailable,
+`/proc/pressure/cpu` and read-only per-policy CPU frequencies/limits.
+The sampler is stopped after guest timeout (and has a bounded iteration
+count if host cleanup fails). It never pins cores, changes governors,
+forces a boost, enables `bridges=1`, or disables Android thermals.
+A missing sysfs value is missing evidence, not 0 kHz.
+
+After reconnect, run the usual `collect --stage <exact-stage>` command.
+It additionally downloads `*-visual-cpu-probe.log` and reports
+`CPU_PROBE_ENABLED`, `CPU_PROBE_SAMPLES`, `CPU_PROBE_POLICY_SAMPLES`
+and the local path. Do not compare systemwide usage with one core's
+CPU percentage as if they had identical denominators. This telemetry
+cannot directly prove which iOS thread is stalled; CPU-only bridge
+changes must wait for actual utilization, frequency and scheduler data.
+
+The trace-off run on 2026-11-19 collected 6236 display posts,
+208.8ms worst measured touch-to-next-frame and 26 touch gestures without a
+next guest frame. Its 15.67Hz median active-post cadence was lower than
+the older 19.92Hz trace-enabled result despite better worst touch latency.
+These are different interaction sequences (72 vs 110 touches), so neither
+proves improvement or regression from trace removal.

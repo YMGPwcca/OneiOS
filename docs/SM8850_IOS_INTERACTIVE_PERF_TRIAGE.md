@@ -194,3 +194,31 @@ A short burst of high host CPU frequency is not proof of full throughput.
 Likewise, lack of 100% CPU use is not itself a flaw: UI latency is governed
 by the slowest dependent stage, and parallel cores cannot accelerate an
 unparallelizable serial task.
+
+
+### After trace-off 600-second guest
+
+The trace-off guest completed at `finished:124`, posted 6236 buffers,
+reported 6471 backboardd GPU fences, and released exclusive touch.
+The peak posted-buffer rate was 58.05Hz; the median adjacent active-post
+cadence was 15.67Hz (vs 19.92Hz trace ON). Worst touch-to-next-frame
+was 208.8ms (vs 912.5ms) but the two runs differed in actions,
+so a causal gain cannot be claimed. The 55,811/s peak host trap rate
+is effectively unchanged from 55,975/s and Spotlight used up to 132%
+of one core in reported top-process windows. Android MemAvailable
+fell to 928MiB (lower than 1006MiB previously). There was no
+SpringBoard/backboardd PID change and no direct guest vkCreateDevice trace.
+BufferQueue lock/copy/post remain comparatively short in most windows.
+The last display log contained a reset-by-peer on guest timeout; the
+layer subsequently cleaned up and Android's system_server remained alive.
+
+Next isolate the CPU frequency/affinity hypothesis before enabling CPU
+bridges: the new `--cpu-probe` opt-in makes a *read-only* five-second
+on-device log of xnuhost's allowed host CPUs, process CPU time and
+schedule/wait times, per-policy scaling_cur_freq/scaling_max_freq/
+cpuinfo_max_freq and CPU pressure. It runs while USB is unplugged,
+under the same bounded one-shot runner. Use it with `--no-gpu-trace`
+to keep the GPU logging workload fixed. Only after reading the actual
+clock/scheduling evidence should a separated, host-only CPU scheduling
+bridge be considered. In particular do not set `bridges=1`, which the
+exclusive-touch bench guard forbids.

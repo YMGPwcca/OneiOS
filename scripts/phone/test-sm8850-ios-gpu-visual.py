@@ -59,7 +59,7 @@ class VisualBenchTests(unittest.TestCase):
         self.assertNotIn('touch-exclusive=1', s)
         source = (HERE / 'sm8850-ios-gpu-visual.py').read_text()
         self.assertIn('p.add_argument("--touch", action="store_true"', source)
-        self.assertRegex(source, r'make_visual_script\(bench, stage, args\.duration, args\.ram_mib,\s*touch=touch, gpu_trace=gpu_trace\)')
+        self.assertRegex(source, r'make_visual_script\(bench, stage, args\.duration, args\.ram_mib,\s*touch=touch, gpu_trace=gpu_trace, cpu_probe=cpu_probe\)')
         self.assertIn('touch_requested', source)
         self.assertIn('LIVE_TOUCH_GRABBED=YES', source)
         self.assertIn('exclusive sec_touchscreen grab was never confirmed', source)
@@ -203,6 +203,39 @@ class VisualBenchTests(unittest.TestCase):
                              if not line.lstrip().startswith('#')))
         self.assertEqual(0, subprocess.run(['sh','-n'], input=quiet,
                                           text=True, capture_output=True).returncode)
+
+    def test_opt_in_cpu_probe_is_read_only_bounded_and_collected(self):
+        baseline = visual.make_visual_script(bench, STAGE, 600, 4096, touch=True,
+                                             gpu_trace=False)
+        measured = visual.make_visual_script(bench, STAGE, 600, 4096, touch=True,
+                                             gpu_trace=False, cpu_probe=True)
+        self.assertNotIn('oneios-cpu-probe:', baseline)
+        self.assertNotIn('CPU_PROBE_MODE=', baseline)
+        self.assertIn('CPU_PROBE_MODE=read_only_5s', measured)
+        self.assertIn('limit=138', measured)
+        self.assertIn('oneios-cpu-policy: uptime_s=', measured)
+        self.assertIn('oneios-cpu-probe: uptime_s=', measured)
+        self.assertIn('Cpus_allowed_list:', measured)
+        self.assertIn('/proc/$pid/schedstat', measured)
+        self.assertIn('/sys/devices/system/cpu/cpufreq/policy', measured)
+        self.assertIn('kill "$CPU_PROBE_PID"', measured)
+        self.assertIn('timeout -s TERM -k 15 600', measured)
+        self.assertIn('timeout -s TERM -k 10 645', measured)
+        self.assertIn('--set bridges=0', measured)
+        self.assertIn('--set touch-exclusive=1', measured)
+        self.assertIn('--data "$STAGE/data"', measured)
+        self.assertNotIn('--takeover ', measured)
+        self.assertEqual(0, subprocess.run(['sh', '-n'], input=measured,
+                                          text=True, capture_output=True).returncode)
+
+    def test_cpu_probe_collect_flag_is_rejected_before_adb(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        with (patch.object(visual, 'collect_finished', side_effect=AssertionError('no collect')),
+              patch.object(visual, 'run_visible', side_effect=AssertionError('no run')),
+              redirect_stderr(StringIO())):
+            with self.assertRaises(SystemExit):
+                visual.main(['collect', '--stage', STAGE, '--cpu-probe'])
 
     def test_no_gpu_trace_collect_is_rejected_before_adb(self):
         from contextlib import redirect_stderr

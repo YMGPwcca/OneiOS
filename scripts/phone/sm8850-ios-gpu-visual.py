@@ -55,7 +55,10 @@ def ensure_one(text, old, new):
     return text.replace(old, new, 1)
 
 
-def make_visual_script(bench, stage, seconds, ram_mib, touch=False, gpu_trace=True):
+CPU_PROBE_SCRIPT = "# Opt-in 5s read-only CPU telemetry, rooted inside this one-shot stage.\n# No affinity/boost/governor, kernel, services or global settings are changed.\nCPU_PROBE_LOG=\"$STAGE/gpu-bench/cpu-probe.log\"\nCPU_PROBE_PARENT=$\n(\n    n=0\n    limit=__CPU_PROBE_LIMIT__\n    while [ \"$n\" -lt \"$limit\" ] && kill -0 \"$CPU_PROBE_PARENT\" 2>/dev/null; do\n        n=$((n + 1))\n        pid=\n        for candidate in $(pidof xnuhost-gpu 2>/dev/null); do\n            exe=$(readlink \"/proc/$candidate/exe\" 2>/dev/null || :)\n            if [ \"$exe\" = \"$STAGE/bin/xnuhost-gpu\" ]; then\n                pid=$candidate\n                break\n            fi\n        done\n        if [ -n \"$pid\" ] && [ -r \"/proc/$pid/stat\" ]; then\n            uptime=$(cut -d' ' -f1 /proc/uptime 2>/dev/null || :)\n            allowed=$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' \"/proc/$pid/status\" 2>/dev/null || :)\n            # /proc/pid/stat has fields 14/15/39 at 12/13/37 after ')'.\n            fields=$(sed 's/^[^)]*) //' \"/proc/$pid/stat\" 2>/dev/null | awk '{print $12, $13, $37}' || :)\n            sched=$(cat \"/proc/$pid/schedstat\" 2>/dev/null || :)\n            mem=$(sed -n 's/^MemAvailable:[[:space:]]*\\([0-9]*\\) kB.*/\\1/p' /proc/meminfo 2>/dev/null || :)\n            psi=$(sed -n 's/^some avg10=\\([^ ]*\\).*/\\1/p' /proc/pressure/cpu 2>/dev/null || :)\n            echo \"oneios-cpu-probe: uptime_s=$uptime pid=$pid allowed=$allowed proc_ticks=$fields schedstat=$sched memavail_kib=$mem cpu_psi_some_avg10=$psi\"\n            for policy in /sys/devices/system/cpu/cpufreq/policy[0-9]*; do\n                [ -d \"$policy\" ] || continue\n                name=$(basename \"$policy\")\n                related=$(cat \"$policy/related_cpus\" 2>/dev/null || :)\n                cur=$(cat \"$policy/scaling_cur_freq\" 2>/dev/null || :)\n                max=$(cat \"$policy/scaling_max_freq\" 2>/dev/null || :)\n                hwmax=$(cat \"$policy/cpuinfo_max_freq\" 2>/dev/null || :)\n                echo \"oneios-cpu-policy: uptime_s=$uptime policy=$name cores=$related cur_khz=$cur max_khz=$max hwmax_khz=$hwmax\"\n            done\n        fi\n        sleep 5\n    done\n) > \"$CPU_PROBE_LOG\" 2>&1 </dev/null &\nCPU_PROBE_PID=$!\necho 'CPU_PROBE_MODE=read_only_5s' >> \"$FAIL\"\n"
+
+
+def make_visual_script(bench, stage, seconds, ram_mib, touch=False, gpu_trace=True, cpu_probe=False):
     """Reuse the hardened one-shot guest checks and optionally grab ONLY sec_touchscreen."""
     bench.stage_name(stage)
     script = bench.device_run_script(
@@ -121,6 +124,13 @@ printf 'VISUAL_PID=%s\\n' "$VISUAL_PID" >> "$FAIL"
         "# The device-side timeout remains active even if USB/SSH disconnects.\n",
         start + "# The device-side timeout remains active even if USB/SSH disconnects.\n",
     )
+    if cpu_probe:
+        sampler = CPU_PROBE_SCRIPT.replace("__CPU_PROBE_LIMIT__", str(seconds // 5 + 18))
+        script = ensure_one(
+            script,
+            "# The device-side timeout remains active even if USB/SSH disconnects.\n",
+            sampler + "# The device-side timeout remains active even if USB/SSH disconnects.\n",
+        )
     stop = '''# The guest socket closing normally makes the display helper remove its layer.
 # Ask it to exit as well; the separate timeout above is a final backstop.
 if kill -0 "$VISUAL_PID" 2>/dev/null; then
@@ -130,6 +140,14 @@ wait "$VISUAL_PID" 2>/dev/null || :
 echo 'VISUAL_HELPER_STOP_REQUESTED=yes' >> "$FAIL"
 '''
     script = ensure_one(script, "rc=$?\nprintf 'GUEST_EXIT=", "rc=$?\n" + stop + "printf 'GUEST_EXIT=")
+    if cpu_probe:
+        script = ensure_one(
+            script,
+            "echo 'VISUAL_HELPER_STOP_REQUESTED=yes' >> \"$FAIL\"\n",
+            "echo 'VISUAL_HELPER_STOP_REQUESTED=yes' >> \"$FAIL\"\n"
+            "kill \"$CPU_PROBE_PID\" 2>/dev/null || :\n"
+            "wait \"$CPU_PROBE_PID\" 2>/dev/null || :\n",
+        )
     if "--takeover" in script.replace("# Show the existing guest framebuffer through SurfaceFlinger; no --takeover.", ""):
         raise RuntimeError("takeover flag unexpectedly present in visual script")
     return script
@@ -237,15 +255,29 @@ def acquire_evidence(harness, adb, stage, report, bench):
     host_log, host_err = get(logbase + "/xnuhost.log")
     display_log, display_err = get(logbase + "/display.log", limit=2 << 20)
     run_log, run_err = get(logbase + "/run.log", limit=1 << 20)
+    cpu_log, cpu_err = get(logbase + "/cpu-probe.log", limit=256 << 10)
     if report.get("action") == "collect":
         # Derive this from the original on-device log, not collect's CLI flags.
         report["touch_requested"] = "VISUAL_MODE=shm_touch_exclusive" in run_log
     artifact_out = ROOT / "out/sm8850/gpu-acceptance"
     artifact_out.mkdir(parents=True, exist_ok=True)
     stamp = report["tag"]
-    for name, content in (("xnuhost", host_log), ("display", display_log), ("run", run_log)):
+    for name, content in (("xnuhost", host_log), ("display", display_log), ("run", run_log),
+                          ("cpu-probe", cpu_log)):
         (artifact_out / (stamp + "-visual-" + name + ".log")).write_text(content)
-    report["log_warnings"] = {"xnuhost": host_err, "display": display_err, "run": run_err}
+    report["log_warnings"] = {"xnuhost": host_err, "display": display_err, "run": run_err,
+                              "cpu-probe": cpu_err}
+    report["cpu_probe"] = {
+        "enabled": "CPU_PROBE_MODE=read_only_5s" in run_log,
+        "samples": sum(line.startswith("oneios-cpu-probe: ") for line in cpu_log.splitlines()),
+        "policy_samples": sum(line.startswith("oneios-cpu-policy: ") for line in cpu_log.splitlines()),
+        "log": str(artifact_out / (stamp + "-visual-cpu-probe.log")),
+    }
+    print("CPU_PROBE_ENABLED=" + str(report["cpu_probe"]["enabled"]))
+    print("CPU_PROBE_SAMPLES=" + str(report["cpu_probe"]["samples"]))
+    print("CPU_PROBE_POLICY_SAMPLES=" + str(report["cpu_probe"]["policy_samples"]))
+    if report["cpu_probe"]["enabled"]:
+        print("CPU_PROBE_LOG=" + report["cpu_probe"]["log"])
     report["device_run_log"] = run_log
     report["gpu_trace_mode"] = "OFF_AB" if "GPU_TRACE_MODE=off_for_ab" in run_log else "DEFAULT_ON"
     report["display"] = preview_summary(display_log)
@@ -300,7 +332,9 @@ def run_visible(args, report):
     touch = bool(getattr(args, "touch", False))
     report["touch_requested"] = touch
     gpu_trace = not bool(getattr(args, "no_gpu_trace", False))
+    cpu_probe = bool(getattr(args, "cpu_probe", False))
     report["gpu_trace_detailed"] = gpu_trace
+    report["cpu_probe_requested"] = cpu_probe
     if touch and b"touch-exclusive=1 requires" not in files["xnuhost"].read_bytes():
         raise RuntimeError("xnuhost binary lacks the bench-only touchscreen grab guard; rebuild failed")
     report["artifact_sha256"] = hashes
@@ -333,7 +367,7 @@ def run_visible(args, report):
         if "VISUAL_ARTIFACTS=PASS" not in disp.stdout:
             raise RuntimeError("display helper private staging did not acknowledge success")
         script = make_visual_script(bench, stage, args.duration, args.ram_mib,
-                                    touch=touch, gpu_trace=gpu_trace)
+                                    touch=touch, gpu_trace=gpu_trace, cpu_probe=cpu_probe)
         install = ("cat > '%s/bin/run-visual.sh' <<'ONEIOS_VISUAL_RUN_EOF'\n" % stage
                    + script + "\nONEIOS_VISUAL_RUN_EOF\nchmod 700 '%s/bin/run-visual.sh'\n" % stage)
         harness.root(adb, install, seconds=30)
@@ -348,6 +382,7 @@ def run_visible(args, report):
             print("TOUCH_PREVIEW=WAIT_FOR_LIVE_TOUCH_GRABBED_BEFORE_SWIPING", flush=True)
         print("VISUAL_SESSION_LIMIT=%d_seconds; NO_TAKEOVER=yes" % args.duration, flush=True)
         print("GPU_DETAILED_TRACE=" + ("ON_BASELINE" if gpu_trace else "OFF_AB_EXPERIMENT"), flush=True)
+        print("CPU_READONLY_PROBE=" + ("ON_5S" if cpu_probe else "OFF"), flush=True)
         deadline = time.monotonic() + args.duration + 210
         state, frame_seen, fence_seen = "pending", False, False
         touch_seen = False
@@ -448,6 +483,7 @@ def main(argv=None):
     p.add_argument("--touch", action="store_true", help="bench-only exclusive native sec_touchscreen to iOS; physical Android touch suspended")
     p.add_argument("--detach", action="store_true", help="return after live guest GPU/display/touch are confirmed; collect logs after USB reconnect")
     p.add_argument("--no-gpu-trace", action="store_true", help="run only: suppress verbose GPU command trace for A/B without disabling performance/fence logging")
+    p.add_argument("--cpu-probe", action="store_true", help="run only: read-only 5s CPU frequency, allowed cores and runqueue telemetry for detach/collect")
     p.add_argument("--stage", help="collect only: exact private snapshot path printed by run --detach")
     p.add_argument("--ram-mib", type=int, default=4096)
     p.add_argument("--serial")
@@ -460,7 +496,7 @@ def main(argv=None):
         if not 90 <= args.duration <= load_tool("sm8850-ios-gpu-bench.py", "oneios_visual_duration").VISUAL_DURATION_MAX_SECONDS or args.ram_mib not in range(2048, 5121, 256):
             p.error("duration must be 90..1800 seconds, RAM 2048..5120 MiB in 256 MiB steps")
     else:
-        if not args.stage or args.detach or args.touch or args.no_gpu_trace:
+        if not args.stage or args.detach or args.touch or args.no_gpu_trace or args.cpu_probe:
             p.error("collect requires --stage and cannot launch or detach a guest")
         try:
             load_tool("sm8850-ios-gpu-bench.py", "oneios_collect_validate").stage_name(args.stage)
