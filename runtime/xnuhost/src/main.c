@@ -624,14 +624,22 @@ static int boot(void)
   // The hardware backend of each bridge (hw-backend, bridges/hw_backend.h): set before any of them opens.
   br_hw_configure(&config.hw);
   if (config.input) {
-    // Touch and the side keys: one lookup for both backends (input.c: event0..31 by their capabilities, never grabbed).
+    // Touch and side keys: a bench may explicitly grab only the physical sec_touchscreen.
     char touch_why[64], keys_why[64];
     int touch_hw = br_hw_choose(&config.hw, BR_HW_TOUCH, BR_HW_UNSET, touch_why, sizeof touch_why);
     int keys_hw = br_hw_choose(&config.hw, BR_HW_KEYS, BR_HW_UNSET, keys_why, sizeof keys_why);
     LOGI("hw: touch: backend %s (%s); keys: backend %s (%s): the same lookup in both, /dev/input/event0..31 by their "
-         "capabilities, read only, never grabbed", br_hw_name(touch_hw), touch_why, br_hw_name(keys_hw), keys_why);
+         "capabilities; exclusive touch %s", br_hw_name(touch_hw), touch_why, br_hw_name(keys_hw), keys_why,
+         config.touch_exclusive ? "requested" : "off");
   }
-  if (config.input && xh_input_start(input, pen.dev && pen.device.fd >= 0 ? &pen : NULL, fb_width, fb_height)) LOGE("input: could not start; continuing without");
+  if (config.input && xh_input_start(input, pen.dev && pen.device.fd >= 0 ? &pen : NULL,
+                                     fb_width, fb_height, config.touch_exclusive)) {
+    if (config.touch_exclusive) {
+      LOGE("input: exclusive touchscreen unavailable; refusing to boot guest, Android input stays usable");
+      return -1;
+    }
+    LOGE("input: could not start; continuing without");
+  }
   if (xh_input_script_start(input, pen.dev && pen.device.fd < 0 ? pen.dev : NULL)) return -1;
 
   static xl_machine machine;

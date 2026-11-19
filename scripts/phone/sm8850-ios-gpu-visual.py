@@ -55,8 +55,8 @@ def ensure_one(text, old, new):
     return text.replace(old, new, 1)
 
 
-def make_visual_script(bench, stage, seconds, ram_mib):
-    """Reuse the existing hardened one-shot guest checks, swapping only display."""
+def make_visual_script(bench, stage, seconds, ram_mib, touch=False):
+    """Reuse the hardened one-shot guest checks and optionally grab ONLY sec_touchscreen."""
     bench.stage_name(stage)
     script = bench.device_run_script(stage, seconds, ram_mib, retry_preboot=False)
     script = ensure_one(
@@ -64,6 +64,14 @@ def make_visual_script(bench, stage, seconds, ram_mib):
         "    --gpu auto --display none --no-input \\\n",
         "    --gpu auto --display shm --no-input \\\n",
     )
+    if touch:
+        # Never feed touches to One UI underneath the visible iOS layer.
+        # Native xnuhost must EVIOCGRAB sec_touchscreen or refuse to boot.
+        script = ensure_one(
+            script,
+            "    --gpu auto --display shm --no-input \\\n",
+            "    --gpu auto --display shm --set touch-exclusive=1 \\\n",
+        )
     # The old runner's session, snapshot hash, and attempted marker remain.
     gate = '''# No untracked global sysctl change is permitted for this demo.
 # xnuhost's xh_mem_map_limit() raises this kernel-wide limit when too low.
@@ -91,6 +99,8 @@ timeout -s TERM -k 10 __VIEW_DEADLINE__ "$STAGE/bin/oneios-display" \\
 VISUAL_PID=$!
 printf 'VISUAL_PID=%s\\n' "$VISUAL_PID" >> "$FAIL"
 '''.replace("__VIEW_DEADLINE__", str(seconds + 45))
+    if touch:
+        start = start.replace("VISUAL_MODE=shm_no_takeover", "VISUAL_MODE=shm_touch_exclusive")
     script = ensure_one(
         script,
         "# The device-side timeout remains active even if USB/SSH disconnects.\n",
@@ -218,6 +228,15 @@ def acquire_evidence(harness, adb, stage, report, bench):
     marks = report["markers"]
     report["GUEST_GPU_PATH"] = "OBSERVED" if marks["gpu_execution_observed"] else "UNVERIFIED"
     report["IOS_VULKAN"] = "UNVERIFIED"  # No vkCreateDevice instrumented guest yet.
+    report["touch"] = {
+        "requested": bool(report.get("touch_requested", False)),
+        "grabbed": "input: touch-exclusive: sec_touchscreen grabbed" in host_log,
+        "gestures_logged": len(re.findall(r"input: touch: [0-9]+ frame", host_log)),
+        "release_logged": "input: touch-exclusive: sec_touchscreen released" in host_log,
+    }
+    print("TOUCH_EXCLUSIVE_GRABBED=" + str(report["touch"]["grabbed"]))
+    print("TOUCH_GESTURES_LOGGED=" + str(report["touch"]["gestures_logged"]))
+    print("TOUCH_RELEASE_LOGGED=" + str(report["touch"]["release_logged"]))
     print("DEVICE_BENCH_STATE=" + state)
     print("DISPLAY_FIRST_FRAME=" + str(report["display"]["first_frame_posted"]))
     print("DISPLAY_FRAMES_POSTED=" + str(report["display"]["reported_closed_frame_count"]))
@@ -237,6 +256,8 @@ def acquire_evidence(harness, adb, stage, report, bench):
         raise RuntimeError("device-side visual bench was blocked or did not finish; inspect saved logs")
     if not host_log.strip():
         raise RuntimeError("guest was not logged; inspect saved logs")
+    if report["touch"]["requested"] and not report["touch"]["grabbed"]:
+        raise RuntimeError("exclusive sec_touchscreen grab was never confirmed in guest log")
 
 
 def run_visible(args, report):
@@ -244,6 +265,10 @@ def run_visible(args, report):
     bench = load_tool("sm8850-ios-gpu-bench.py", "oneios_visual_bench")
     checked_build()                  # Before making a new Data clone.
     files, hashes = verified_local_artifacts()
+    touch = bool(getattr(args, "touch", False))
+    report["touch_requested"] = touch
+    if touch and b"touch-exclusive=1 requires" not in files["xnuhost"].read_bytes():
+        raise RuntimeError("xnuhost binary lacks the bench-only touchscreen grab guard; rebuild failed")
     report["artifact_sha256"] = hashes
     adb = harness.select_usb(args.adb, args.serial)
     report["serial"] = adb[-1]
@@ -273,7 +298,7 @@ def run_visible(args, report):
         disp = harness.root(adb, display_setup, seconds=90)
         if "VISUAL_ARTIFACTS=PASS" not in disp.stdout:
             raise RuntimeError("display helper private staging did not acknowledge success")
-        script = make_visual_script(bench, stage, args.duration, args.ram_mib)
+        script = make_visual_script(bench, stage, args.duration, args.ram_mib, touch=touch)
         install = ("cat > '%s/bin/run-visual.sh' <<'ONEIOS_VISUAL_RUN_EOF'\n" % stage
                    + script + "\nONEIOS_VISUAL_RUN_EOF\nchmod 700 '%s/bin/run-visual.sh'\n" % stage)
         harness.root(adb, install, seconds=30)
@@ -283,13 +308,25 @@ def run_visible(args, report):
         if "VISUAL_RUN_PID=" not in acknowledgment:
             raise RuntimeError("device-side visual runner was not acknowledged")
         print("LIVE_VIEW=CHECK_PHONE_SCREEN_NOW", flush=True)
+        if touch:
+            print("TOUCH_PREVIEW=WAIT_FOR_LIVE_TOUCH_GRABBED_BEFORE_SWIPING", flush=True)
         print("VISUAL_SESSION_LIMIT=%d_seconds; NO_TAKEOVER=yes" % args.duration, flush=True)
         deadline = time.monotonic() + args.duration + 210
         state, frame_seen, fence_seen = "pending", False, False
+        touch_seen = False
         while time.monotonic() < deadline:
             p = harness.root(adb, "cat '%s/gpu-bench/state' 2>/dev/null || echo pending" % stage,
                              seconds=18).stdout.strip()
             state = p.splitlines()[-1] if p else "pending"
+            if touch and not touch_seen:
+                grabbed = harness.root(
+                    adb,
+                    "grep -m 1 -F 'input: touch-exclusive: sec_touchscreen grabbed' '%s/gpu-bench/xnuhost.log' 2>/dev/null || :" % stage,
+                    seconds=18,
+                ).stdout
+                if "input: touch-exclusive: sec_touchscreen grabbed" in grabbed:
+                    touch_seen = True
+                    print("LIVE_TOUCH_GRABBED=YES; TOUCH_IOS_ON_PHONE_NOW", flush=True)
             if not frame_seen:
                 posted = harness.root(adb, "grep -m 1 -F 'first frame posted' '%s/gpu-bench/display.log' 2>/dev/null || :" % stage,
                                       seconds=18).stdout
@@ -322,6 +359,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("action", choices=("run",))
     p.add_argument("--duration", type=int, default=240)
+    p.add_argument("--touch", action="store_true", help="bench-only exclusive native sec_touchscreen to iOS; physical Android touch suspended")
     p.add_argument("--ram-mib", type=int, default=4096)
     p.add_argument("--serial")
     p.add_argument("--adb", default=shutil.which("adb") or str(Path.home() / "Android/Sdk/platform-tools/adb"))
@@ -332,7 +370,8 @@ def main(argv=None):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = args.output or ROOT / "out/sm8850/gpu-acceptance" / (stamp + "-ios-gpu-visual.json")
     report = {"tag": stamp, "action": args.action, "IOS_VULKAN": "UNVERIFIED",
-              "FRAMEWORK_TAKEOVER": "BLOCKED", "scope": "one-shot visible SHM guest; fresh Data clone; no takeover"}
+              "FRAMEWORK_TAKEOVER": "BLOCKED", "scope": "one-shot visible SHM guest; fresh Data clone; no takeover",
+              "touch_requested": args.touch}
     rc = 0
     try:
         run_visible(args, report)

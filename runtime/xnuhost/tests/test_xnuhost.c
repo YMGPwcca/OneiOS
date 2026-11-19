@@ -1217,6 +1217,13 @@ static void test_input_filter(void)
   CHECK(!xh_input_accept_touch("sec_touchscreen", true, true, true));
   CHECK(xh_input_accept_touch("generic touchscreen", true, false, false));
   CHECK(!xh_input_accept_touch("generic touchscreen", false, false, false));
+  // Bench SHM exclusive grab cannot silently select a wearable or pointer.
+  CHECK(xh_input_exclusive_touch_allowed("sec_touchscreen", true, false));
+  CHECK(!xh_input_exclusive_touch_allowed("HUAWEI Band 11-F88", true, false));
+  CHECK(!xh_input_exclusive_touch_allowed("sec_touchpad", true, false));
+  CHECK(!xh_input_exclusive_touch_allowed("sec_touchscreen", false, false));
+  CHECK(!xh_input_exclusive_touch_allowed("sec_touchscreen", true, true));
+  CHECK(!xh_input_exclusive_touch_allowed(NULL, true, false));
   driver d = { .dev = xh_virtio_input_create(0, 45) };
   CHECK(d.dev && driver_init(&d, 0, 2, GUEST_PA + 0x10000));
   for (unsigned i = 0; i < 8; i++) driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0x50000 + i * 8, 8, 1 } }, 1, false);
@@ -1729,6 +1736,13 @@ static bool fake_can_lock(void) { return fake_can; }
 static void test_config(const char *dir)
 {
   xh_config c;
+  // Explicit, disabled-by-default touchscreen exclusivity is not confused
+  // with the existing input= boolean. Live EVIOCGRAB requires the phone.
+  xh_config_defaults(&c);
+  CHECK(!c.touch_exclusive && c.input);
+  CHECK(xh_config_set(&c, "touch-exclusive", "1") == 0 && c.touch_exclusive);
+  CHECK(xh_config_set(&c, "touch-exclusive", "wrong") != 0);
+  CHECK(xh_config_set(&c, "touch-exclusive", "0") == 0 && !c.touch_exclusive);
   bool ok;
   CHECK(xh_parse_size("4G", &ok) == 4ull << 30 && ok);
   CHECK(xh_parse_size("512m", &ok) == 512u << 20 && ok);
@@ -1751,6 +1765,31 @@ static void test_config(const char *dir)
   CHECK(c.disk[2].data_store && c.disk[2].writable && strstr(c.disk[2].path, "/data.img") && strstr(c.disk[2].seed, "data.seed"));
   CHECK(c.ncpu >= 1 && c.ncpu <= XH_MAX_CPUS && !strcmp(c.display, "shm") && c.input && c.tasks);
   CHECK(c.bridges == 1 && !strcmp(c.bluetooth, "auto") && !strcmp(c.wifi, "auto"));
+  // The exclusive physical touchscreen may only be grabbed in a non-takeover
+  // bench using the SHM display and no hardware bridges. All other modes fail.
+  char *touch_ok[] = { "xnuhost", "--image", image, "--mode", "bench", "--display", "shm",
+                       "--set", "bridges=0", "--set", "touch-exclusive=1" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, touch_ok) == 0 && xh_config_finish(&c) == 0 &&
+        c.touch_exclusive && c.input && c.bridges == 0 && !strcmp(c.display, "shm"));
+  char *touch_takeover[] = { "xnuhost", "--image", image, "--set", "touch-exclusive=1" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, touch_takeover) == 0 && xh_config_finish(&c) != 0);
+  char *touch_no_input[] = { "xnuhost", "--image", image, "--mode", "bench", "--set", "bridges=0",
+                             "--set", "touch-exclusive=1", "--no-input" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 10, touch_no_input) == 0 && xh_config_finish(&c) != 0);
+  char *touch_wrong_display[] = { "xnuhost", "--image", image, "--mode", "bench", "--display", "none",
+                                  "--set", "bridges=0", "--set", "touch-exclusive=1" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, touch_wrong_display) == 0 && xh_config_finish(&c) != 0);
+  char *touch_bridges[] = { "xnuhost", "--image", image, "--mode", "bench", "--display", "shm",
+                            "--set", "bridges=1", "--set", "touch-exclusive=1" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, touch_bridges) == 0 && xh_config_finish(&c) != 0);
+  // Reset before assertions for the original takeover fixture.
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0);
   CHECK(c.haptics_native_impacts == 0 && strstr(c.boot_args, "oneios_native_impacts=") == NULL);                       // on in a session; the phone's HAL when it is there
   CHECK(c.touch_sleep && xh_config_set(&c, "touch-sleep", "0") == 0 && !c.touch_sleep && xh_config_set(&c, "touch-sleep", "maybe") != 0);
   c.touch_sleep = true;

@@ -39,6 +39,44 @@ class VisualBenchTests(unittest.TestCase):
         self.assertIn('launch.claim', s)
         self.assertEqual(0, subprocess.run(['sh', '-n'], input=s, text=True, capture_output=True).returncode)
 
+    def test_opt_in_physical_touch_never_leaks_to_android_underlay(self):
+        s = visual.make_visual_script(bench, STAGE, 240, 4096, touch=True)
+        self.assertIn('--gpu auto --display shm --set touch-exclusive=1', s)
+        self.assertNotIn('--no-input', s)
+        self.assertNotIn('--display drm', s)
+        self.assertIn('--set bridges=0', s)
+        self.assertIn('VISUAL_MODE=shm_touch_exclusive', s)
+        self.assertIn('gpu-bench/attempted', s)
+        self.assertIn('launch.claim', s)
+        self.assertIn('timeout -s TERM -k 15 240', s)
+        self.assertIn('timeout -s TERM -k 10 285', s)
+        self.assertNotRegex(s, r'(?m)^\s*[^#\n]*--takeover')
+        self.assertEqual(0, subprocess.run(['sh','-n'], input=s, text=True, capture_output=True).returncode)
+
+    def test_no_touch_remains_default_and_touch_is_cli_opt_in(self):
+        s = visual.make_visual_script(bench, STAGE, 240, 4096)
+        self.assertIn('--gpu auto --display shm --no-input', s)
+        self.assertNotIn('touch-exclusive=1', s)
+        source = (HERE / 'sm8850-ios-gpu-visual.py').read_text()
+        self.assertIn('p.add_argument("--touch", action="store_true"', source)
+        self.assertIn('touch=touch)', source)
+        self.assertIn('touch_requested', source)
+        self.assertIn('LIVE_TOUCH_GRABBED=YES', source)
+        self.assertIn('exclusive sec_touchscreen grab was never confirmed', source)
+
+    def test_native_exclusivity_has_mode_gate_and_failure_closes_fd(self):
+        source = (HERE.parent.parent / 'runtime/xnuhost/src/input.c').read_text()
+        config = (HERE.parent.parent / 'runtime/xnuhost/src/config.c').read_text()
+        main = (HERE.parent.parent / 'runtime/xnuhost/src/main.c').read_text()
+        self.assertIn('ioctl(fd, EVIOCGRAB, 1)', source)
+        self.assertIn('ioctl(exclusive_touch_fd, EVIOCGRAB, 0)', source)
+        self.assertIn('xh_input_exclusive_touch_allowed(name, direct, have_touch)', source)
+        self.assertIn('touch_exclusive && !have_touch', source)
+        self.assertIn('if (touch_exclusive) keys = false;', source)
+        self.assertIn('mode=bench, display=shm, input=1, bridges=0', config)
+        self.assertIn('if (config.touch_exclusive)', main)
+        self.assertIn('return -1;', main.split('if (config.touch_exclusive)',1)[1].split('}',1)[0])
+
     def test_sysctl_is_guarded_before_first_guest_attempt(self):
         s = visual.make_visual_script(bench, STAGE, 240, 4096)
         self.assertIn('CURRENT_MAP_COUNT=$(cat /proc/sys/vm/max_map_count)', s)

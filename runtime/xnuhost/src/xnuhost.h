@@ -97,6 +97,7 @@ typedef struct {
   char  text_fixups[1024];  // text-fixup=FILE,OFFSET,ORIGINAL,REPLACEMENT entries for /chosen text-fixups, NUL-separated
   unsigned text_fixups_length;
   bool  input;              // read /dev/input
+  bool  touch_exclusive;    // bench/shm only: EVIOCGRAB the real sec_touchscreen; never grab side keys
   bool  touch_sleep;        // touch-sleep=0: the brightness bridge never puts the touch IC to sleep (ONEIOS_TSP_OFF=0)
   char  input_script[512];  // a file of scripted touches and keys (input_script.c), "" = none
   char  pen[8];             // pen=off (the default until a phone session proves it) | auto: the host's pen digitizer (pen.c,
@@ -639,12 +640,13 @@ void  xh_display_close(void);
 // Input (input.c): /dev/input/event* into the virtio-input device; with `pen` (NULL: none) the pen's device too, read on
 // the same thread into its own guest device (pen.c).
 struct xh_input_pen;
-int   xh_input_start(xh_virtio *dev, const struct xh_input_pen *pen, unsigned width, unsigned height);
+int   xh_input_start(xh_virtio *dev, const struct xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive);
 void  xh_input_stop(void);
 // The display showed a guest frame (display.c): the end of input.c's touch-to-frame measurement.
 void  xh_input_frame_shown(void);
 // A candidate evdev direct touchscreen, against a native Samsung touchscreen when present.
 bool  xh_input_accept_touch(const char *name, bool direct, bool have_touch, bool native_present);
+bool  xh_input_exclusive_touch_allowed(const char *name, bool direct, bool have_touch);
 // Called on the input thread at each press of the power key (KEY_POWER down) that is passed to the guest: the brightness
 // bridge wakes the touch IC (br_bright_key). NULL: nothing.
 extern void (*xh_input_power_key)(void);
