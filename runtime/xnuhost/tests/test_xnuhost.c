@@ -667,6 +667,54 @@ static unsigned gpu3d_send(driver *d, xh_virtio *dev, unsigned words, unsigned e
   return n;
 }
 
+static const uint32_t reset_overlap_resource[] = { 0x101, 0, 0, 0, 0, 0, 7, 2, 8, 4 };
+
+static size_t reset_during_capset(xh_gpu3d *b, uint32_t id, uint32_t version, void *out, size_t max)
+{
+  // Reset while a host command is in flight, then immediately reuse the old
+  // context and resource IDs through a queue backed by fresh guest pages.
+  driver next = { .dev = b->dev };
+  if (!driver_init(&next, 0x59, 2, GUEST_PA + 0x18000)) return 0;
+  const uint32_t create[] = { 0x200, 0, 0, 0, 5, 0, 4, 6, 0x74736574 }; // CTX_CREATE "test"
+  memcpy(xh_ram(GUEST_PA + 0x34000, sizeof create), create, sizeof create);
+  memset(xh_ram(GUEST_PA + 0x35000, 24), 0xee, 24);
+  driver_send(&next, 0, (const uint64_t[][3]){ { GUEST_PA + 0x34000, sizeof create, 0 },
+              { GUEST_PA + 0x35000, 24, 1 } }, 2, false);
+  memcpy(xh_ram(GUEST_PA + 0x36000, sizeof reset_overlap_resource), reset_overlap_resource, sizeof reset_overlap_resource);
+  memset(xh_ram(GUEST_PA + 0x37000, 24), 0xee, 24);
+  driver_send(&next, 0, (const uint64_t[][3]){ { GUEST_PA + 0x36000, sizeof reset_overlap_resource, 0 },
+              { GUEST_PA + 0x37000, 24, 1 } }, 2, false);
+  W(&next, 0x50, 0);
+  return fake_capset(b, id, version, out, max);
+}
+
+static void test_virtio_gpu3d_reset_overlap(void)
+{
+  static xh_gpu3d b = { .capset_count = fake_capset_count, .capset = reset_during_capset,
+                       .ctx_create = fake_ctx_create, .ctx_destroy = fake_ctx_destroy };
+  memset(&fake, 0, sizeof fake);
+  driver d = { .dev = xh_virtio_gpu_create_3d(0, 43, 8, 4, &b) };
+  CHECK(d.dev && driver_init(&d, 0x59, 2, GUEST_PA + 0x10000));
+  const uint32_t create[] = { 0x200, 0, 0, 0, 5, 0, 4, 6, 0x74736574 };
+  uint32_t *cmd = xh_ram(GUEST_PA + 0x30000, sizeof reset_overlap_resource);
+  memcpy(cmd, create, sizeof create);
+  CHECK(gpu3d_send(&d, d.dev, 9, 0, 24) == 1 && fake.contexts == 1);
+  memcpy(cmd, reset_overlap_resource, sizeof reset_overlap_resource);
+  const uint32_t *resp = xh_ram(GUEST_PA + 0x31000, 24);
+  CHECK(gpu3d_send(&d, d.dev, 10, 0, 24) == 1 && resp[0] == 0x1100);
+  memset(cmd, 0, sizeof create);
+  cmd[0] = 0x109; cmd[6] = 6;                                    // GET_CAPSET
+  gpu3d_send(&d, d.dev, 8, 0, 24 + 64);
+  const uint16_t *new_used = xh_ram(GUEST_PA + 0x1a000, 4);
+  const uint32_t *new_resp = xh_ram(GUEST_PA + 0x35000, 24);
+  const uint32_t *resource_resp = xh_ram(GUEST_PA + 0x37000, 24);
+  CHECK(new_used[1] == 2 && new_resp[0] == 0x1100 && resource_resp[0] == 0x1100); // no completion from the old queue
+  CHECK(fake.contexts == 1 && fake.live[0] == 5);                 // reset must not tear down the new context
+  W(&d, 0x70, 0);
+  xh_virtio_gpu_idle(d.dev);
+  CHECK(fake.contexts == 0);
+}
+
 // The chunks of a blob over a memfd whose page N begins with the byte N: `want` chunks of pages[i] pages, the first
 // page of each being first[i] and the following ones `step` pages apart. Closes and frees them.
 static bool chunks_are(int count, xh_gpu_chunk *chunks, int want, const uint8_t *pages, const uint8_t *first, unsigned step)
@@ -2640,6 +2688,7 @@ int main(void)
   test_virtio_blk(dir);
   test_virtio_gpu();
   test_virtio_gpu3d();
+  test_virtio_gpu3d_reset_overlap();
   test_virtio_input();
   test_input_filter();
   test_pen();

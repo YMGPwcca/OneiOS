@@ -89,8 +89,8 @@ typedef struct {
   resource res[MAX_RES];
   uint32_t scanout_resource;
   bool first_frame;
-  // 3D. The worker is the only thread that changes the state above and the tables below. `pl` guards the list of
-  // pending fences and the worker's bookkeeping; `gen` (bumped at every device reset) changes under the device's lock.
+  // 3D. Both lanes change the resource tables under cmd. pl guards pending fences and worker bookkeeping.
+  // gen changes under the device lock; state_gen is the generation of the tables under cmd.
   xh_gpu3d *b;
   xh_virtio *dev;
   uint32_t ctx[MAX_CTX];               // live context ids
@@ -104,8 +104,7 @@ typedef struct {
   pthread_mutex_t pl;
   pthread_cond_t idle;
   pending *fences;
-  uint64_t gen, kicks, served;
-  bool reset_requested;
+  uint64_t gen, state_gen, kicks, served;
   int wake;                            // eventfd: the control queue was kicked (written from the trap handler)
   // Two lanes. The queue's thread serves the render server's contexts and every command of no context (the display,
   // the 2D commands) at once, and hands every other context's commands, in their order, to the slow lane's thread.
@@ -734,24 +733,37 @@ static void teardown(gpu_state *g)
 static void gpu_reset(xh_virtio *dev) { teardown(xh_virtio_opaque(dev)); }
 
 // ---- the 3D device's control queue: its own thread -------------------------------------------------------------------
-static void wake(gpu_state *g, bool reset)
+static void wake(gpu_state *g)
 {
   pthread_mutex_lock(&g->pl);
   g->kicks++;
-  if (reset) g->reset_requested = true;
   pthread_mutex_unlock(&g->pl);
   uint64_t one = 1;
   while (write(g->wake, &one, 8) < 0 && errno == EINTR) {}
 }
 
-static void gpu_kick(xh_virtio *dev, unsigned queue) { (void)queue; wake(xh_virtio_opaque(dev), false); }
+static void gpu_kick(xh_virtio *dev, unsigned queue) { (void)queue; wake(xh_virtio_opaque(dev)); }
 
 // With the device's lock held (virtio.c): the queues are already gone; the worker forgets the rest before its next command.
 static void gpu_reset_3d(xh_virtio *dev)
 {
   gpu_state *g = xh_virtio_opaque(dev);
   g->gen++;
-  wake(g, true);
+  wake(g);
+}
+
+// Called with cmd held. A reset can arrive after a wake or while either lane
+// waits for cmd. Reconcile the tables before either lane classifies or runs work.
+static uint64_t sync_generation(gpu_state *g)
+{
+  xh_virtio_lock(g->dev);
+  uint64_t gen = g->gen;
+  xh_virtio_unlock(g->dev);
+  if (g->state_gen != gen) {
+    teardown(g);
+    g->state_gen = gen;
+  }
+  return gen;
 }
 
 // A command of the fast lane that names a resource the slow lane has not made yet (an app's IOSurface the render
@@ -775,6 +787,7 @@ static bool slow_pending(gpu_state *g)
 // the slow lane may still be making is not answered: RESP_PENDING_RETRY, and the caller runs it again later.
 static uint32_t work(gpu_state *g, uint16_t head, xh_viov *iov, unsigned n, uint64_t gen, bool may_wait)
 {
+  if (sync_generation(g) != gen) return 0;           // the old queue's chain was invalidated by reset
   gpu_hdr in;
   uint32_t status = 0;
   int64_t written = serve(g, 0, iov, n, &in, &status);
@@ -827,14 +840,9 @@ static void *slow_worker(void *arg)
     g->slow_head = j->next;
     if (!g->slow_head) g->slow_tail = &g->slow_head;
     pthread_mutex_unlock(&g->pl);
-    xh_virtio_lock(g->dev);
-    bool current = j->gen == g->gen;                 // a chain from before a reset is the old queue's: dropped
-    xh_virtio_unlock(g->dev);
-    if (current) {
-      pthread_mutex_lock(&g->cmd);
-      work(g, j->head, j->iov, j->n, j->gen, false);
-      pthread_mutex_unlock(&g->cmd);
-    }
+    pthread_mutex_lock(&g->cmd);
+    work(g, j->head, j->iov, j->n, j->gen, false);
+    pthread_mutex_unlock(&g->cmd);
     free(j);
     pthread_mutex_lock(&g->pl);
     g->slow_done++;
@@ -853,10 +861,10 @@ static void *worker(void *arg)
     if (read(g->wake, &count, 8) < 0 && errno != EINTR) break;
     pthread_mutex_lock(&g->pl);
     uint64_t upto = g->kicks;
-    bool reset = g->reset_requested;
-    g->reset_requested = false;
     pthread_mutex_unlock(&g->pl);
-    if (reset) { pthread_mutex_lock(&g->cmd); teardown(g); pthread_mutex_unlock(&g->cmd); }
+    pthread_mutex_lock(&g->cmd);
+    sync_generation(g);
+    pthread_mutex_unlock(&g->cmd);
     for (;;) {
       uint16_t head;
       xh_virtio_lock(g->dev);
@@ -866,8 +874,10 @@ static void *worker(void *arg)
       if (!n) break;
       gpu_hdr h;
       pthread_mutex_lock(&g->cmd);
-      bool slow = peek_hdr(iov, n, &h) && slow_lane(g, &h);
+      bool current = sync_generation(g) == gen;
+      bool slow = current && peek_hdr(iov, n, &h) && slow_lane(g, &h);
       pthread_mutex_unlock(&g->cmd);
+      if (!current) continue;
       if (slow) {
         slow_job *j = malloc(sizeof *j + n * sizeof *iov);
         if (!j) continue;                            // the chain is lost; so is the guest's command
