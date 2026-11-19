@@ -128,7 +128,7 @@ def prepare_display_shell(stage, nonce, artifact_digests):
             "cp '{up}' \"$STAGE/bin/{name}\"\n"
             "chmod {mode} \"$STAGE/bin/{name}\"\n"
             "[ \"$(sha256sum \"$STAGE/bin/{name}\" | cut -d ' ' -f1)\" = '{sha}' ] || fail 'display staged hash: {name}'"
-        ).format(up=up, name=name, sha=artifact_digests[name], mode="700" if name == "oneios-display" else "600")
+        ).format(up=up, name=name, sha=artifact_digests[name], mode="700" if name == "oneios-display" else "400")
         specs.append(spec)
     return "set -eu\numask 077\nSTAGE='%s'\nfail() { echo \"VISUAL_STAGE_BLOCKED=$*\" >&2; exit 2; }\n%s\necho VISUAL_ARTIFACTS=PASS\n" % (stage, "\n".join(specs))
 

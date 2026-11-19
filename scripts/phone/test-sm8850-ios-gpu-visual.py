@@ -64,6 +64,9 @@ class VisualBenchTests(unittest.TestCase):
             self.assertIn('sha256sum', s)
             self.assertIn('$STAGE/bin/'+name, s)
         self.assertEqual(0, subprocess.run(['sh', '-n'], input=s, text=True, capture_output=True).returncode)
+        self.assertIn('chmod 700 "$STAGE/bin/oneios-display"', s)
+        self.assertIn('chmod 400 "$STAGE/bin/oneios-display.dex"', s)
+        self.assertIn('chmod 400 "$STAGE/bin/liboneios-display.so"', s)
         with self.assertRaises(ValueError):
             visual.prepare_display_shell(STAGE, 'b'*16, {**digests, 'oneios-display':'xyz'})
         with self.assertRaises(ValueError):
