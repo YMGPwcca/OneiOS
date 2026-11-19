@@ -133,3 +133,64 @@ retain the next priorities: inspect `perf:` per-vCPU up/down and
 kernel fault/syscall p99, the 20 `host_statistics64` ABI warnings and
 persistent Spotlight work. Do not disable Spotlight, bypass watchdog,
 raise clock governors or touch the original APFS Data just to chase FPS.
+
+## 2026-11-20: CPU host management is gated off in physical-touch bench
+
+Source-level finding (not a measured clock-rate result):
+
+- `sm8850-ios-gpu-visual.py` reuses the hardened bench script, and
+  `make_visual_script(..., touch=True)` launches native `xnuhost`
+  with `--set bridges=0`. `config.c` explicitly enforces bridges=0
+  for `touch-exclusive=1` in `mode=bench` with `display=shm`.
+- `runtime/xnuhost/src/main.c` currently wraps CPU topology discovery,
+  `br_cpu_plan_make`, the `xh_cpu_place` callback (`cpu-pin`),
+  the guest `br_cpufreq` MMIO, and the
+  `xh_cpu_uclamp` callback in `if (config.bridges)`.
+- Consequently those host CPU placement/performance request mechanisms are
+  NOT initialized in the current bounded visual touch preview. The host
+  Linux scheduler still runs the guest/vCPU threads on its permitted CPUs;
+  this is **not** evidence that all guest threads run on LITTLE cores or
+  that the Qualcomm CPU frequencies are artificially capped.
+  The thermals and actual `scaling_cur_freq` of each core were not
+  measured by the existing log. The UI may also wait on I/O, vCPU-to-task
+  futex hand-offs, or guest service initialization even when cores have idle
+  capacity.
+
+Why this matters: the 600-second guest saw **22,487,167 task traps**
+(37,473/s overall), a peak of 55,975/s in 30s samples, and lengthy guest
+touch-to-next-frame gaps (up to 912.5 ms). During quiet frames, the real
+GPU fence mean was ~0.8 ms and the native display copy ~1.4 ms.
+`Spotlight` occupied ~91-103% of one core in many intervals.
+GPU acceleration therefore coexists with significant guest CPU work; the
+GPU may be idle while waiting for the next scanout.
+
+**Do not switch the touch preview to `bridges=1`**: this violates the
+explicit exclusive-touch safety guard and could enable unrelated
+hardware/Android bridge mutations. Also do not set global CPU governors
+or disable Android thermal throttling for a benchmark.
+
+Recommended next engineering experiment:
+
+1. Collect read-only per-core `scaling_cur_freq`, `scaling_max_freq`,
+   `cpuinfo_max_freq`, `Cpus_allowed_list` for xnuhost, vCPU host
+   processor IDs, guest-vCPU kernel/user/idle percentages, and the
+   `perf:` trap handoff/kernel-fault p90/p99 while reproducing Settings
+   first-open and second-open delays.
+2. Introduce a **separate opt-in CPU-only bridge for bench**, without
+   enabling the existing general `bridges` toggle: host-topology read,
+   guest CPU frequency request MMIO, per-vCPU/per-guest-thread affinity
+   and `uclamp` only. Restrict it to bench/SHM and prevent haptics,
+   Wi-Fi, Bluetooth, takeover, or other system-wide mutations. Keep the
+   existing finite phone-side timeout and Data clone isolation.
+3. Validate regressions on CachyOS first; conduct matched 600-second
+   A/B trials with the same RAM, GPU trace setting and UI interaction
+   sequence; compare vCPU % kernel vs guest thread, handoff p99,
+   interactive frame pacing, icon load time and Android memory pressure.
+4. Only if the results support a scheduling bottleneck should the
+   CPU-only bridge become default; otherwise investigate the guest
+   per-fault/per-syscall and Spotlight workload paths next.
+
+A short burst of high host CPU frequency is not proof of full throughput.
+Likewise, lack of 100% CPU use is not itself a flaw: UI latency is governed
+by the slowest dependent stage, and parallel cores cannot accelerate an
+unparallelizable serial task.

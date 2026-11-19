@@ -59,7 +59,7 @@ class VisualBenchTests(unittest.TestCase):
         self.assertNotIn('touch-exclusive=1', s)
         source = (HERE / 'sm8850-ios-gpu-visual.py').read_text()
         self.assertIn('p.add_argument("--touch", action="store_true"', source)
-        self.assertIn('touch=touch)', source)
+        self.assertRegex(source, r'make_visual_script\(bench, stage, args\.duration, args\.ram_mib,\s*touch=touch, gpu_trace=gpu_trace\)')
         self.assertIn('touch_requested', source)
         self.assertIn('LIVE_TOUCH_GRABBED=YES', source)
         self.assertIn('exclusive sec_touchscreen grab was never confirmed', source)
