@@ -22,6 +22,9 @@ if [ "$mode" = recovery ]; then
     "$mksh_bin" -n "$script"
   done
   python3 scripts/phone/test-observe-s26-recovery.py
+  bash -n scripts/phone/s26-watchdog-metadata.sh
+  "$mksh_bin" -n scripts/phone/s26-watchdog-metadata.sh
+  python3 scripts/phone/test-s26-watchdog-attribution.py
   observer=()
   if [ -n "${ONEIOS_RECOVERY_OBSERVER_REPORT:-}" ]; then
     observer=(--observer-report "$ONEIOS_RECOVERY_OBSERVER_REPORT")

@@ -46,7 +46,7 @@ clock=$ONEIOS_TEST_ROOT/clock
 if [ -f "$clock/step" ] && [ "$1" = "$(cat "$clock/step")" ]; then
     tick=$(cat "$clock/tick")
     printf '%s %s\\n' "$tick" "$PPID" >> "$clock/requests"
-    while [ "$(cat "$clock/tick")" = "$tick" ]; do /usr/bin/sleep 0.01; done
+    while [ -f "$clock/step" ] && [ "$(cat "$clock/tick")" = "$tick" ]; do /usr/bin/sleep 0.01; done
     exit 0
 fi
 exec "$ONEIOS_TEST_ROOT/stubs/sleep" "$@"
@@ -492,11 +492,94 @@ def gate_c_failure(f):
     f.failsafe("system_server did not start", framework_started=True)
 
 
+def watchdog_fixture(f, *, supported=True):
+    if supported:
+        # Exercise the pinned S24-only control flow against fake files.
+        f.write("props", "ro.product.model=SM-S928B\nro.product.device=e3q\nro.soc.model=SM8650\n", append=True)
+    f.write("dev/watchdog", "a:82\n")
+    f.write("dev/watchdog0", "f2:0\n")
+    f.write("sys/class/misc/watchdog/dev", "10:130\n")
+    for name, value in {"dev": "242:0", "identity": "Software Watchdog", "state": "active", "timeout": "100"}.items():
+        f.write(f"sys/class/watchdog/watchdog0/{name}", value + "\n")
+    f.write(f"{SESSION}/control/watchdog.target", "watchdog0 f2:0\n")
+
+
+def watchdog_s26_refused(f):
+    watchdog_fixture(f, supported=False)
+    f.check("SM8850 feeder refused", 3, f.run("switch", "--watchdog-test", "feed")[0])
+    f.check("no simulated watchdog I/O", [], f.log("watchdog"))
+    f.check("no readiness published", False, (f.control / "feeder.ready").exists())
+    f.check("no Android property commands", [], f.log("setprop"))
+
+
+def watchdog_fault(f, fault, expected_io):
+    watchdog_fixture(f)
+    f.write(f"behave/{fault}", "")
+    f.check("fake feeder exit", 4, f.run("switch", "--watchdog-test", "feed")[0])
+    f.check("bounded open/ping sequence", expected_io, f.log("watchdog"))
+    f.check("readiness withdrawn", False, (f.control / "feeder.ready").exists())
+    f.check("recovery request written", True, f.request().startswith("watchdog feeder failed:"))
+    f.check("fake return exit", 1, f.run("return", "manual")[0])
+    f.failsafe("watchdog feeder failed")
+
+
+def watchdog_exclusive_open_busy(f):
+    watchdog_fault(f, "watchdog_busy", ["open watchdog0"])
+
+
+def watchdog_ping_fails_after_first_success(f):
+    watchdog_fault(f, "watchdog_ping_fails", ["open watchdog0", "ping .", "ping ."])
+
+
+def watchdog_fixture_ready(f):
+    watchdog_fixture(f)
+    f.write(f"{SESSION}/control/feeder.pid", "4500\n")
+    f.write(f"{SESSION}/control/feeder.ready", "4500\n")
+    f.proc(4500, "sh oneios_switch.sh --feed")
+
+
+def watchdog_stuck_feeder(f):
+    watchdog_fixture_ready(f)
+    f.write("proc/4500/unkillable", "")
+    f.write("clock/step", "1\n")
+    watcher, _ = f.watcher()
+    f.ticks(3)
+    f.wait_tick()
+    f.check("ready but stuck PID alone does not trigger return", "", f.request())
+    (f.clock / "step").unlink()
+    f.write(f"{SESSION}/session/return.request", "fixture out-of-band request\n")
+    f.check("watcher returns through simulated failsafe", 1, watcher.wait(15))
+    f.failsafe("watchdog feeder still holds its descriptor")
+    f.check("feeder still cannot be removed", True, (f.root / "proc/4500").exists())
+
+
+def watchdog_handoff_order(f):
+    watchdog_fixture_ready(f)
+    f.write("behave/watchdog_exclusive_handoff", "")
+    f.check("fake return exit", 0, f.run("return", "manual")[0])
+    f.success()
+    log = f.return_log()
+    f.check("release before framework restart", True,
+            0 <= log.find("watchdog feeder released") < log.find("One UI's zygote started"))
+    f.check("observed fixture reacquisition", True, "watchdog ownership confirmed" in log)
+    f.check("no transfer-side simulated watchdog I/O", [], f.log("watchdog"))
+
+
+def watchdog_framework_never_reacquires(f):
+    watchdog_fixture_ready(f)
+    f.write("behave/watchdog_no_reacquire", "")
+    f.check("fake return exit", 1, f.run("return", "manual")[0])
+    f.failsafe("system_server did not reacquire the watchdog", framework_started=True)
+    f.check("no in-place success despite running framework", False, f.outcome().startswith("inplace "))
+
+
 CASES = (
     event_chord_and_watcher, single_key_without_accessory, brief_bounce, premature_release,
     polling_after_watcher_death, watcher_without_return_script, lost_feeder, stale_lock_and_watch_race,
     pid_fallback_usb_and_baseline, early_return_with_stale_stop_lock,
     gate_a_failure, gate_b_failure, gate_c_failure,
+    watchdog_s26_refused, watchdog_exclusive_open_busy, watchdog_ping_fails_after_first_success,
+    watchdog_stuck_feeder, watchdog_handoff_order, watchdog_framework_never_reacquires,
 )
 
 
@@ -613,8 +696,8 @@ def main():
                  "actual": "Previously confirmed by the owner", "provenance": "owner supplied, not rerun"},
                 {"check": "physical watchdog handoff and return Gates A/B/C", "status": "BLOCKED",
                  "expected": "Independent physical recovery acceptance", "actual": "Simulation only"},
-                {"check": "boot a verified iOS image on SM8850", "status": "BLOCKED",
-                 "expected": "Authorized switch with a verified image set", "actual": "No verified image set or authorization"},
+                {"check": "boot iOS on SM8850", "status": "BLOCKED",
+                 "expected": "Authorized switch with a verified image set", "actual": "Host boot evidence only; device switching disabled"},
             ],
         }
         if observation:
