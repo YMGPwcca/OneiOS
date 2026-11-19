@@ -130,6 +130,20 @@ def host_submit_pass(logs):
             and "FAILED at:" not in logs and logs.rstrip().endswith("ok"))
 
 
+def storage_summary(v):
+    """Precise, read-only storage gate evidence; no attempt to reclaim space."""
+    raw = v.get("free_kib", "")
+    free = int(raw) if raw.isdigit() else None
+    return {
+        "path": "/data/local/tmp",
+        "free_kib": free,
+        "reserve_kib": 30 * 1024 * 1024,
+        "probe_headroom_kib": 65536,
+        "required_kib": MIN_FREE_KIB,
+        "deficit_kib": max(0, MIN_FREE_KIB - free) if free is not None else None,
+    }
+
+
 def save_report(path, report):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
@@ -139,10 +153,18 @@ def save_report(path, report):
 def hardware(adb, gpuctl, report):
     v = decode_kv(root(adb, DEVICE_AUDIT).stdout)
     checks, failures = validate_preflight(v)
+    storage = storage_summary(v)
     report.update({"preflight": {"values": v, "checks": checks},
+                   "storage": storage,
                    "PREFLIGHT": "BLOCKED" if failures else "PASS", "failures": failures})
     if failures:
-        raise Blocked("preflight failed: " + ", ".join(failures))
+        reason = "preflight failed: " + ", ".join(failures)
+        if "space" in failures:
+            reason += (f" [free={storage['free_kib']} KiB, "
+                       f"required={storage['required_kib']} KiB, "
+                       f"deficit={storage['deficit_kib']} KiB; "
+                       "30 GiB reserve plus 64 MiB probe headroom]")
+        raise Blocked(reason)
     if report["action"] == "preflight":
         return
     if not gpuctl.is_file():
@@ -217,6 +239,8 @@ def main(argv=None):
             report["usb_serial"] = adb[-1]
             hardware(adb, args.gpuctl, report)
             print("PREFLIGHT=" + report["PREFLIGHT"])
+            print("SPACE_FREE_KIB=" + str(report["storage"]["free_kib"]))
+            print("SPACE_REQUIRED_KIB=" + str(report["storage"]["required_kib"]))
             if args.action == "host-submit":
                 print("HOST_ADRENO=" + report.get("HOST_ADRENO", "UNVERIFIED"))
             print("IOS_VULKAN=UNVERIFIED (a host GPU submit does NOT verify guest Vulkan)")

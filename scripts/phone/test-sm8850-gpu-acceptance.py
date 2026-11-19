@@ -59,6 +59,16 @@ class GPUAcceptanceTests(unittest.TestCase):
                 _, failures = tool.validate_preflight(data)
                 self.assertIn(expected, failures)
 
+    def test_storage_diagnostics_report_exact_deficit_and_unknown(self):
+        actual = tool.storage_summary({**GOOD_DEVICE, "free_kib": str(tool.MIN_FREE_KIB - 1025)})
+        self.assertEqual(tool.MIN_FREE_KIB - 1025, actual["free_kib"])
+        self.assertEqual(tool.MIN_FREE_KIB, actual["required_kib"])
+        self.assertEqual(1025, actual["deficit_kib"])
+        self.assertEqual(30 * 1024 * 1024, actual["reserve_kib"])
+        self.assertEqual(65536, actual["probe_headroom_kib"])
+        self.assertIsNone(tool.storage_summary({})["free_kib"])
+        self.assertIsNone(tool.storage_summary({})["deficit_kib"])
+
     def test_missing_fields_fail_closed(self):
         _, failures = tool.validate_preflight({})
         self.assertGreaterEqual(len(failures), 8)

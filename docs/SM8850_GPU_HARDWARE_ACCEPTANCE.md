@@ -19,6 +19,40 @@ Use `--serial SERIAL` for multiple USB devices. The output report is saved under
 
 Strict admission: `SM-S948B:m3q:SM8850`, the recorded firmware, root, USB ADB, boot-completed One UI with `system_server`, enforcing SELinux, no existing guest/takeover, at least 30 GiB plus 64 MiB free, battery at least 30%, battery temperature no greater than 44°C, and a usable device-side `timeout`.
 
+## If preflight reports BLOCKED: space
+
+The admission gate requires exactly **31,522,816 KiB** free on the filesystem holding
+`/data/local/tmp`: 30 GiB reserve plus 64 MiB temporary probe headroom. The JSON
+report now contains `storage.free_kib`, `storage.required_kib` and `storage.deficit_kib`
+even when preflight is blocked, and the error message prints the precise shortfall.
+No allocation or cleanup is attempted.
+
+Read the latest report on CachyOS:
+
+```sh
+python3 - <<'PY'
+import glob, json
+paths = sorted(glob.glob("out/sm8850/gpu-acceptance/*-preflight.json"))
+if not paths:
+    raise SystemExit("No preflight report yet")
+r = json.load(open(paths[-1]))
+print("failures:", r.get("failures"))
+print("storage:", json.dumps(r.get("storage"), indent=2))
+PY
+```
+
+Inspect actual filesystem capacity on the device **without deleting anything**:
+
+```sh
+adb shell -T 'df -Pk /data/local/tmp'
+adb shell -T 'su -c "du -sk /data/local/tmp/oneios-m3q-ios27-bench /data/adb/oneios-m3q-framework 2>/dev/null || true"'
+```
+
+Reclaim space only after identifying dispensable files through a separate review.
+Never remove or shrink the protected APFS Data, chip-ID pair, iOS image assets,
+evidence/backup copies or rollback artifacts to satisfy this gate. A successful
+offline filesystem restore is not permission to delete the device's original.
+
 ## Offline iOS evidence parser
 
 Use an existing **instrumented** xnuhost log; do not run a guest just to populate the parser:
