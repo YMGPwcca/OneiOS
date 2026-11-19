@@ -35,6 +35,11 @@ TOKEN = "phase3-current"
 # OneOS test stubs. The controller releases virtual ticks on demand.
 HOST_SHELL = """#!/bin/sh
 case "$1" in "$ONEIOS_TEST_ROOT"/data/local/tmp/oneios/oneios_*.sh) ;; *) exit 99 ;; esac
+if [ "$2" = --watchdog-probe ] && [ -e "$ONEIOS_TEST_ROOT/behave/native-watchdog-probe" ]; then
+    [ -s "$ONEIOS_TEST_ROOT/pids/system_server" ] || exit 2
+    echo "watchdog0 f2:0"
+    exit 0
+fi
 entry="$ONEIOS_TEST_ROOT/proc/$$"
 mkdir -p "$entry"
 printf '%s\\0' "$@" > "$entry/cmdline"
@@ -59,6 +64,8 @@ rc=$?
 case "$1" in
     "$ONEIOS_TEST_ROOT"/data/local/tmp/oneios/control/keys/down)
         echo read >> "$ONEIOS_TEST_ROOT/clock/down-reads" ;;
+    "$ONEIOS_TEST_ROOT"/sys/class/watchdog/watchdog0/timeleft)
+        echo read >> "$ONEIOS_TEST_ROOT/clock/timeleft-reads" ;;
 esac
 exit "$rc"
 """
@@ -678,6 +685,195 @@ def watchdog_concurrent_recovery(f):
     f.check("earlier request is preserved", "existing independent recovery request", f.request())
 
 
+def framework_setup(f):
+    f.env["ONEIOS_TEST_FRAMEWORK"] = "1"
+    f.write(f"{SESSION}/control/base/framework_services",
+            f"surfaceflinger 30310\n{COMPOSER} 30311\n")
+    f.write("props", "init.svc_debug_pid.surfaceflinger=30310\n", append=True)
+    f.executable("bin/dumpsys", """#!/bin/sh
+case "$1" in
+    --pid) cat "$ONEIOS_TEST_ROOT/pids/system_server" ;;
+    input) printf 'Input Reader State\nsec_touchscreen\nInput Dispatcher State\n' ;;
+    *) exit 1 ;;
+esac
+""")
+    f.executable("bin/input", '#!/bin/sh\n[ "$*" = "keyevent KEYCODE_SHIFT_LEFT" ]\n')
+    f.write(f"{SESSION}/control/watchdog.generation", "fixture-framework\n")
+
+
+def framework_stop_needs_all_recovery_helpers(f):
+    framework_setup(f)
+    f.write("props", "init.svc.zygote_next=running\n", append=True)
+    f.write("pids/zygote_next", "30323\n")
+    f.proc(30323, "zygote_next")
+    f.write("sys/power/wake_lock", "oneios_session\n")
+    for pid, name in ((801, "framework.guard"), (802, "framework.watcher"),
+                      (803, "keys/reader.803"), (804, "keys/reader.804"),
+                      (805, "keys/reader.805")):
+        f.proc(pid, "recovery-helper")
+        f.write(f"{SESSION}/control/{name}", f"{pid} 800\n")
+    f.write(f"{SESSION}/control/keys/pids", "803\n804\n805\n")
+    f.write(f"{SESSION}/control/keys/reader.805", "805 799\n")
+    f.check("unverified reader refuses the stop", 1, f.run("switch", "--framework-test-stop")[0])
+    f.check("no service stopped before recovery is armed", [], f.log("setprop"))
+    f.write(f"{SESSION}/control/keys/reader.805", "805 800\n")
+    f.check("armed stop completed", 0, f.run("switch", "--framework-test-stop")[0])
+    f.check("only framework services stopped", ["ctl.stop zygote", "ctl.stop zygote_secondary",
+                                                "ctl.stop zygote_next"], f.log("setprop"))
+    f.check("system_server ended", "", f.read(f.root / "pids/system_server"))
+
+
+def framework_smoke(f):
+    framework_setup(f)
+    f.write(f"{SESSION}/control/framework.mode", "smoke\n")
+    f.write(f"{SESSION}/control/framework.cutoff", "110\n")
+    f.write(f"{SESSION}/control/framework.deadline", "110\n")
+    f.write("proc/uptime", "110.00 0.00\n")
+    f.write(f"{SESSION}/control/state", "running\n")
+
+
+def framework_deadline_after_watcher_loss(f):
+    framework_smoke(f)
+    f.check("deadline invokes in-place return without a watcher", 0,
+            f.run("switch", "--framework-deadline", "fixture-framework")[0])
+    commands = f.log("setprop")
+    f.check("zygote recovered", True, "ctl.start zygote" in commands)
+    f.check("display and vendor services never restarted", [],
+            [command for command in commands if command.startswith(("ctl.restart", "ctl.stop"))])
+    f.check("no guest start", False, (f.control / "framework.guest").exists())
+    f.check("in-place return completed", True, f.outcome().startswith("inplace "))
+    f.check("watcher loss does not qualify a smoke test", "", f.read(f.stage / "smoke.accepted"))
+
+
+def framework_timed_smoke(f):
+    framework_smoke(f)
+    f.proc(802, "mock-recovery-watcher")
+    f.write(f"{SESSION}/control/framework.watcher", "802 800\n")
+    f.check("elapsed smoke returned", 0, f.run("switch", "--framework-deadline", "fixture-framework")[0])
+    f.check("completed smoke gives a boot-scoped result", "phase3-boot", f.read(f.stage / "smoke.accepted"))
+
+
+def framework_stale_deadline(f):
+    f.env["ONEIOS_TEST_FRAMEWORK"] = "1"
+    f.write(f"{SESSION}/control/watchdog.generation", "fixture-next\n")
+    f.write(f"{SESSION}/control/framework.cutoff", "1\n")
+    f.check("a stale deadline exits", 0,
+            f.run("switch", "--framework-deadline", "fixture-old")[0])
+    f.check("a stale deadline cannot operate init", [], f.log("setprop"))
+
+
+def framework_manual_return_restores_map_count(f):
+    framework_setup(f)
+    f.write(f"{SESSION}/control/framework.mode", "run\n")
+    f.write(f"{SESSION}/control/base/max_map_count", "65530 1048576\n")
+    f.write("proc/sys/vm/max_map_count", "1048576\n")
+    f.check("manual return completed", 0, f.run("return", "framework-deadline", "fixture-framework")[0])
+    f.check("original VMA limit restored", "65530", f.read(f.root / "proc/sys/vm/max_map_count"))
+    f.check("manual return does not certify a full-duration run", "",
+            f.read(f.control / "framework.result"))
+
+
+def framework_changed_service_uses_failsafe(f):
+    framework_setup(f)
+    f.write("props", f"init.svc_debug_pid.{COMPOSER}=30543\n", append=True)
+    f.check("unexpected vendor service replacement failed recovery", 1,
+            f.run("return", "framework-deadline", "fixture-framework")[0])
+    f.check("guarded reboot requested", True, "sys.powerctl reboot,oneios-inplace-failsafe" in f.log("setprop"))
+    f.check("failure identifies protected service", True,
+            f"protected service {COMPOSER}" in f.outcome())
+
+
+WD_ATTR = "sys/class/watchdog/watchdog0"
+
+
+def native_handback_fixture(f, mode):
+    framework_setup(f)
+    f.write(f"{SESSION}/control/watchdog.target", "watchdog0 f2:0\n")
+    f.write(f"{SESSION}/control/watchdog.plan", f"{mode} 120 20 fixture-supervisor\n")
+    f.write(f"{SESSION}/control/watchdog.owner", "30321\n")
+    f.write(f"{SESSION}/control/feeder.arm", "fixture-framework 100\n")
+    f.write(f"{SESSION}/control/feeder.heartbeat", "fixture-framework 4500 800 100\n")
+    f.write(f"{SESSION}/control/feeder.pid", "4500\n")
+    f.write(f"{SESSION}/control/feeder.ready", "4500\n")
+    f.proc(4500, "oneios-watchdog")
+    f.write(f"{WD_ATTR}/nowayout", f"{mode}\n")
+    f.write(f"{WD_ATTR}/timeleft", "110\n")
+    f.write("behave/native-watchdog-probe", "")
+
+
+def native_release(f, mode):
+    f.write(f"{WD_ATTR}/state", "active\n" if mode else "inactive\n")
+    f.write(f"{SESSION}/control/watchdog.phase", "fixture-framework RETURN_PENDING\n")
+    f.write(f"{SESSION}/control/feeder.released", f"fixture-framework 4500 800 {mode} 100\n")
+    shutil.rmtree(f.root / "proc/4500")
+
+
+def native_framework_birth(f):
+    pid = wait_for("new system_server PID", lambda: f.read(f.root / "pids/system_server"))
+    f.write(f"proc/{pid}/stat", f"{pid} (system_server) S " + "0 " * 18 + "801\n")
+
+
+def native_handback_armed_without_transport(f):
+    framework_smoke(f)
+    native_handback_fixture(f, 1)
+    f.write("proc/uptime", "100.00 0.00\n")
+    f.write(f"{SESSION}/control/framework.deadline", "100\n")
+    f.proc(802, "mock-recovery-watcher")
+    f.write(f"{SESSION}/control/framework.watcher", "802 800\n")
+    process, _ = f.start("switch", "--framework-deadline", "fixture-framework")
+    wait_for("independent recovery requests release", lambda: (f.control / "feeder.off").exists())
+    f.check("zygote cannot start while supervisor still owns the endpoint", False,
+            "ctl.start zygote" in f.log("setprop"))
+    native_release(f, 1)
+    native_framework_birth(f)
+    wait_for("new framework owner sampled", lambda: f.read(f.clock / "timeleft-reads").count("read") >= 2)
+    f.write(f"{WD_ATTR}/timeleft", "119\n")
+    f.check("returns with no ADB process", 0, process.wait(15))
+    f.check("first framework ping sampled", True, "FRAMEWORK_REACQUIRED:" in f.return_log())
+    f.check("close reached the log before zygote start", True,
+            0 <= f.return_log().find("native descriptor closed") < f.return_log().find("zygote started"))
+    f.check("independent timer smoke verified", "phase3-boot", f.read(f.stage / "smoke.accepted"))
+
+
+def native_handback_disarmed_after_delayed_framework(f):
+    native_handback_fixture(f, 0)
+    process, _ = f.start("return", "framework-deadline", "fixture-framework")
+    wait_for("release requested", lambda: (f.control / "feeder.off").exists())
+    native_release(f, 0)
+    f.write("proc/uptime", "110.00 0.00\n")
+    native_framework_birth(f)
+    wait_for("initial observation of new framework owner", lambda: (f.clock / "timeleft-reads").exists())
+    f.check("ownership alone does not certify handback", False, "FRAMEWORK_REACQUIRED" in f.return_log())
+    f.write(f"{WD_ATTR}/timeleft", "118\n")
+    f.check("delayed observation completes before the deadline", 0, process.wait(15))
+    f.check("disarmed state verified before restart", True, "nowayout=0 state=inactive" in f.return_log())
+    f.check("result is in-place", True, f.outcome().startswith("inplace "))
+
+
+def native_handback_missing_release_failsafe(f):
+    native_handback_fixture(f, 1)
+    process, _ = f.start("return", "framework-deadline", "fixture-framework")
+    wait_for("release requested", lambda: (f.control / "feeder.off").exists())
+    f.write("proc/uptime", "120.00 0.00\n")
+    f.check("timed out handback exits with failure", 1, process.wait(15))
+    f.check("zygote not started without a release receipt", False, "ctl.start zygote" in f.log("setprop"))
+    f.check("guarded reboot", True, "sys.powerctl reboot,oneios-inplace-failsafe" in f.log("setprop"))
+    f.check("timeout logged", True, "watchdog handback time" in f.outcome())
+
+
+def native_handback_stuck_framework_guard(f):
+    native_handback_fixture(f, 1)
+    f.write("behave/hang_ctl.start_zygote", "")
+    f.start("return", "framework-deadline", "fixture-framework")
+    wait_for("release requested", lambda: (f.control / "feeder.off").exists())
+    native_release(f, 1)
+    wait_for("framework restart hangs", lambda: "ctl.start zygote" in f.log("setprop"))
+    f.write("proc/uptime", "120.00 0.00\n")
+    wait_for("independent guard reboot", lambda: "sys.powerctl reboot,oneios-inplace-failsafe" in f.log("setprop"))
+    f.check("guard diagnosed the stuck framework", True, "independent guard saw watchdog handback timeout" in f.outcome())
+    f.check("no reacquisition certificate", "fixture-framework RETURN_PENDING", f.read(f.control / "watchdog.phase"))
+
+
 CASES = (
     event_chord_and_watcher, single_key_without_accessory, brief_bounce, premature_release,
     polling_after_watcher_death, watcher_without_return_script, lost_feeder, stale_lock_and_watch_race,
@@ -688,13 +884,19 @@ CASES = (
     watchdog_invalid_heartbeat, watchdog_delayed_first_ping, watchdog_concurrent_recovery,
     watchdog_blocked_second_ping, watchdog_guard_supervises_a_return,
 )
+FRAMEWORK_CASES = (framework_stop_needs_all_recovery_helpers, framework_deadline_after_watcher_loss,
+                   framework_timed_smoke, framework_stale_deadline, framework_manual_return_restores_map_count,
+                   framework_changed_service_uses_failsafe, native_handback_armed_without_transport,
+                   native_handback_disarmed_after_delayed_framework, native_handback_missing_release_failsafe,
+                   native_handback_stuck_framework_guard)
 
 
 def worker(shell, definition):
     if Path.cwd() != Path("/phone") or not Path("/phone/source").is_dir() or os.geteuid() == 0:
         raise RuntimeError("Recovery cases require the unprivileged /phone sandbox")
     with tempfile.TemporaryDirectory(prefix="fixture-", dir="/phone") as temp:
-        fixture = Fixture(Path(temp), shell, early=definition is early_return_with_stale_stop_lock)
+        fixture = Fixture(Path(temp), shell, early=definition in
+                          (early_return_with_stale_stop_lock, framework_stop_needs_all_recovery_helpers))
         try:
             definition(fixture)
         except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError) as error:
@@ -731,7 +933,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mksh", default=os.environ.get("ONEOS_TEST_MKSH") or shutil.which("mksh"))
     parser.add_argument("--observer-report", type=Path, help="Link a separately collected passive S26 JSON snapshot")
-    parser.add_argument("--case", action="append", choices=[case.__name__ for case in CASES],
+    parser.add_argument("--working-tree", action="store_true", help="Test the local OneOS changes and record their hashes")
+    parser.add_argument("--case", action="append", choices=[case.__name__ for case in CASES + FRAMEWORK_CASES],
                         help="Run selected cases in both shells")
     args = parser.parse_args()
     if os.geteuid() == 0 or not shutil.which("bwrap") or not args.mksh or not os.access(args.mksh, os.X_OK):
@@ -754,13 +957,17 @@ def main():
         except (OSError, ValueError, KeyError, TypeError) as error:
             parser.error(f"cannot read passive observer report: {error}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    selected = [case for case in CASES if args.case is None or case.__name__ in args.case]
+    selected = [case for case in CASES + (FRAMEWORK_CASES if args.working_tree else ())
+                if args.case is None or case.__name__ in args.case]
+    if not selected:
+        parser.error("experimental fixture cases require --working-tree")
     with args.output.open("x") as report, tempfile.TemporaryDirectory(prefix="oneios-recovery-") as temp:
         path = Path(temp)
         (path / "source").mkdir()
         hashes = {}
         for label, name in PINNED_FILES.items():
-            payload = git("-C", "app", "show", f"{pin}:{name}")
+            payload = ((Path(__file__).resolve().parents[2] / "app" / name).read_bytes()
+                       if args.working_tree else git("-C", "app", "show", f"{pin}:{name}"))
             (path / "source" / label).write_bytes(payload)
             hashes[name] = hashlib.sha256(payload).hexdigest()
         shutil.copyfile(__file__, path / "runner.py")
@@ -793,6 +1000,7 @@ def main():
         data = {
             "schema_version": 1, "timestamp_utc": datetime.now(timezone.utc).isoformat(), "scope": "simulation",
             "parent_base_commit": git("rev-parse", "HEAD").decode().strip(), "oneos_gitlink": pin,
+            "oneos_script_source": "working tree" if args.working_tree else "gitlink",
             "sha256": hashes, "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "shell_versions": versions, "fixture_fingerprint": FINGERPRINT, "cases": tests,
             "target": {"model": "SM-S948B", "device": "m3q", "soc": "SM8850", "build": "S948BXXS4BZIG",
@@ -820,7 +1028,7 @@ def main():
 
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--worker":
-        fn = next(definition for definition in CASES if definition.__name__ == sys.argv[3])
+        fn = next(definition for definition in CASES + FRAMEWORK_CASES if definition.__name__ == sys.argv[3])
         print(json.dumps(worker(sys.argv[2], fn)))
     else:
         raise SystemExit(main())

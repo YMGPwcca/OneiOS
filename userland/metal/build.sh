@@ -109,6 +109,9 @@ edit('scripts/build-turnip-darwin.py', [
     ("env.update(CC=find('clang'), CXX=find('clang++'), CFLAGS='', CXXFLAGS='', CPPFLAGS='', LDFLAGS='')",
      "env.update(CC='clang', CXX='clang++', CFLAGS='', CXXFLAGS='', CPPFLAGS='', LDFLAGS='')",
      "meson's build-machine compiler is the host's clang (on a Mac xcrun's clang is both)"),
+    ("flags = ['-target', triple, '-isysroot', sdk, '-fstack-protector-strong']",
+     "flags = ['-target', triple, '-isysroot', sdk, '-fstack-protector-strong', '-DHAVE_DLFCN_H', '-D_DARWIN_C_SOURCE=1']",
+     "iOS cross-compile: expose Darwin dladdr declarations"),
     ("'-j6'", "'-j%s'" % jobs, 'ninja jobs'),
 ])
 edit('scripts/build-adreno-metal-bridge.py', [
