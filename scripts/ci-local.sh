@@ -1,15 +1,35 @@
 #!/usr/bin/env bash
 # OneiOS CachyOS local CI. No device access, sudo, Apple firmware or GitHub-hosted build.
-# Usage: scripts/ci-local.sh [test|all] [VERSION]
+# Usage: scripts/ci-local.sh [test|all|recovery] [VERSION]
 #   test: validate source and run the full runtime host regression suite.
 #   all:  test, then produce and validate the ARM64 runtime artifact.
+#   recovery: run the pinned recovery fixture and offline observer tests.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
 mode=${1:-all}
 version=${2:-0.0.0-ci}
-case "$mode" in test|all) ;; *) echo "usage: $0 [test|all] [VERSION]" >&2; exit 2 ;; esac
+case "$mode" in test|all|recovery) ;; *) echo "usage: $0 [test|all|recovery] [VERSION]" >&2; exit 2 ;; esac
+
+if [ "$mode" = recovery ]; then
+  mksh_bin=${ONEOS_TEST_MKSH:-$(command -v mksh || true)}
+  test -x "$mksh_bin" || { echo "ci-local: set ONEOS_TEST_MKSH to an executable mksh" >&2; exit 1; }
+  report=${ONEIOS_RECOVERY_REPORT:-out/recovery/phase3-$(date -u +%Y%m%dT%H%M%SZ).json}
+  bash -n scripts/ci-local.sh
+  for script in app/switcher/assets/oneios_switch.sh app/switcher/assets/oneios_return.sh; do
+    bash -n "$script"
+    "$mksh_bin" -n "$script"
+  done
+  python3 scripts/phone/test-observe-s26-recovery.py
+  observer=()
+  if [ -n "${ONEIOS_RECOVERY_OBSERVER_REPORT:-}" ]; then
+    observer=(--observer-report "$ONEIOS_RECOVERY_OBSERVER_REPORT")
+  fi
+  python3 scripts/phone/recovery-dry-run.py --mksh "$mksh_bin" --output "$report" "${observer[@]}"
+  sha256sum "$report"
+  exit
+fi
 
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN)}
 export JOBS
