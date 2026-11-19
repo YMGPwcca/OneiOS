@@ -35,6 +35,7 @@ TOKEN = "phase3-current"
 # OneOS test stubs. The controller releases virtual ticks on demand.
 HOST_SHELL = """#!/bin/sh
 case "$1" in "$ONEIOS_TEST_ROOT"/data/local/tmp/oneios/oneios_*.sh) ;; *) exit 99 ;; esac
+[ "$2" != --guard ] || [ ! -e "$ONEIOS_TEST_ROOT/behave/native-guard-unavailable" ] || exit 3
 if [ "$2" = --watchdog-probe ] && [ -e "$ONEIOS_TEST_ROOT/behave/native-watchdog-probe" ]; then
     [ -s "$ONEIOS_TEST_ROOT/pids/system_server" ] || exit 2
     echo "watchdog0 f2:0"
@@ -874,6 +875,24 @@ def native_handback_stuck_framework_guard(f):
     f.check("no reacquisition certificate", "fixture-framework RETURN_PENDING", f.read(f.control / "watchdog.phase"))
 
 
+def native_handback_missing_guard_refuses_release(f):
+    native_handback_fixture(f, 0)
+    f.write("behave/native-guard-unavailable", "")
+    f.check("return failed without a guard", 1, f.run("return", "framework-deadline", "fixture-framework")[0])
+    f.check("supervisor was never asked to disarm", False, (f.control / "feeder.off").exists())
+    f.check("guard failure logged", True, "independent handback guard was not armed" in f.outcome())
+    f.check("zygote was not started", False, "ctl.start zygote" in f.log("setprop"))
+
+
+def native_crashed_supervisor_uses_failsafe(f):
+    native_handback_fixture(f, 1)
+    shutil.rmtree(f.root / "proc/4500")
+    f.check("return detected the dead supervisor", 1, f.run("return", "framework-deadline", "fixture-framework")[0])
+    f.check("zygote was not started", False, "ctl.start zygote" in f.log("setprop"))
+    f.check("failure recorded", True, f.outcome().startswith("failsafe "))
+    f.check("guarded reboot requested", True, "sys.powerctl reboot,oneios-inplace-failsafe" in f.log("setprop"))
+
+
 CASES = (
     event_chord_and_watcher, single_key_without_accessory, brief_bounce, premature_release,
     polling_after_watcher_death, watcher_without_return_script, lost_feeder, stale_lock_and_watch_race,
@@ -888,7 +907,8 @@ FRAMEWORK_CASES = (framework_stop_needs_all_recovery_helpers, framework_deadline
                    framework_timed_smoke, framework_stale_deadline, framework_manual_return_restores_map_count,
                    framework_changed_service_uses_failsafe, native_handback_armed_without_transport,
                    native_handback_disarmed_after_delayed_framework, native_handback_missing_release_failsafe,
-                   native_handback_stuck_framework_guard)
+                   native_handback_stuck_framework_guard, native_handback_missing_guard_refuses_release,
+                   native_crashed_supervisor_uses_failsafe)
 
 
 def worker(shell, definition):
@@ -940,8 +960,11 @@ def main():
     if os.geteuid() == 0 or not shutil.which("bwrap") or not args.mksh or not os.access(args.mksh, os.X_OK):
         parser.error("requires non-root CachyOS with bwrap and an executable mksh (use --mksh)")
     pin = git("ls-tree", "HEAD", "app").decode().split()[2]
-    if git("-C", "app", "rev-parse", "HEAD").decode().strip() != pin or git("diff", "--cached", "--name-only", "--", "app"):
-        parser.error("the app checkout and index must match the parent gitlink")
+    app_head = git("-C", "app", "rev-parse", "HEAD").decode().strip()
+    if git("diff", "--cached", "--name-only", "--", "app"):
+        parser.error("the app index must match the parent gitlink")
+    if not args.working_tree:
+        git("-C", "app", "cat-file", "-e", f"{pin}^{{commit}}")
     observation = None
     if args.observer_report:
         try:
@@ -1000,6 +1023,7 @@ def main():
         data = {
             "schema_version": 1, "timestamp_utc": datetime.now(timezone.utc).isoformat(), "scope": "simulation",
             "parent_base_commit": git("rev-parse", "HEAD").decode().strip(), "oneos_gitlink": pin,
+            "oneos_worktree_head": app_head,
             "oneos_script_source": "working tree" if args.working_tree else "gitlink",
             "sha256": hashes, "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "shell_versions": versions, "fixture_fingerprint": FINGERPRINT, "cases": tests,

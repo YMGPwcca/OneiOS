@@ -26,13 +26,15 @@ if [ "$mode" = recovery ]; then
   "$mksh_bin" -n scripts/phone/s26-watchdog-metadata.sh
   python3 scripts/phone/test-s26-watchdog-attribution.py
   python3 scripts/phone/test-sm8850-takeover.py
-  python3 scripts/phone/test-oneios-watchdog.py -v
   observer=()
   if [ -n "${ONEIOS_RECOVERY_OBSERVER_REPORT:-}" ]; then
     observer=(--observer-report "$ONEIOS_RECOVERY_OBSERVER_REPORT")
   fi
   source_flags=()
-  if [ "${ONEIOS_RECOVERY_WORKTREE:-0}" = 1 ]; then source_flags=(--working-tree); fi
+  if [ "${ONEIOS_RECOVERY_WORKTREE:-0}" = 1 ]; then
+    python3 scripts/phone/test-oneios-watchdog.py -v
+    source_flags=(--working-tree)
+  fi
   python3 scripts/phone/recovery-dry-run.py --mksh "$mksh_bin" --output "$report" "${observer[@]}" "${source_flags[@]}"
   sha256sum "$report"
   exit

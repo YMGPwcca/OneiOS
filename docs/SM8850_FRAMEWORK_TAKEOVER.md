@@ -45,15 +45,18 @@ restores the saved map limit, starts zygote, and checks an unlocked stable
 input dispatch. Verify an actual tap and swipe in One UI and USB ADB
 reconnection before recording a physical result.
 
-The smoke and full run refuse if watchdog attribution or arming fails. On
-this firmware, the passive audit found `system_server` holding
-`/dev/watchdog` (10:130). The device exposes `/dev/watchdog0` (242:0)
-without the identity, state and timing fields needed by the feeder. The
-profile requires direct numbered ownership, active softdog metadata,
-nowayout, no pretimeout, and a timeout of at least 100 seconds. The
-legacy alias, timeout and handback timing still need physical
-qualification. See [watchdog acceptance](SM8850_WATCHDOG_ACCEPTANCE.md)
-and the [Linux watchdog driver API](https://docs.kernel.org/watchdog/watchdog-api.html).
+The smoke and full run refuse if the independently qualified watchdog
+plan or any recovery helper is missing. The native supervisor uses one
+exclusive FD, reads capabilities and timeout, and keeps it open through
+the session. The return verifies release and the new framework's
+first observed keepalive under a separate bounded deadline. See the
+[watchdog protocol and live blockers](SM8850_WATCHDOG_SUPERVISOR.md).
+
+The passive audit found the legacy FD at `10:130` and a numbered node
+at `242:0`. The exact mapping, actual timeout, nowayout, and recovery
+timing remain unresolved. The implementation and local test phase
+performed no watchdog opens, Framework shutdowns, or kernel changes
+on the handset.
 
 ## Isolated image and APFS Data
 
@@ -88,6 +91,11 @@ mounts them read-only inside the session. It reserves the bench's 30 GiB
 free-space margin on the phone after staging. The measured free space
 was only about 30.3 GiB and could not cover the independent snapshot.
 The official OneOS image directory was absent.
+
+The [no-copy design](SM8850_NO_COPY_IMAGE_ADAPTER.md) specifies
+exclusive Data-store access and a verified off-device backup. It has no
+live mode. The tested staging path continues to use separate inodes
+and the existing reserve.
 
 ## Rollback
 
