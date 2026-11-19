@@ -93,3 +93,43 @@ grep -E 'gpu: .*host: backboardd fences|gpu: .*level: frames|input: touch:' "$LO
 No global sysctl, kernel/boot partition, display manager, touch driver or original
 Data mutation is required for this analysis. Prioritize **crash/restart +
 CPU/first-icon latency** before pushing FPS policies or taking over Android.
+
+
+## 2026-11-19 late-window CPU/GPU timeline: Spotlight and trace A/B
+
+The full read-only drilldown from the 600-second guest confirms that
+the guest, not just the display helper, sent about 99-103 scanout flushes
+and 99-101 completed backboardd fences per 10 seconds during the last
+stable ~70-second period. GPU fence submit-to-retire means were only
+~0.80-0.84 ms; framebuffer copy means ~1.37-1.53 ms. Neither proves an
+unconditional 10 FPS cap: static/background screens need not redraw
+at the display's 60 Hz. Earlier interaction saw up to 407 flushes in
+10 seconds. Do not remove a suspected 10 Hz throttle without evidence.
+
+While the 10 Hz cadence was measured, the guest's `Spotlight` repeatedly
+appeared among top CPU processes at 91-103% of one core, while
+`iconservicesagent` appeared intermittently. CPU virtualization stayed
+at 26,540-28,734 task traps/s even in the quiet interval, with hundreds
+of thousands of syscalls and faults every 30 seconds. This is strong
+evidence of *background CPU load plus expensive host/guest crossings*,
+but is not proof that Spotlight alone causes cold Settings icons.
+
+The bounded visual guest has always been launched with
+`ONEIOS_GPU_TRACE=1`, which prints detailed 3D resource/fence commands.
+The next non-invasive A/B experiment adds `run --no-gpu-trace`: explicitly
+UNSET the environment variable (setting it to `0` would still turn it on
+in virtio_gpu.c), keeping all 5-second display statistics, periodic
+GPU fence summaries, CPU/handoff stats, touch diagnostics, 4GiB RAM,
+the exact same device-side TERM/KILL deadline and one-shot clone policy.
+It is an optional experiment; the baseline remains the default.
+
+The offline report additionally gives `SPOTLIGHT_CPU_PEAK_PERCENT`,
+`SPOTLIGHT_GE_80PCT_WINDOWS`, and `GPU_VERBOSE_TRACE_LINES`. Compare
+two runs with **the same interaction sequence** (e.g., 10s Home swipes,
+Settings cold/warm open, 10s scroll), ideally 600s each. Better FPS,
+touch latency and fewer trace lines would implicate instrumentation
+overhead, but a single run does not establish causality. If no change,
+retain the next priorities: inspect `perf:` per-vCPU up/down and
+kernel fault/syscall p99, the 20 `host_statistics64` ABI warnings and
+persistent Spotlight work. Do not disable Spotlight, bypass watchdog,
+raise clock governors or touch the original APFS Data just to chase FPS.

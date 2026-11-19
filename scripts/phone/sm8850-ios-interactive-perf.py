@@ -50,7 +50,15 @@ def analyze_logs(host, display):
     gpu_fences = _values(host, r"gpu: [0-9]+ s host: backboardd fences (\d+)")
     gpu_max = _values(host, r"gpu: [0-9]+ s host: backboardd fences \d+, submit->retired mean \d+ us max (\d+) us")
     memory = _values(host, r"memory: host MemAvailable (\d+) MiB")
-    icons = _values(host, r"oneios-cpu: [^\n]*?iconservicesagent\[\d+\] (\d+)%")
+    # Top-eight process sampling: absent entries mean unknown, not 0% CPU.
+    # Some older builds printed "neios-cpu" for a few sampler lines.
+    cpu_top = [line for line in host.splitlines()
+               if re.search(r"\b(?:oneios-cpu|neios-cpu): 10 s:", line)]
+    icons = [int(m.group(1)) for line in cpu_top
+             if (m := re.search(r"\biconservicesagent\[\d+\] (\d+)%", line))]
+    spotlight = [int(m.group(1)) for line in cpu_top
+                 if (m := re.search(r"\bSpotlight\[\d+\] (\d+)%", line))]
+    detailed_gpu_trace_lines = sum("gpu trace:" in line for line in host.splitlines())
     springboard = list(dict.fromkeys(_values(host, r"SpringBoard\[(\d+)\]")))
     backboardd = list(dict.fromkeys(_values(host, r"backboardd\[(\d+)\]")))
     warnings = host.count("host_statistics64() count is larger than expected")
@@ -71,9 +79,13 @@ def analyze_logs(host, display):
                   "no_subsequent_guest_frame": no_frame},
         "gpu": {"fence_intervals": len(gpu_fences),
                 "fences_reported": sum(gpu_fences),
-                "max_submit_to_retire_us": max(gpu_max, default=None)},
+                "max_submit_to_retire_us": max(gpu_max, default=None),
+                "verbose_trace_lines": detailed_gpu_trace_lines},
         "cpu": {"host_traps_per_second_max": max(cpu_traps, default=None),
-                "iconservicesagent_percent_of_one_core_max": max(icons, default=None)},
+                "iconservicesagent_percent_of_one_core_max": max(icons, default=None),
+                "spotlight_percent_of_one_core_max": max(spotlight, default=None),
+                "spotlight_observed_windows": len(spotlight),
+                "spotlight_ge_80_percent_windows": sum(x >= 80 for x in spotlight)},
         "processes": {"springboard_pids": springboard,
                       "backboardd_pids": backboardd,
                       "possible_ui_restart": len(springboard) > 1 or len(backboardd) > 1},
@@ -116,6 +128,10 @@ def _show(report):
     print("GPU_FENCE_MAX_MS=" + (str(round(report["gpu"]["max_submit_to_retire_us"] / 1000, 2)) if report["gpu"]["max_submit_to_retire_us"] is not None else "UNKNOWN"))
     print("HOST_TRAPS_PER_SEC_MAX=" + str(report["cpu"]["host_traps_per_second_max"]))
     print("ICONSERVICE_CPU_PEAK_PERCENT=" + str(report["cpu"]["iconservicesagent_percent_of_one_core_max"]))
+    print("SPOTLIGHT_CPU_PEAK_PERCENT=" + str(report["cpu"]["spotlight_percent_of_one_core_max"]))
+    print("SPOTLIGHT_OBSERVED_WINDOWS=" + str(report["cpu"]["spotlight_observed_windows"]))
+    print("SPOTLIGHT_GE_80PCT_WINDOWS=" + str(report["cpu"]["spotlight_ge_80_percent_windows"]))
+    print("GPU_VERBOSE_TRACE_LINES=" + str(report["gpu"]["verbose_trace_lines"]))
     print("SPRINGBOARD_PIDS=" + ",".join(map(str,report["processes"]["springboard_pids"])))
     print("BACKBOARDD_PIDS=" + ",".join(map(str,report["processes"]["backboardd_pids"])))
     print("ANDROID_MEMAVAILABLE_MIN_MIB=" + str(report["memory"]["android_memavailable_mib_min"]))

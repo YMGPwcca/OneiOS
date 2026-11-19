@@ -162,3 +162,30 @@ on-device deadline to end, reconnect and use `collect`.
 The manual ADB emergency-stop procedure is unchanged. Note the small
 Android memory reserve in the last measured session: do not increase the
 session beyond 600 seconds or leave the phone unattended for now.
+
+
+### Optional trace-off A/B (new, no runtime policy change)
+
+To test whether verbose GPU command logging adds latency, launch exactly
+the same bounded visual guest with one extra opt-in flag:
+
+```sh
+python3 scripts/phone/sm8850-ios-gpu-visual.py run \
+  --touch --duration 600 --ram-mib 4096 --detach --no-gpu-trace
+```
+
+The baseline `run` command still enables GPU trace. `--no-gpu-trace`
+UNSETs `ONEIOS_GPU_TRACE` in the device-side shell; `ONEIOS_GPU_TRACE=0`
+would be wrong because the native code tests only whether it exists.
+Read-only 5-second display timing, CPU task traps, GPU fence summaries
+and input-to-next-frame diagnostics remain enabled. The run log records
+`GPU_TRACE_MODE=off_for_ab` and the JSON report records the trace mode.
+The same 600-second phone-side timeout and no-takeover/one-shot gates
+still apply. This does NOT suspend or alter Spotlight or iOS CPU policy.
+
+Use `collect --stage` only after `DETACH_READY` and the guest deadline.
+Compare `GPU_VERBOSE_TRACE_LINES`, `SPOTLIGHT_CPU_PEAK_PERCENT`,
+`DISPLAY_ACTIVE_CADENCE_MEDIAN_EST`, `TOUCH_TO_FRAME_MAX_MS` and the
+observed cold/warm Settings opening times against the preceding
+trace-enabled run. The trace-off option is an experiment, not a claimed
+FPS fix.

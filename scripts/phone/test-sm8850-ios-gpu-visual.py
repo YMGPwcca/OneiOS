@@ -184,6 +184,35 @@ class VisualBenchTests(unittest.TestCase):
                 self.assertNotRegex(script, r'(?m)^\s*[^#\n]*--takeover')
                 self.assertEqual(0, subprocess.run(['sh', '-n'], input=script, text=True, capture_output=True).returncode)
 
+    def test_opt_in_disable_verbose_gpu_trace_keeps_guest_deadlines_and_evidence(self):
+        base = visual.make_visual_script(bench, STAGE, 600, 4096, touch=True)
+        quiet = visual.make_visual_script(bench, STAGE, 600, 4096,
+                                          touch=True, gpu_trace=False)
+        self.assertIn('ONEIOS_GPU_TRACE=1 timeout -s TERM -k 15 600', base)
+        self.assertNotIn('ONEIOS_GPU_TRACE=1 timeout', quiet)
+        self.assertIn('unset ONEIOS_GPU_TRACE', quiet)
+        self.assertIn('timeout -s TERM -k 15 600', quiet)
+        self.assertIn('GPU_TRACE_MODE=off_for_ab', quiet)
+        self.assertIn('timeout -s TERM -k 10 645', quiet)
+        self.assertIn('--set touch-exclusive=1', quiet)
+        self.assertIn('--set bridges=0', quiet)
+        self.assertIn('--data "$STAGE/data"', quiet)
+        self.assertNotIn('--data "$BASE/data"', quiet)
+        self.assertNotIn('sysctl -w', quiet)
+        self.assertFalse(any('--takeover' in line for line in quiet.splitlines()
+                             if not line.lstrip().startswith('#')))
+        self.assertEqual(0, subprocess.run(['sh','-n'], input=quiet,
+                                          text=True, capture_output=True).returncode)
+
+    def test_no_gpu_trace_collect_is_rejected_before_adb(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        with (patch.object(visual, "collect_finished", side_effect=AssertionError('no collect')),
+              patch.object(visual, "run_visible", side_effect=AssertionError('no run')),
+              redirect_stderr(StringIO())):
+            with self.assertRaises(SystemExit):
+                visual.main(["collect", "--stage", STAGE, "--no-gpu-trace"])
+
     def test_visual_extension_does_not_extend_generic_bench_or_retry(self):
         self.assertEqual(300, bench.BENCH_DURATION_MAX_SECONDS)
         self.assertEqual(1800, bench.VISUAL_DURATION_MAX_SECONDS)

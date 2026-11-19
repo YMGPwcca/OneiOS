@@ -55,7 +55,7 @@ def ensure_one(text, old, new):
     return text.replace(old, new, 1)
 
 
-def make_visual_script(bench, stage, seconds, ram_mib, touch=False):
+def make_visual_script(bench, stage, seconds, ram_mib, touch=False, gpu_trace=True):
     """Reuse the hardened one-shot guest checks and optionally grab ONLY sec_touchscreen."""
     bench.stage_name(stage)
     script = bench.device_run_script(
@@ -75,6 +75,18 @@ def make_visual_script(bench, stage, seconds, ram_mib, touch=False):
             "    --gpu auto --display shm --no-input \\\n",
             "    --gpu auto --display shm --set touch-exclusive=1 \\\n",
         )
+    # A/B experiment: disabling verbose per-command GPU tracing does NOT
+    # disable periodic fence, vCPU, memory, or display performance reports.
+    # The xnuhost trace flag is getenv()!=NULL: merely setting it to "0"
+    # would still ENABLE tracing. Remove the environment variable entirely.
+    if not gpu_trace:
+        script = ensure_one(script,
+                            "ONEIOS_GPU_TRACE=1 timeout -s TERM -k 15 ",
+                            "unset ONEIOS_GPU_TRACE\ntimeout -s TERM -k 15 ")
+        script = ensure_one(script,
+                            "echo 'GPU_ADDON=existing_signed_and_trusted' >> \"$FAIL\"\n",
+                            "echo 'GPU_ADDON=existing_signed_and_trusted' >> \"$FAIL\"\n"
+                            "echo 'GPU_TRACE_MODE=off_for_ab' >> \"$FAIL\"\n")
     # The old runner's session, snapshot hash, and attempted marker remain.
     gate = '''# No untracked global sysctl change is permitted for this demo.
 # xnuhost's xh_mem_map_limit() raises this kernel-wide limit when too low.
@@ -235,6 +247,7 @@ def acquire_evidence(harness, adb, stage, report, bench):
         (artifact_out / (stamp + "-visual-" + name + ".log")).write_text(content)
     report["log_warnings"] = {"xnuhost": host_err, "display": display_err, "run": run_err}
     report["device_run_log"] = run_log
+    report["gpu_trace_mode"] = "OFF_AB" if "GPU_TRACE_MODE=off_for_ab" in run_log else "DEFAULT_ON"
     report["display"] = preview_summary(display_log)
     report["markers"] = bench.summarize_log(host_log)
     # Analyze the *complete* guest and display logs together. The display
@@ -286,6 +299,8 @@ def run_visible(args, report):
     files, hashes = verified_local_artifacts()
     touch = bool(getattr(args, "touch", False))
     report["touch_requested"] = touch
+    gpu_trace = not bool(getattr(args, "no_gpu_trace", False))
+    report["gpu_trace_detailed"] = gpu_trace
     if touch and b"touch-exclusive=1 requires" not in files["xnuhost"].read_bytes():
         raise RuntimeError("xnuhost binary lacks the bench-only touchscreen grab guard; rebuild failed")
     report["artifact_sha256"] = hashes
@@ -317,7 +332,8 @@ def run_visible(args, report):
         disp = harness.root(adb, display_setup, seconds=90)
         if "VISUAL_ARTIFACTS=PASS" not in disp.stdout:
             raise RuntimeError("display helper private staging did not acknowledge success")
-        script = make_visual_script(bench, stage, args.duration, args.ram_mib, touch=touch)
+        script = make_visual_script(bench, stage, args.duration, args.ram_mib,
+                                    touch=touch, gpu_trace=gpu_trace)
         install = ("cat > '%s/bin/run-visual.sh' <<'ONEIOS_VISUAL_RUN_EOF'\n" % stage
                    + script + "\nONEIOS_VISUAL_RUN_EOF\nchmod 700 '%s/bin/run-visual.sh'\n" % stage)
         harness.root(adb, install, seconds=30)
@@ -331,6 +347,7 @@ def run_visible(args, report):
         if touch:
             print("TOUCH_PREVIEW=WAIT_FOR_LIVE_TOUCH_GRABBED_BEFORE_SWIPING", flush=True)
         print("VISUAL_SESSION_LIMIT=%d_seconds; NO_TAKEOVER=yes" % args.duration, flush=True)
+        print("GPU_DETAILED_TRACE=" + ("ON_BASELINE" if gpu_trace else "OFF_AB_EXPERIMENT"), flush=True)
         deadline = time.monotonic() + args.duration + 210
         state, frame_seen, fence_seen = "pending", False, False
         touch_seen = False
@@ -430,6 +447,7 @@ def main(argv=None):
     p.add_argument("--duration", type=int, default=240, help="guest lifetime in seconds (90..1800; default 240), strictly bounded on device")
     p.add_argument("--touch", action="store_true", help="bench-only exclusive native sec_touchscreen to iOS; physical Android touch suspended")
     p.add_argument("--detach", action="store_true", help="return after live guest GPU/display/touch are confirmed; collect logs after USB reconnect")
+    p.add_argument("--no-gpu-trace", action="store_true", help="run only: suppress verbose GPU command trace for A/B without disabling performance/fence logging")
     p.add_argument("--stage", help="collect only: exact private snapshot path printed by run --detach")
     p.add_argument("--ram-mib", type=int, default=4096)
     p.add_argument("--serial")
@@ -442,7 +460,7 @@ def main(argv=None):
         if not 90 <= args.duration <= load_tool("sm8850-ios-gpu-bench.py", "oneios_visual_duration").VISUAL_DURATION_MAX_SECONDS or args.ram_mib not in range(2048, 5121, 256):
             p.error("duration must be 90..1800 seconds, RAM 2048..5120 MiB in 256 MiB steps")
     else:
-        if not args.stage or args.detach or args.touch:
+        if not args.stage or args.detach or args.touch or args.no_gpu_trace:
             p.error("collect requires --stage and cannot launch or detach a guest")
         try:
             load_tool("sm8850-ios-gpu-bench.py", "oneios_collect_validate").stage_name(args.stage)

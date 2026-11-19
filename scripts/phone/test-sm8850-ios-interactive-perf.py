@@ -45,6 +45,24 @@ class InteractivePerfTests(unittest.TestCase):
         self.assertEqual('manual observation required', r['settings_icons']['first_vs_second_open_delay'])
         self.assertIn('not iOS animation FPS', r['caveats'][0])
 
+    def test_spotlight_and_gpu_trace_are_measured_not_inferred(self):
+        guest = "\\n".join((
+            '[1] guest oneios-cpu: 10 s: Spotlight[194] 101%, backboardd[52] 13%',
+            '[2] guest neios-cpu: 10 s: Spotlight[194] 92%, SpringBoard[30] 3%',
+            '[3] guest oneios-cpu-sys: 10 s: Spotlight[194] 14%, kernel_task[0] 8%',
+            '[4] guest oneios-cpu: 10 s: backboardd[52] 43%, kernel_task[0] 23%',
+            '[5] xnuhost I gpu trace: submit queue_gen=2',
+            '[6] xnuhost I gpu trace: complete queue_gen=2',
+        ))
+        result = perf.analyze_logs(guest, '')
+        self.assertEqual(101, result['cpu']['spotlight_percent_of_one_core_max'])
+        self.assertEqual(2, result['cpu']['spotlight_observed_windows'])
+        self.assertEqual(2, result['cpu']['spotlight_ge_80_percent_windows'])
+        self.assertEqual(2, result['gpu']['verbose_trace_lines'])
+        legacy = perf.analyze_logs('SpringBoard[30]', '')
+        self.assertIsNone(legacy['cpu']['spotlight_percent_of_one_core_max'])
+        self.assertEqual(0, legacy['cpu']['spotlight_observed_windows'])
+
     def test_legacy_log_does_not_invent_fps(self):
         r = perf.analyze_logs('SpringBoard[30] boot', 'oneios-display: first frame posted')
         self.assertFalse(r['display']['instrumentation_present'])
