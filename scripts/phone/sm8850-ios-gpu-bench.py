@@ -50,11 +50,32 @@ def digest(path):
     return h.hexdigest()
 
 
-def safe_shell(stage, host_sha, nonce):
+def safe_shell(stage, host_sha, nonce, *, retry_preboot=False):
     stage_name(stage)
     if not re.fullmatch(r"[0-9a-f]{64}", host_sha) or not re.fullmatch(r"[0-9a-f]{16}", nonce):
         raise ValueError("invalid digest or upload nonce")
     incoming = f"/data/local/tmp/oneios-gpu-bench-{nonce}"
+    binary = "xnuhost-gpu-retry" if retry_preboot else "xnuhost-gpu"
+    if retry_preboot:
+        # Never allow a second guest run against a Data clone that might have changed.
+        guard = '''
+[ ! -e "$STAGE/gpu-bench/attempted" ] || fail 'guest already attempted on this Data clone'
+[ -f "$STAGE/gpu-bench/run.log" ] && [ ! -L "$STAGE/gpu-bench/run.log" ] || fail 'missing previous blocker evidence'
+[ "$(cat "$STAGE/gpu-bench/state" 2>/dev/null)" = blocked:2 ] || fail 'previous bench was not blocked:2'
+grep -Fxq 'ERROR=trusted_addon_missing' "$STAGE/gpu-bench/run.log" || fail 'previous blocker was not trustcache sidecar gate'
+[ "$(grep -c '^ERROR=' "$STAGE/gpu-bench/run.log" || :)" = 1 ] || fail 'previous run had ambiguous errors'
+[ ! -s "$STAGE/gpu-bench/xnuhost.log" ] || fail 'previous guest log exists: never retry a booted Data clone'
+[ ! -e "$STAGE/gpu-bench/retry-preboot" ] && [ ! -L "$STAGE/gpu-bench/retry-preboot" ] || fail 'preboot retry already exists'
+[ ! -e "$STAGE/bin/xnuhost-gpu-retry" ] && [ ! -e "$STAGE/bin/run-gpu-retry.sh" ] || fail 'retry executable already exists'
+[ "$(stat -c '%u:%a' "$STAGE/gpu-bench")" = 0:700 ] || fail 'previous log directory owner/mode'
+mkdir -m 700 "$STAGE/gpu-bench/retry-preboot" || fail 'retry evidence directory cannot be created'
+'''
+    else:
+        guard = '''
+[ ! -e "$STAGE/gpu-bench/attempted" ] || fail 'snapshot previously used for a bench'
+[ ! -e "$STAGE/bin/xnuhost-gpu" ] && [ ! -e "$STAGE/bin/run-gpu.sh" ] || fail 'stage contains an older GPU runner'
+mkdir -m 700 "$STAGE/gpu-bench" || fail 'cannot create gpu-bench directory'
+'''
     return incoming, f'''set -eu
 umask 077
 STAGE='{stage}'
@@ -76,40 +97,40 @@ fail() {{ echo "BENCH_BLOCKED=$*" >&2; exit 2; }}
 [ "$(stat -c '%d:%i' "$BASE/data/data.img")" != "$(stat -c '%d:%i' "$STAGE/data/data.img")" ] || fail 'Data not independent'
 [ -f "$UP" ] && [ ! -L "$UP" ] && [ "$(sha256sum "$UP" | cut -d ' ' -f1)" = '{host_sha}' ] || fail 'binary upload hash'
 [ "$(df -Pk "$STAGE" | awk 'END {{print $4}}')" -ge {MIN_FREE_KIB} ] || fail '30 GiB reserve'
-[ ! -e "$STAGE/gpu-bench/attempted" ] || fail 'snapshot previously used for a bench'
-[ ! -e "$STAGE/bin/xnuhost-gpu" ] && [ ! -e "$STAGE/bin/run-gpu.sh" ] || fail 'stage contains an older GPU runner'
 if pidof xnuhost xnuhost-gui-bench xnuhost-tasks oneios-display OneiOSDisplay >/dev/null 2>&1; then fail 'guest already running'; fi
 command -v timeout >/dev/null || fail 'missing device-side timeout'
 command -v nohup >/dev/null || fail 'missing nohup; no disconnected execution permitted'
 command -v flock >/dev/null || fail 'missing flock'
-mkdir -m 700 "$STAGE/gpu-bench" || fail 'cannot create gpu-bench directory'
-cp "$UP" "$STAGE/bin/xnuhost-gpu"
-chmod 700 "$STAGE/bin/xnuhost-gpu"
-[ "$(sha256sum "$STAGE/bin/xnuhost-gpu" | cut -d ' ' -f1)" = '{host_sha}' ] || fail 'staged binary hash mismatch'
-printf 'XNHOST_SHA256={host_sha}\n' > "$STAGE/gpu-bench/artifact.txt"
+{guard}
+cp "$UP" "$STAGE/bin/{binary}"
+chmod 700 "$STAGE/bin/{binary}"
+[ "$(sha256sum "$STAGE/bin/{binary}" | cut -d ' ' -f1)" = '{host_sha}' ] || fail 'staged binary hash mismatch'
+printf 'XNHOST_SHA256={host_sha}\n' > "$STAGE/gpu-bench/{'retry-preboot/' if retry_preboot else ''}artifact.txt"
 echo PREPARED=PASS
 '''
 
 
-def device_run_script(stage, seconds, memory_mib):
+def device_run_script(stage, seconds, memory_mib, *, retry_preboot=False):
     stage_name(stage)
     if seconds < 30 or seconds > 300 or memory_mib < 2048 or memory_mib > 5120 or memory_mib % 256:
         raise ValueError("bounded test limits exceeded")
+    log_dir = "gpu-bench/retry-preboot" if retry_preboot else "gpu-bench"
+    binary = "xnuhost-gpu-retry" if retry_preboot else "xnuhost-gpu"
     return f'''#!/system/bin/sh
 set -u
 umask 077
 STAGE='{stage}'
 BASE='{BENCH}'
-LOG="$STAGE/gpu-bench/xnuhost.log"
-STATUS="$STAGE/gpu-bench/state"
-FAIL="$STAGE/gpu-bench/run.log"
+LOG="$STAGE/{log_dir}/xnuhost.log"
+STATUS="$STAGE/{log_dir}/state"
+FAIL="$STAGE/{log_dir}/run.log"
 finish_state() {{
     code=$?
     value=$(cat "$STATUS" 2>/dev/null || :)
     case "$value" in finished:*|blocked*) ;; *) printf 'blocked:%s\n' "$code" > "$STATUS" ;; esac
 }}
 trap finish_state EXIT
-exec 8>"$STAGE/gpu-bench/launch.lock"
+exec 8>"$STAGE/{log_dir}/launch.lock"
 if ! flock -n 8; then echo 'ERROR=locked' >> "$FAIL"; exit 2; fi
 printf 'preparing\n' > "$STATUS"
 [ "$(id -u)" = 0 ] || exit 2
@@ -135,8 +156,20 @@ for p in "$BASE/data/unique-chip-id" "$STAGE/data/unique-chip-id"; do
 done
 [ "$(stat -c '%d:%i' "$BASE/data/data.img")" != "$(stat -c '%d:%i' "$STAGE/data/data.img")" ] || exit 2
 [ "$(df -Pk "$STAGE" | awk 'END {{print $4}}')" -ge {MIN_FREE_KIB} ] || exit 2
-[ -f "$BASE/image/kernel.kc.gpuaddon" ] && [ -f "$BASE/image/kernel.kc.trustcache" ] || {{ echo 'ERROR=trusted_addon_missing' >> "$FAIL"; printf 'blocked\n' > "$STATUS"; exit 2; }}
-mkdir -m 700 "$STAGE/gpu-bench/session" 2>/dev/null || exit 2
+[ -f "$BASE/image/kernel.kc.gpuaddon" ] && [ ! -L "$BASE/image/kernel.kc.gpuaddon" ] || {{ echo 'ERROR=missing_gpuaddon' >> "$FAIL"; printf 'blocked\n' > "$STATUS"; exit 2; }}
+# The host supports trustcache sidecar OR manifest-backed trust modules (imageset.c).
+# An image without kernel.kc.trustcache is valid when the signed owner module is present.
+if [ -f "$BASE/image/kernel.kc.trustcache" ] && [ ! -L "$BASE/image/kernel.kc.trustcache" ]; then
+    echo 'TRUST_SOURCE=kernel_sidecar' >> "$FAIL"
+elif [ -f "$BASE/image/trust/static.trustcache" ] && [ ! -L "$BASE/image/trust/static.trustcache" ] && \
+     [ -f "$BASE/image/overlay/userland/owner-trust.json" ] && [ ! -L "$BASE/image/overlay/userland/owner-trust.json" ]; then
+    echo 'TRUST_SOURCE=imageset_static_plus_owner' >> "$FAIL"
+else
+    echo 'ERROR=missing_trustcache_source_or_owner_module' >> "$FAIL"
+    printf 'blocked\n' > "$STATUS"
+    exit 2
+fi
+mkdir -m 700 "$STAGE/{log_dir}/session" 2>/dev/null || exit 2
 # Mark the candidate as consumed before its first writable guest open.
 ( set -C; echo "$(date -u)" > "$STAGE/gpu-bench/attempted" ) || exit 2
 printf 'running\n' > "$STATUS"
@@ -145,11 +178,11 @@ echo 'GPU_MODE=auto' >> "$FAIL"
 echo 'GPU_ADDON=existing_signed_and_trusted' >> "$FAIL"
 # Keep Android's GUI and input devices untouched; use only the isolated APFS Data pair.
 # The device-side timeout remains active even if USB/SSH disconnects.
-ONEIOS_GPU_TRACE=1 timeout -s TERM -k 15 {seconds} "$STAGE/bin/xnuhost-gpu" \\
+ONEIOS_GPU_TRACE=1 timeout -s TERM -k 15 {seconds} "$STAGE/bin/{binary}" \\
     --mode bench \\
     --image "$BASE/image" \\
     --data "$STAGE/data" \\
-    --session "$STAGE/gpu-bench/session" \\
+    --session "$STAGE/{log_dir}/session" \\
     --cpus 4 --ram {memory_mib}M \\
     --gpu auto --display none --no-input \\
     --width 1080 --height 2340 --hz 60 \\
@@ -181,6 +214,53 @@ def summarize_log(log):
     return stamps
 
 
+def inspect_stage(stage, harness, adb, report):
+    """Read-only inspection of an earlier attempt; do not change snapshot or replay."""
+    stage_name(stage)
+    command = f'''set -eu
+STAGE='{stage}'
+
+
+for rel in gpu-bench/state gpu-bench/run.log gpu-bench/device-run.log gpu-bench/xnuhost.log; do
+    p="$STAGE/$rel"
+    if [ -f "$p" ] && [ ! -L "$p" ]; then
+        printf '===== %s =====\n' "$rel"
+        tail -n 80 "$p"
+    else
+        printf '===== %s MISSING =====\n' "$rel"
+    fi
+done
+if [ -e "$STAGE/gpu-bench/attempted" ]; then
+    echo BENCH_ATTEMPTED=YES
+else
+    echo BENCH_ATTEMPTED=NO
+fi
+if [ -f /data/local/tmp/oneios-m3q-ios27-bench/image/kernel.kc.trustcache ]; then
+    echo TRUST_SIDECAR=YES
+else
+    echo TRUST_SIDECAR=NO
+fi
+if [ -f /data/local/tmp/oneios-m3q-ios27-bench/image/trust/static.trustcache ]; then
+    echo TRUST_IMAGESET_STATIC=YES
+else
+    echo TRUST_IMAGESET_STATIC=NO
+fi
+if [ -f /data/local/tmp/oneios-m3q-ios27-bench/image/overlay/userland/owner-trust.json ]; then
+    echo TRUST_IMAGESET_OWNER=YES
+else
+    echo TRUST_IMAGESET_OWNER=NO
+fi
+if pidof xnuhost xnuhost-gui-bench xnuhost-tasks >/dev/null 2>&1; then
+    echo GUEST_CURRENTLY_RUNNING=YES
+else
+    echo GUEST_CURRENTLY_RUNNING=NO
+fi
+'''
+    result = harness.root(adb, command, seconds=40)
+    report["inspection"] = result.stdout
+    print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+
+
 def stage_and_run(args, harness, adb, report):
     stage = stage_name(args.stage)
     local = ROOT / "runtime/xnuhost/build/android/xnuhost"
@@ -199,7 +279,10 @@ def stage_and_run(args, harness, adb, report):
         print("PREFLIGHT=PASS\nGUEST_RUN_READY=BLOCKED (plan only)\nIMAGE_ADDON=EXISTING_TRUSTED")
         return
     nonce = secrets.token_hex(8)
-    incoming, setup = safe_shell(stage, local_sha, nonce)
+    retry = args.action == "retry-preboot"
+    log_dir = "gpu-bench/retry-preboot" if retry else "gpu-bench"
+    runner_name = "run-gpu-retry.sh" if retry else "run-gpu.sh"
+    incoming, setup = safe_shell(stage, local_sha, nonce, retry_preboot=retry)
     report["stage"] = stage
     report["duration_seconds"] = args.duration
     report["guest_ram_mib"] = args.ram_mib
@@ -209,12 +292,12 @@ def stage_and_run(args, harness, adb, report):
         prepared = harness.root(adb, setup, seconds=100)
         if "PREPARED=PASS" not in prepared.stdout:
             raise RuntimeError("device-side artifact staging did not pass")
-        text = device_run_script(stage, args.duration, args.ram_mib)
+        text = device_run_script(stage, args.duration, args.ram_mib, retry_preboot=retry)
         # The private stage is root-owned, mode 0700. Only our pinned snapshot is changed.
-        install = "cat > '" + stage + "/bin/run-gpu.sh' <<'ONEIOS_RUN_EOF'\n" + text + "\nONEIOS_RUN_EOF\nchmod 700 '" + stage + "/bin/run-gpu.sh'\n"
+        install = "cat > '" + stage + "/bin/" + runner_name + "' <<'ONEIOS_RUN_EOF'\n" + text + "\nONEIOS_RUN_EOF\nchmod 700 '" + stage + "/bin/" + runner_name + "'\n"
         harness.root(adb, install, seconds=30)
-        kick = ("set -eu\nnohup sh '" + stage + "/bin/run-gpu.sh' > '" +
-                stage + "/gpu-bench/device-run.log' 2>&1 < /dev/null &\necho STARTED_PID=$!\n")
+        kick = ("set -eu\nnohup sh '" + stage + "/bin/" + runner_name + "' > '" +
+                stage + "/" + log_dir + "/device-run.log' 2>&1 < /dev/null &\necho STARTED_PID=$!\n")
         launched = harness.root(adb, kick, seconds=20)
         report["launch"] = launched.stdout[-2000:]
         if "STARTED_PID=" not in launched.stdout:
@@ -223,7 +306,7 @@ def stage_and_run(args, harness, adb, report):
         deadline = time.monotonic() + args.duration + 220
         state = "unknown"
         while time.monotonic() < deadline:
-            r = harness.root(adb, "cat '" + stage + "/gpu-bench/state' 2>/dev/null || echo pending", seconds=18)
+            r = harness.root(adb, "cat '" + stage + "/" + log_dir + "/state' 2>/dev/null || echo pending", seconds=18)
             state = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "pending"
             if state.startswith("finished:") or state.startswith("blocked"):
                 break
@@ -232,13 +315,17 @@ def stage_and_run(args, harness, adb, report):
         print("DEVICE_BENCH_STATE=" + state)
         if not (state.startswith("finished:") or state.startswith("blocked")):
             raise RuntimeError("remote deadline not confirmed; device-side timeout should still enforce bounded lifetime")
-        host_log = harness.root(adb, "tail -n 7000 '" + stage + "/gpu-bench/xnuhost.log' 2>/dev/null || :", seconds=65).stdout
-        device_log = harness.root(adb, "cat '" + stage + "/gpu-bench/run.log' 2>/dev/null || :", seconds=20).stdout
+        host_log = harness.root(adb, "tail -n 7000 '" + stage + "/" + log_dir + "/xnuhost.log' 2>/dev/null || :", seconds=65).stdout
+        device_log = harness.root(adb, "cat '" + stage + "/" + log_dir + "/run.log' 2>/dev/null || :", seconds=20).stdout
         logpath = Path(args.output).with_suffix(".xnuhost.log") if args.output else ROOT / "out/sm8850/gpu-acceptance" / (args.tag + "-ios-gpu-bench.log")
         logpath.parent.mkdir(parents=True, exist_ok=True)
         logpath.write_text(host_log)
         report["local_log"] = str(logpath)
         report["device_log"] = device_log
+        report["device_error"] = re.findall(r"^ERROR=(.*)$", device_log, re.MULTILINE)
+        print("DEVICE_RUN_LOG_BEGIN")
+        print(device_log.strip() or "(empty; check device-run.log)")
+        print("DEVICE_RUN_LOG_END")
         report["markers"] = summarize_log(host_log)
         report["IOS_VULKAN"] = "UNVERIFIED"  # Old addon has no vkCreateDevice instrumentation.
         print("GPU_BOOTARGS_VGPU3D=" + str(report["markers"]["bootargs_vgpu_3d"]))
@@ -258,7 +345,7 @@ def stage_and_run(args, harness, adb, report):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("action", choices=("plan", "run"))
+    p.add_argument("action", choices=("plan", "run", "inspect", "retry-preboot"))
     p.add_argument("--stage", required=True)
     p.add_argument("--duration", type=int, default=240)
     p.add_argument("--ram-mib", type=int, default=4096)
@@ -279,7 +366,10 @@ def main(argv=None):
         harness = load_harness()
         adb = harness.select_usb(args.adb, args.serial)
         report["serial"] = adb[-1]
-        stage_and_run(args, harness, adb, report)
+        if args.action == "inspect":
+            inspect_stage(args.stage, harness, adb, report)
+        else:
+            stage_and_run(args, harness, adb, report)
     except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as e:
         rc = 2
         report["error"] = str(e)

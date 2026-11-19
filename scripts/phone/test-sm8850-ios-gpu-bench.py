@@ -70,5 +70,83 @@ class BenchTests(unittest.TestCase):
         self.assertFalse(marks['legacy_vulkan_failure'])
         self.assertTrue(bench.summarize_log(example+'oneios-gpu-text Vulkan(VkResultCode(-3))\n')['legacy_vulkan_failure'])
 
+
+# Additional source-level regressions for the previously too-strict trustcache gate
+# and a strictly pre-boot, exact-error retry. These tests do not access a phone.
+class FixedBenchTests(unittest.TestCase):
+    def test_trustcache_imageset_fallback_and_sidecar(self):
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td)
+            def put(name):
+                path=base/'image'/name
+                path.parent.mkdir(parents=True,exist_ok=True)
+                path.write_text('fixture')
+            put('kernel.kc.gpuaddon')
+            put('trust/static.trustcache')
+            put('overlay/userland/owner-trust.json')
+            script=bench.device_run_script(STAGE,240,4096)
+            start=script.index('[ -f "$BASE/image/kernel.kc.gpuaddon"')
+            end=script.index('mkdir -m 700 "$STAGE/',start)
+            gate=script[start:end]
+            log=base/'run.log'
+            state=base/'state'
+            pre='set -eu\nBASE="'+str(base)+'"\nFAIL="'+str(log)+'"\nSTATUS="'+str(state)+'"\n'
+            p=subprocess.run(['sh'],input=pre+gate,text=True,capture_output=True)
+            self.assertEqual(0,p.returncode,p.stderr)
+            self.assertIn('TRUST_SOURCE=imageset_static_plus_owner',log.read_text())
+            (base/'image/overlay/userland/owner-trust.json').unlink()
+            log.unlink()
+            p=subprocess.run(['sh'],input=pre+gate,text=True,capture_output=True)
+            self.assertEqual(2,p.returncode,p.stderr)
+            self.assertIn('ERROR=missing_trustcache_source_or_owner_module',log.read_text())
+            put('kernel.kc.trustcache')
+            log.unlink()
+            p=subprocess.run(['sh'],input=pre+gate,text=True,capture_output=True)
+            self.assertEqual(0,p.returncode,p.stderr)
+            self.assertIn('TRUST_SOURCE=kernel_sidecar',log.read_text())
+
+    def test_retry_preboot_fails_closed_and_preserves_old_evidence(self):
+        _,old=bench.safe_shell(STAGE,'a'*64,'b'*16)
+        _,retry=bench.safe_shell(STAGE,'a'*64,'b'*16,retry_preboot=True)
+        for critical in ('guest already attempted on this Data clone',
+                         'previous bench was not blocked:2',
+                         'ERROR=trusted_addon_missing',
+                         'previous guest log exists',
+                         'retry evidence directory cannot be created'):
+            self.assertIn(critical,retry)
+        self.assertIn('xnuhost-gpu-retry',retry)
+        self.assertNotIn('rm -f',retry)
+        self.assertNotIn('rm -rf',retry)
+        self.assertNotIn('retry-preboot',old)
+        for part in (old,retry):
+            p=subprocess.run(['sh','-n'],input=part,text=True,capture_output=True)
+            self.assertEqual(0,p.returncode,p.stderr)
+
+    def test_retry_session_is_independent_and_still_one_shot(self):
+        orig=bench.device_run_script(STAGE,240,4096)
+        retry=bench.device_run_script(STAGE,240,4096,retry_preboot=True)
+        self.assertIn('--data "$STAGE/data"',retry)
+        self.assertIn('"$STAGE/gpu-bench/attempted"',retry)
+        self.assertIn('"$STAGE/bin/xnuhost-gpu-retry"',retry)
+        self.assertIn('"$STAGE/gpu-bench/retry-preboot/xnuhost.log"',retry)
+        self.assertIn('--mode bench',retry)
+        self.assertIn('--set bridges=0',retry)
+        self.assertIn('timeout -s TERM -k 15 240',retry)
+        self.assertNotIn('gpu-bench/retry-preboot',orig)
+        for part in (orig,retry):
+            p=subprocess.run(['sh','-n'],input=part,text=True,capture_output=True)
+            self.assertEqual(0,p.returncode,p.stderr)
+
+    def test_readonly_inspection_only_calls_root_for_read(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        harness=SimpleNamespace(root=Mock(return_value=SimpleNamespace(stdout='BENCH_ATTEMPTED=NO\n')))
+        report={}
+        bench.inspect_stage(STAGE,harness,['adb','-s','phone'],report)
+        self.assertIn('BENCH_ATTEMPTED=NO',report['inspection'])
+        self.assertIn('tail -n 80',harness.root.call_args[0][1])
+        self.assertNotIn('rm -',harness.root.call_args[0][1])
+        self.assertNotIn('cp ',harness.root.call_args[0][1])
+
 if __name__=='__main__':
     unittest.main()
