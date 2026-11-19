@@ -58,12 +58,16 @@ Observed measurements, **not** causal proof:
    `iconservicesagent` initialization is implicated. Every current
    session uses a newly copied Data clone, so across-session cold starts
    are expected; don't yet patch cache persistence.
-3. **Frame pacing instrumentation.** Add 5-second-window
-   `oneios-display` counters for posted frames, full-buffer copies,
-   time in `ANativeWindow_lock` and `unlockAndPost`, and input-to-frame
-   latency quantiles. Correlate timestamps with guest backboardd fence
-   reporting and vCPU trap p90/p99. A full-session average of
-   posted frames is not interactive FPS.
+3. **Frame pacing instrumentation (implemented; device acceptance pending).**
+   The `oneios-display` helper now reports five-second posted-buffer
+   rate, active-post cadence, `ANativeWindow_lock`, frame copy and
+   `unlockAndPost` histograms; the guest already reports
+   input-to-frame latency. The offline
+   `sm8850-ios-interactive-perf.py` parser correlates it with GPU
+   fences, CPU trap load and UI restarts. Run
+   [the bounded 10-minute capture](SM8850_IOS_INTERACTIVE_PERF_CAPTURE.md)
+   only after local CI passes. A full-session average of
+   posted buffers is never interactive FPS.
 4. **CPU path profiling before governor tuning.** Investigate
    high syscall/page fault rates and iconservicesagent's 216% CPU,
    including 30-second `perf:` windows, task handoff p99 and

@@ -3,6 +3,7 @@
 // socket, the mapped frame and the copy into the layer's buffers; the Java half owns the layers.
 #define _GNU_SOURCE
 #include "xhd.h"
+#include "frame_perf.h"
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include <errno.h>
@@ -128,6 +129,34 @@ static double seconds_since(const struct timespec *t0)
   return (double)(t.tv_sec - t0->tv_sec) + (double)(t.tv_nsec - t0->tv_nsec) / 1e9;
 }
 
+// One line per five seconds (and a final partial window). These are posted
+// SurfaceFlinger buffers, NOT guest animation frames. Active cadence only
+// includes inter-post gaps <=250ms and needs at least three samples.
+static void log_frame_perf(const struct xhd_frame_perf *p, uint64_t now_ns)
+{
+  uint64_t window_ms = now_ns > p->window_start_ns ? (now_ns - p->window_start_ns) / 1000000u : 0;
+  fprintf(stderr,
+          "oneios-display: perf: mono_ms=%llu window_ms=%llu posts=%llu posted_rate=%.2f "
+          "active_cadence=%.2f active_gaps=%llu gap_p95_us=%llu "
+          "lock_p95_us=%llu lock_max_us=%llu copy_p95_us=%llu copy_max_us=%llu "
+          "post_p95_us=%llu post_max_us=%llu full_copies=%llu copied_pixels=%llu\n",
+          (unsigned long long)(now_ns / 1000000u),
+          (unsigned long long)window_ms,
+          (unsigned long long)p->posts,
+          xhd_perf_post_rate(p, now_ns),
+          xhd_perf_active_cadence(p),
+          (unsigned long long)p->active_gap_count,
+          (unsigned long long)xhd_perf_quantile_bound_us(&p->gap, 95),
+          (unsigned long long)xhd_perf_quantile_bound_us(&p->lock, 95),
+          (unsigned long long)p->lock.max_us,
+          (unsigned long long)xhd_perf_quantile_bound_us(&p->copy, 95),
+          (unsigned long long)p->copy.max_us,
+          (unsigned long long)xhd_perf_quantile_bound_us(&p->post, 95),
+          (unsigned long long)p->post.max_us,
+          (unsigned long long)p->full_copies,
+          (unsigned long long)p->copied_pixels);
+}
+
 // ready_path: SESSION/ready (--session), or NULL (--socket): the first post waits for it (xhd_hold_first). Until the
 // first post the layer has no buffer and the OneOS boot screen under it shows.
 JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong handle, jobject surface, jint format, jint dataspace,
@@ -150,6 +179,8 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
   bool held = false;
   struct timespec hold_start;
   int result;
+  struct xhd_frame_perf perf;
+  xhd_perf_begin(&perf, xhd_perf_clock_ns());
   for (;;) {
     // Held: the guest's frame is not shown yet, the damage adds up, and `ready` is looked for at every flush and
     // every XHD_HOLD_POLL_MS between them (a guest that drew its frame with content and then nothing more).
@@ -160,10 +191,17 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
       fprintf(stderr, "oneios-display: the first frame waits for %s (xnuhost's first frame of the guest's own with content); the boot screen stays\n", ready_file);
     }
     struct pollfd fds[2] = { { c->fd, POLLIN, 0 }, { signal_pipe[0], POLLIN, 0 } };
-    int ready = poll(fds, 2, hold ? XHD_HOLD_POLL_MS : pending.w ? 0 : -1);
+    // Wake once per second while static, so the five-second profiler prints
+    // idle windows as idle (not as phantom 60 FPS). No timer touches the guest.
+    int ready = poll(fds, 2, hold ? XHD_HOLD_POLL_MS : pending.w ? 0 : 1000);
     if (ready < 0 && errno != EINTR) { result = -3; break; }
     if (stopping || (ready > 0 && fds[1].revents)) { result = 1; break; }
     if (xhd_drain(c->fd, f, &pending) < 0) { result = 0; break; }
+    uint64_t tick_ns = xhd_perf_clock_ns();
+    if (xhd_perf_due(&perf, tick_ns)) {
+      log_frame_perf(&perf, tick_ns);
+      xhd_perf_next_window(&perf, tick_ns);
+    }
     if (hold) { if (ready > 0) held_flushes++; continue; }
     if (!pending.w) continue;
     // The first posts fill whole buffers; after that the window copies back what the last frame
@@ -171,7 +209,9 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
     ARect dirty = { (int32_t)pending.x, (int32_t)pending.y, (int32_t)(pending.x + pending.w), (int32_t)(pending.y + pending.h) };
     if (frames < 4) dirty = (ARect){ 0, 0, (int32_t)f->width, (int32_t)f->height };
     ANativeWindow_Buffer buffer;
+    uint64_t lock_start_ns = xhd_perf_clock_ns();
     int error = ANativeWindow_lock(window, &buffer, &dirty);
+    uint64_t lock_done_ns = xhd_perf_clock_ns();
     if (error) {
       if (frames == 0 && format != FORMAT_RGBX_8888) {
         // No B,G,R,A buffers here: R,G,B,X and a swap. No RGBA_FP16 ones: B,G,R,A, the half floats encoded to sRGB
@@ -187,6 +227,9 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
       result = -2;
       break;
     }
+    uint64_t copy_start_ns = xhd_perf_clock_ns();
+    uint64_t copied_pixels = 0;
+    bool full_copy = false;
     struct xhd_rect r = { 0, 0, 0, 0 };
     if (dirty.left < 0) dirty.left = 0;
     if (dirty.top < 0) dirty.top = 0;
@@ -197,10 +240,19 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
       // The buffer's own format decides the copy (RGBA_8888 and RGBX_8888 are both R,G,B bytes).
       int layout = buffer.format == FORMAT_BGRA_8888 || buffer.format == FORMAT_RGBA_FP16 ? buffer.format : FORMAT_RGBX_8888;
       size_t bytes = layout == FORMAT_RGBA_FP16 ? 8 : 4;
-      if (buffer.width > 0 && buffer.height > 0 && buffer.stride >= buffer.width && xhd_rect_clip(&r, width, height))
-        xhd_copy(buffer.bits, (size_t)buffer.stride * bytes, layout, f->pixels, f->stride, f->format, r);
+      if (buffer.width > 0 && buffer.height > 0 && buffer.stride >= buffer.width && xhd_rect_clip(&r, width, height)) {
+        if (xhd_copy(buffer.bits, (size_t)buffer.stride * bytes, layout, f->pixels, f->stride, f->format, r) == 0) {
+          copied_pixels = (uint64_t)r.w * r.h;
+          full_copy = r.w == f->width && r.h == f->height;
+        }
+      }
     }
+    uint64_t copy_done_ns = xhd_perf_clock_ns();
     ANativeWindow_unlockAndPost(window);
+    uint64_t post_done_ns = xhd_perf_clock_ns();
+    xhd_perf_record(&perf, post_done_ns, lock_done_ns - lock_start_ns,
+                    copy_done_ns - copy_start_ns, post_done_ns - copy_done_ns,
+                    copied_pixels, full_copy);
     if (frames++ == 0) {
       char waited[96] = "";
       if (held) snprintf(waited, sizeof waited, "; held %.1f s for session/ready, %lu wakes for flushes not shown", seconds_since(&hold_start), held_flushes);
@@ -210,6 +262,10 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
     }
     pending = (struct xhd_rect){ 0, 0, 0, 0 };
   }
+  // Preserve the last partial window even when the guest disconnects or the
+  // device-side timeout stops the preview while a UI animation is in flight.
+  uint64_t finished_ns = xhd_perf_clock_ns();
+  if (perf.posts || xhd_perf_due(&perf, finished_ns)) log_frame_perf(&perf, finished_ns);
   ANativeWindow_release(window);
   fprintf(stderr, "oneios-display: %s after %lu frames\n", result == 0 ? "the socket closed" : result == 1 ? "asked to stop" : "error", frames);
   return result;

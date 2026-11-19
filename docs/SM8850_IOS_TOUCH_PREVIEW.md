@@ -131,3 +131,11 @@ exclusive guard to force boot. There remains a global `vm.max_map_count`
 change from the first GPU session; the visual runner requires that it is
 already at least 1,048,576 and refuses to raise it. The iOS Data copy
 is one-shot and remains preserved as evidence when the run ends.
+
+## UI latency diagnostics
+
+The visual preview now records five-second frame-pacing statistics in
+`gpu-bench/display.log`. Full analysis is printed after a session and
+stored under `performance` in the report JSON. See
+[SM8850 interactive GUI performance capture](SM8850_IOS_INTERACTIVE_PERF_CAPTURE.md).
+No extra timeout or takeover privileges are needed.

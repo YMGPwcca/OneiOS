@@ -228,6 +228,13 @@ def acquire_evidence(harness, adb, stage, report, bench):
     report["device_run_log"] = run_log
     report["display"] = preview_summary(display_log)
     report["markers"] = bench.summarize_log(host_log)
+    # Analyze the *complete* guest and display logs together. The display
+    # helper now reports five-second lock/copy/post timing windows. This is
+    # host-only parsing; no new guest boot or Android mutation is needed.
+    perf = load_tool("sm8850-ios-interactive-perf.py", "oneios_visual_perf")
+    report["performance"] = perf.analyze_logs(host_log, display_log)
+    print("===== INTERACTIVE IOS PERFORMANCE =====")
+    perf._show(report["performance"])
     marks = report["markers"]
     report["GUEST_GPU_PATH"] = "OBSERVED" if marks["gpu_execution_observed"] else "UNVERIFIED"
     report["IOS_VULKAN"] = "UNVERIFIED"  # No vkCreateDevice instrumented guest yet.

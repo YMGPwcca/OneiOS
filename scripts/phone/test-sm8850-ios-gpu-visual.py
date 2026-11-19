@@ -92,6 +92,21 @@ class VisualBenchTests(unittest.TestCase):
         self.assertIn('ASAN_OPTIONS=detect_leaks=0 $(H)/test_xnuhost', makefile)
         self.assertNotIn('runtime/xnuhost/build/host/test_xnuhost', doc)
 
+    def test_visual_report_includes_full_log_frame_pacing_and_ui_latency(self):
+        source = (HERE / 'sm8850-ios-gpu-visual.py').read_text()
+        self.assertIn('sm8850-ios-interactive-perf.py', source)
+        self.assertIn('perf.analyze_logs(host_log, display_log)', source)
+        self.assertIn('report["performance"]', source)
+        self.assertIn('perf._show(report["performance"])', source)
+        jni = (HERE.parent.parent / 'runtime/display/src/jni.c').read_text()
+        self.assertIn('log_frame_perf(&perf, tick_ns)', jni)
+        self.assertIn('ANativeWindow_lock(window, &buffer, &dirty)', jni)
+        self.assertIn('xhd_perf_record(&perf, post_done_ns', jni)
+        self.assertIn('lock_max_us=', jni)
+        self.assertIn('active_cadence=', jni)
+        self.assertIn('pending.w ? 0 : 1000', jni)
+        self.assertNotIn('system("setprop', jni)
+
     def test_sysctl_is_guarded_before_first_guest_attempt(self):
         s = visual.make_visual_script(bench, STAGE, 240, 4096)
         self.assertIn('CURRENT_MAP_COUNT=$(cat /proc/sys/vm/max_map_count)', s)

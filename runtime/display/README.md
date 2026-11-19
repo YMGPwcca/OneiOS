@@ -279,3 +279,24 @@ frame, the boot screen ends, and the panel is black as before. On the phone, rea
 frame of its own: all black ...` (where the old rule was ready) and `guest ready: first frame with content, T s and N
 frames after the guest's first (black) frame`; in `control/bootui.log` the feeder's `the boot screen ends` line at
 the same time, and on the glass the boot screen until the Apple logo.
+
+
+## Five-second interactive frame pacing telemetry (S26 Ultra)
+
+The Android SurfaceFlinger preview includes an allocation-free display helper
+profiler. It writes one `oneios-display: perf:` line to its existing
+`display.log` every five seconds (including idle windows) and a final
+partial window. This measures posted buffer rate, adjacent-post active cadence,
+p95/max `ANativeWindow_lock`, framebuffer copy and
+`ANativeWindow_unlockAndPost`, plus copied area. An idle window must not
+be called animation FPS; only short adjacent post intervals (<=250 ms) enter
+`active_cadence`, and the estimator requires at least three samples.
+
+The pure histogram code lives in `src/frame_perf.{c,h}` with host
+`tests/test_frame_perf.c` and is included in `make test`. The existing
+display.sock protocol, SHM framebuffer ownership, layer life cycle,
+sRGB color tagging and --takeover defaults are unchanged.
+
+See `docs/SM8850_IOS_INTERACTIVE_PERF_CAPTURE.md` for a bounded visual
+run and its offline CPU/GPU/Settings correlation. Do not use this telemetry
+as proof of measured iOS animation FPS or a Vulkan API device.
