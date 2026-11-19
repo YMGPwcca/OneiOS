@@ -292,3 +292,67 @@ Settings/Home interactions should be compared to the
 p90/p99 and touch-to-next-frame improve without more throttling,
 faults or Android memory pressure. The primary branch remains the
 unchanged default. A 2-4x speedup is *not* claimed.
+
+## 2026-11-20: finished 120s affinity-only A/B (recorded; keep opt-in)
+
+Session: `20261119T192749Z` started; collected with
+`20261119T193156Z-ios-gpu-visual.json` and
+`20261119T193156Z-visual-cpu-probe.log`.
+Phone stage (consumed): `/data/adb/oneios-m3q-gpu-snapshot-0f2e282b008bb63c`.
+Local validation: 29 visual Python + 4 interactive Python tests PASS;
+native xnuhost 14,127 checks / 0 failures; native 64-bit ARM test kernel PASS,
+GPU leak/policy regressions PASS; bounded live trial completed with
+`finished:124`, `COLLECT_COMPLETE=YES`, restored touch and Android
+`system_server` still running.
+
+Actual host-core placement logged (consistent with each vCPU's last
+host CPU every 30s): vCPU0->7, vCPU1->6 (capacity 1024,
+`cpuinfo_max_freq=4742400` kHz), vCPU2->5, vCPU3->4
+(capacity 741, 3628800 kHz). No guest-visible cluster topology
+modification, guest frequency device, uclamp or hardware bridge.
+
+**Host handoff performance:**
+- No pin (previous 120s): all-run `up` mean 13.32us,
+  `down` mean 13.21us, combined 26.53us. Up p99 57.34us,
+  down p99 49.15us in the prior busy window.
+- Pin (this 120s): all-run `up` mean 4.13us, `down` mean
+  4.25us, combined 8.38us: **68% less combined mean latency,
+  ~3.17x faster host handoff**. Up/down p99 12.29/24.57us
+  in this busy window. These are per-operation costs, not
+  directly equivalent to higher user-visible FPS.
+- Peak observed task trap rate 106,503/s (previous ~56,058/s).
+  This higher rate is consistent with faster handoff but also
+  reflects a different guest activity mix. It is NOT evidence
+  of more syscall overhead per trap without category-normalized
+  comparison.
+- Peak post rate 50.39Hz (previous 35.37Hz); trial active
+  cadence median estimate 35.47Hz; 2,018 buffers posted,
+  37 logged gestures, touch->frame maximum 325ms vs prior
+  352.1ms. Frame windows still contain multi-second gaps and
+  occasional zero posts, so 60Hz sustained UI and causal UI gain
+  have **not** been demonstrated.
+- Worst GPU fence 36.66ms vs prior 18.68ms; iconservicesagent
+  observed as high as 165% of one core; Spotlight was not
+  present in top-process samples (NONE is not 0% CPU).
+
+**Constraint:** last read-only CPU probes showed systemwide
+`cpu_psi_some_avg10` ~35-36%, CPU0-5 scaling_current AND
+scaling_max ~1,785,600kHz against static
+`cpuinfo_max_freq` 3,628,800kHz, CPU6-7
+~1,747,200kHz against 4,742,400kHz. There were 24 valid
+process and 48 policy samples. Android MemAvailable
+minimum was 1,384 MiB. This establishes an OS-enforced
+policy ceiling during the session, but NOT its specific
+cause; power/thermal policy and matched workloads must be
+recorded before attributing the drop to heat or pinning.
+Do not write host CPU governor, scaling_max_freq,
+`uclamp`, thermal controls, or systemwide cpuset.
+
+**Decision:** keep `--cpu-affinity-bench` default OFF and
+preserve this opt-in feature. The hypothesis that affinity
+reduces guest-vCPU handoff is strongly supported by measured
+latencies and placement; general UI smoothness and sustained
+performance are not yet established. Prioritize a read-only
+thermal/policy-cap reason audit and repeatable matched UI
+workloads before selecting an adaptive scheme, virtual
+cpufreq or additional vCPUs. Avoid needless new 600s sessions.

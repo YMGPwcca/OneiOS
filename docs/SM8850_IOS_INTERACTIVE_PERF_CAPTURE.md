@@ -292,3 +292,27 @@ Do not reuse a consumed snapshot. If a local native/Python regression
 fails, **do not boot**; the experiment hasn't been locally validated.
 To return to normal, simply omit `--cpu-affinity-bench` from the next
 new one-shot run.
+
+## A/B result and return-to-baseline policy (2026-11-20)
+
+The first 120s `--cpu-affinity-bench` trial completed safely and
+collected valid CPU evidence. The four pairs were placed on host
+CPUs 7, 6, 5, and 4. All-run mean host handoff
+`up+down` was 8.38us versus 26.53us in the prior
+unpaired 120s trial (about a 68% reduction). UI touch-to-next-
+frame worst case was 325ms versus 352.1ms, and the trial's
+peak display post rate was 50.39Hz versus 35.37Hz. These
+sessions did **not** follow identical interaction schedules;
+do not infer FPS gain strictly from the rates.
+
+CPU policy caps were observed falling to ~1.75-1.79GHz
+by the end of the paired run, with systemwide CPU pressure
+`some avg10` at ~35-36%. Limits are enforced by Android;
+we do not know whether thermal, power or other policy is
+responsible. Do not boost/clamp/override them.
+
+Next: analyze existing logs, then only consider another
+matched 120s run when thermal/policy reason logging is
+ready. Keep core pairing opt-in and avoid takeover or
+`bridges=1`. Removing `--cpu-affinity-bench` from a
+new one-shot run restores the unpaired default.
