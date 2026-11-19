@@ -1739,7 +1739,10 @@ static void test_config(const char *dir)
   // Explicit, disabled-by-default touchscreen exclusivity is not confused
   // with the existing input= boolean. Live EVIOCGRAB requires the phone.
   xh_config_defaults(&c);
-  CHECK(!c.touch_exclusive && c.input);
+  CHECK(!c.touch_exclusive && c.input && !c.cpu_affinity_bench);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "wrong") != 0);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0 && c.cpu_affinity_bench);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "0") == 0 && !c.cpu_affinity_bench);
   CHECK(xh_config_set(&c, "touch-exclusive", "1") == 0 && c.touch_exclusive);
   CHECK(xh_config_set(&c, "touch-exclusive", "wrong") != 0);
   CHECK(xh_config_set(&c, "touch-exclusive", "0") == 0 && !c.touch_exclusive);
@@ -1772,6 +1775,24 @@ static void test_config(const char *dir)
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 11, touch_ok) == 0 && xh_config_finish(&c) == 0 &&
         c.touch_exclusive && c.input && c.bridges == 0 && !strcmp(c.display, "shm"));
+  // The opt-in CPU core-pairing experiment accepts only an isolated
+  // touch-exclusive SHM bench with hardware bridges still disabled.
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, touch_ok) == 0);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0);
+  CHECK(xh_config_finish(&c) == 0 && c.cpu_affinity_bench && c.bridges == 0 && c.cpu_pin == 1);
+
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, touch_ok) == 0);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0);
+  CHECK(xh_config_set(&c, "cpu-pin", "2") == 0);
+  CHECK(xh_config_finish(&c) != 0);
+
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0);
+  CHECK(xh_config_finish(&c) != 0);
+
   char *touch_takeover[] = { "xnuhost", "--image", image, "--set", "touch-exclusive=1" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, touch_takeover) == 0 && xh_config_finish(&c) != 0);

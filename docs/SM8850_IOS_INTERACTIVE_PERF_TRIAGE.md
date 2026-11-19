@@ -247,3 +247,48 @@ Run a NEW 120-second one-shot Data clone for CPU measurement.
 Do not enable `bridges=1`, force CPU clocks or edit system governors
 until sampling confirms allowed cores, scheduling wait, and policy
 frequency relative to the limit.
+
+
+### 2026-11-20: per-vCPU trap evidence and opt-in host-affinity A/B
+
+Read-only log for the 120-second baseline with GPU trace OFF:
+
+- 30-60s: four vCPUs have 0% recorded idle; each vCPU spends
+  ~30-34% wall in XNU kernel handling vs ~66-70% in guest task turns,
+  with 13-14k task traps/second per vCPU.
+- 60-90s: each remains 0% idle; ~27-29% kernel vs 71-73% task;
+  trap round trip means 13.78 us (up) + 13.51 us (down),
+  p99 57.34 us (up) and 49.15 us (down), at 56,058 traps/s.
+- The 120s baseline averaged about 1.74 *host xnuhost* CPU cores from
+  `/proc/PID/stat` ticks (assuming USER_HZ=100). That DOES NOT include
+  Linux processes and threads hosting guest iOS userspace. In
+  `perf: cpuN:`, `% of a core` refers to the host vCPU thread;
+  kernel/task/idle percentages classify the vCPU's wall time.
+  Do not conclude only 1.74 of the phone's 8 CPUs were active.
+- Device cpufreq `scaling_max_freq` declined toward 2.112 GHz on both
+  policies in the latter portion of this session. This is real policy
+  ceiling reduction but not proof of its cause; thermal/power policy,
+  rather than the guest, may be responsible.
+
+The CPU-only stage-1 A/B explicitly limits its scope to **affinity only**:
+`--set cpu-affinity-bench=1` is rejected except with
+`mode=bench, display=shm, touch-exclusive=1, bridges=0, tasks=1,
+cpu-pin=1`. At guest setup, read available host CPU topology and
+the current process's allowed cpuset, select four *distinct* allowed
+cores in descending capacity/max-frequency rank, and set only per-vCPU
+and released guest-task Linux thread affinity through existing
+`xh_cpu_place`. The guest-visible CPU cluster type, guest RAM, GPU
+config, hardware bridges, frequency limits and thermal settings are
+unchanged. This avoids enabling `br_cpu_plan_make`'s 1E + 3P
+configuration on a phone that currently exposes only two fast host
+CPUs (otherwise 3P vCPUs could contend for the same two cores).
+No virtual cpufreq MMIO, `uclamp`, global governor, external affinity,
+direct CPU frequency write or host thermal override.
+
+An opt-in local A/B with a fresh, cloned APFS Data, timeout 120s,
+GPU trace OFF, CPU probe ON and exactly the same manually performed
+Settings/Home interactions should be compared to the
+20261119T191842Z baseline. The key metric is whether guest handoff
+p90/p99 and touch-to-next-frame improve without more throttling,
+faults or Android memory pressure. The primary branch remains the
+unchanged default. A 2-4x speedup is *not* claimed.

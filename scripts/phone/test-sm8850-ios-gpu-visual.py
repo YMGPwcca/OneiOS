@@ -59,7 +59,7 @@ class VisualBenchTests(unittest.TestCase):
         self.assertNotIn('touch-exclusive=1', s)
         source = (HERE / 'sm8850-ios-gpu-visual.py').read_text()
         self.assertIn('p.add_argument("--touch", action="store_true"', source)
-        self.assertRegex(source, r'make_visual_script\(bench, stage, args\.duration, args\.ram_mib,\s*touch=touch, gpu_trace=gpu_trace, cpu_probe=cpu_probe\)')
+        self.assertRegex(source, r'make_visual_script\(bench, stage, args\.duration, args\.ram_mib,\s*touch=touch, gpu_trace=gpu_trace, cpu_probe=cpu_probe,\s*cpu_affinity_bench=cpu_affinity_bench\)')
         self.assertIn('touch_requested', source)
         self.assertIn('LIVE_TOUCH_GRABBED=YES', source)
         self.assertIn('exclusive sec_touchscreen grab was never confirmed', source)
@@ -256,6 +256,48 @@ class VisualBenchTests(unittest.TestCase):
             self.assertEqual(2, probe.count('oneios-cpu-probe-status: '))
             self.assertIn('CPU_PROBE_MODE=read_only_5s',
                           (stage / 'gpu-bench/run.log').read_text())
+
+    def test_opt_in_native_cpu_affinity_pairs_only_our_vcpus(self):
+        baseline = visual.make_visual_script(bench, STAGE, 120, 4096,
+                                             touch=True, cpu_probe=True,
+                                             gpu_trace=False)
+        trial = visual.make_visual_script(bench, STAGE, 120, 4096,
+                                          touch=True, cpu_probe=True,
+                                          gpu_trace=False, cpu_affinity_bench=True)
+        self.assertNotIn('--set cpu-affinity-bench=1', baseline)
+        self.assertIn('--set bridges=0 --set cpu-affinity-bench=1', trial)
+        self.assertIn('CPU_AFFINITY_BENCH=ON', trial)
+        self.assertIn('GPU_TRACE_MODE=off_for_ab', trial)
+        self.assertIn('CPU_PROBE_MODE=read_only_5s', trial)
+        self.assertIn('--set touch-exclusive=1', trial)
+        self.assertIn('--data "$STAGE/data"', trial)
+        self.assertIn('timeout -s TERM -k 15 120', trial)
+        self.assertIn('timeout -s TERM -k 10 165', trial)
+        self.assertNotIn('--set bridges=1', trial)
+        self.assertNotIn('--takeover ', trial)
+        self.assertEqual(0, subprocess.run(['sh', '-n'], input=trial,
+                                          text=True, capture_output=True).returncode)
+        main = (HERE.parent.parent / 'runtime/xnuhost/src/main.c').read_text()
+        conf = (HERE.parent.parent / 'runtime/xnuhost/src/config.c').read_text()
+        self.assertIn('if (config.cpu_affinity_bench && bench_affinity_init()) return -1;', main)
+        self.assertIn('cpu-affinity-bench=1 requires bench/shm', conf)
+        self.assertIn('sched_getaffinity(0, sizeof allowed, &allowed)', main)
+        self.assertIn('xh_cpu_place = place;', main)
+        self.assertIn('no cpufreq/uclamp/thermal/device bridge', main)
+
+    def test_cpu_affinity_bench_requires_touch_before_adb(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        with (patch.object(visual, 'collect_finished', side_effect=AssertionError('no collect')),
+              patch.object(visual, 'run_visible', side_effect=AssertionError('no run')),
+              redirect_stderr(StringIO())):
+            with self.assertRaises(SystemExit):
+                visual.main(['run', '--cpu-affinity-bench', '--duration', '120'])
+            with self.assertRaises(SystemExit):
+                visual.main(['collect', '--stage', STAGE, '--cpu-affinity-bench'])
+        with self.assertRaisesRegex(ValueError, 'cpu-affinity-bench requires'):
+            visual.make_visual_script(bench, STAGE, 120, 4096,
+                                      touch=False, cpu_affinity_bench=True)
 
     def test_cpu_probe_collect_flag_is_rejected_before_adb(self):
         from contextlib import redirect_stderr

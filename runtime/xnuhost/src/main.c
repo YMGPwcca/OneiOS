@@ -350,7 +350,55 @@ static void place(int tid, unsigned vcpu)
   cpu_set_t set;
   CPU_ZERO(&set);
   for (unsigned i = 0; i < 64 && i < CPU_SETSIZE; i++) if (mask >> i & 1) CPU_SET(i, &set);
-  if (sched_setaffinity(tid, sizeof set, &set) && tid == 0) LOGE("cpu: vCPU %u on host CPUs 0x%llx: %s", vcpu, (unsigned long long)mask, strerror(errno));
+  if (sched_setaffinity(tid, sizeof set, &set) && (tid == 0 || config.cpu_affinity_bench))
+    LOGE("cpu: vCPU %u thread %d on host CPUs 0x%llx: %s", vcpu, tid, (unsigned long long)mask, strerror(errno));
+}
+// Strict bench-only pairing: the 4 vCPUs each get their own allowed host
+// CPU (and share it with the iOS thread released by that vCPU). This is a
+// process-local scheduling A/B, NOT the full bridge CPU plan: no virtual
+// cpufreq MMIO, uclamp, governor or thermal sensor is touched. Guest-visible
+// CPU cluster types are unchanged so the comparison isolates host affinity.
+// Prefer higher capacity/frequency cores, but never place two vCPUs on one
+// host CPU, which could multiply futex handoff latency under load.
+static int bench_affinity_init(void)
+{
+  br_cpu_topology host;
+  cpu_set_t allowed;
+  if (br_cpu_read("/sys", &host) || sched_getaffinity(0, sizeof allowed, &allowed)) {
+    LOGE("cpu: bench affinity refused: host topology or cpuset unreadable");
+    return -1;
+  }
+  unsigned ids[XH_MAX_CPUS], found = 0;
+  for (unsigned c = 0; c < host.ncpu && c < 64 && c < CPU_SETSIZE; c++)
+    if (host.cpu[c].present && CPU_ISSET(c, &allowed) && found < XH_MAX_CPUS) ids[found++] = c;
+  if (found < config.ncpu) {
+    LOGE("cpu: bench affinity refused: only %u allowed, present CPUs for %u vCPUs", found, config.ncpu);
+    return -1;
+  }
+  for (unsigned i = 0; i < found; i++)
+    for (unsigned j = i + 1; j < found; j++) {
+      const br_host_cpu *a = &host.cpu[ids[i]], *b = &host.cpu[ids[j]];
+      unsigned ra = a->capacity ? a->capacity : a->max_khz / 1000;
+      unsigned rb = b->capacity ? b->capacity : b->max_khz / 1000;
+      if (rb > ra || (rb == ra && (b->max_khz > a->max_khz ||
+          (b->max_khz == a->max_khz && ids[j] > ids[i])))) {
+        unsigned tmp = ids[i]; ids[i] = ids[j]; ids[j] = tmp;
+      }
+    }
+  memset(&cpu_plan, 0, sizeof cpu_plan);
+  cpu_plan.nvcpu = config.ncpu;
+  for (unsigned i = 0; i < config.ncpu; i++) {
+    cpu_plan.v[i].affinity = 1ull << ids[i];
+    cpu_plan.v[i].type = 'P';  // placement only: no guest-visible CPU cluster change
+    cpu_plan.v[i].host_cpu = ids[i];
+    LOGI("cpu: bench-affinity vCPU %u and its iOS threads -> host CPU %u (capacity %u, max %u kHz)",
+         i, ids[i], host.cpu[ids[i]].capacity, host.cpu[ids[i]].max_khz);
+  }
+  cpu_plan_base = cpu_plan;
+  cpu_planned = true;
+  xh_cpu_place = place;
+  LOGI("cpu: bench-affinity=1: distinct host cores; guest topology unchanged, no cpufreq/uclamp/thermal/device bridge");
+  return 0;
 }
 static int vcpu_tid(unsigned vcpu) { return vcpu < g_ncpu ? g_vcpu[vcpu].tid : 0; }
 // The thermal bridge's step (br_thermal_cap_for): the vCPUs and the iOS threads they run keep to fewer, slower cores
@@ -687,6 +735,9 @@ static int boot(void)
       log_cpu_layout(&host);
     } else LOGI("cpu: no host topology under /sys: vCPUs are not placed");
   }
+  // Affinity-only bench is separate from config.bridges. Never initialize
+  // the host hardware bridges, the cpufreq MMIO or a thermal/governor writer.
+  if (config.cpu_affinity_bench && bench_affinity_init()) return -1;
   if (!cpu_planned && config.cpu_pin == 2) {
     // A bench run (make bench-arm64): vCPU i and the iOS thread it runs on host CPU i, as cpu-pin does on the phone.
     cpu_plan.nvcpu = config.ncpu;

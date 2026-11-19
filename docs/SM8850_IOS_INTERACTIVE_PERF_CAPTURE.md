@@ -256,3 +256,39 @@ After the guest finishes, reconnect the USB cable and run the normal
 a numeric CPU clock measurement exist. Otherwise it prints a warning
 and the first sampler diagnostic lines. Do not interpret zero
 samples as no CPU usage. Never reuse a consumed Data snapshot.
+
+
+### Optional isolated vCPU-to-host core pairing A/B
+
+For an *experimental* one-shot 120s touch preview, after native
+`make -C runtime/xnuhost test` and all Python host regressions pass:
+
+```sh
+python3 scripts/phone/sm8850-ios-gpu-visual.py run \
+  --touch --duration 120 --ram-mib 4096 \
+  --detach --no-gpu-trace --cpu-probe --cpu-affinity-bench
+```
+
+This requests `cpu-affinity-bench=1` *only for this run*; it does not
+turn on `bridges=1`. The native implementation refuses takeover,
+no-touch, display other than SHM, missing guest task isolation,
+`cpu-pin=0/2`, and all full hardware bridge modes. It pairs four
+vCPUs and their released guest task threads with four *distinct*
+host CPUs selected within xnuhost's allowed cpuset. No guest-visible
+CPU cluster change, frequency request MMIO, uclamp, thermal knob or
+OS-global sysctl is involved. Any failed `sched_setaffinity` is
+logged with the vCPU and thread ID.
+
+After `DETACH_READY=YES`, unplug safely. The phone's TERM/KILL timeout,
+display helper cleanup and exclusive touch release are unchanged.
+Reconnect after 120s; collect the exact newly printed snapshot stage.
+Compare `perf: cpuN: ... last on host CPU` and `perf: up/down`
+p90/p99, `TOUCH_TO_FRAME_MAX_MS`, posted frame cadence, CPU probe's
+policy caps, Android MemAvailable and visible responsiveness to the
+baseline with the same touch/UI sequence.
+
+Do not increase the guest's 4-vCPU count for this isolation experiment.
+Do not reuse a consumed snapshot. If a local native/Python regression
+fails, **do not boot**; the experiment hasn't been locally validated.
+To return to normal, simply omit `--cpu-affinity-bench` from the next
+new one-shot run.

@@ -174,6 +174,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "spin-host")) { ok = number(value, 0, 1000, &c->spin_host); }
   else if (!strcmp(key, "spin-task")) { ok = number(value, 0, 1000, &c->spin_task); }
   else if (!strcmp(key, "cpu-pin")) { if (!strcmp(value, "2")) c->cpu_pin = 2; else { bool on; if (flag(value, &on)) return -1; c->cpu_pin = on; } }
+  else if (!strcmp(key, "cpu-affinity-bench")) return flag(value, &c->cpu_affinity_bench);
   else if (!strcmp(key, "map-defer")) { bool on; if (flag(value, &on)) return -1; c->map_defer = on; }
   else if (!strncmp(key, "hw-backend", 10)) {
     // hw-backend, hw-backend-<bridge>, hw-backend-fallback (bridges/hw_backend.h)
@@ -336,6 +337,17 @@ int xh_config_finish(xh_config *c)
   if (c->spin_task < 0) c->spin_task = from_image.spin_task;
   if (c->map_defer < 0) c->map_defer = from_image.map_defer;
   if (c->cpu_pin < 0) c->cpu_pin = from_image.cpu_pin < 0 ? 1 : from_image.cpu_pin;
+  // A/B experiment: keep CPU-only affinity entirely outside the hardware
+  // bridges, and only for a finite, touch-exclusive, non-takeover SHM bench.
+  // Never let a caller turn this on in takeover, headless, bridges=1,
+  // cpu-pin=0/2 or without the guest task isolation machinery.
+  if (c->cpu_affinity_bench &&
+      (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
+       !c->touch_exclusive || !c->input || c->bridges || !c->tasks ||
+       c->cpu_pin != 1)) {
+    fprintf(stderr, "xnuhost: cpu-affinity-bench=1 requires bench/shm, exclusive touch, tasks, bridges=0, cpu-pin=1\n");
+    return -1;
+  }
   br_hw_settings_merge(&c->hw, &from_image.hw);     // each hw-backend setting: the command line's, else the image set's
   if (c->haptics_native_impacts < 0)
     c->haptics_native_impacts = from_image.haptics_native_impacts < 0 ? 0 : from_image.haptics_native_impacts;

@@ -114,6 +114,8 @@ typedef struct {
   int   perf_log;           // perf.c: seconds between two "perf:" reports; 0 = only at the stop and on SIGQUIT; -1 = unset (30)
   int   spin_host, spin_task;   // task.c: microseconds a vCPU (spin-host) and an iOS thread (spin-task) spin for the other
                             // side of a hand-off before they sleep in a futex; -1 = unset (the defaults in task.c)
+  bool  cpu_affinity_bench; // strictly bench/shm/exclusive-touch/bridges=0: opt-in one host core per vCPU + its guest threads;
+                             // only sched_setaffinity on our threads (no cpu governor/uclamp/frequency/thermal mutations)
   int   cpu_pin;            // main.c: a vCPU and the iOS thread it runs share one host CPU of the vCPU's mask: 1, 0, -1 = unset (1);
                             // 2 = also with no CPU plan (a bench run): vCPU i on host CPU i
   int   map_defer;          // task.c: task_map orders ride on the next release of one of the task's threads: 1, 0, -1 = unset (1)
