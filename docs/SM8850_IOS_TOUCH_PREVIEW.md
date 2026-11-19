@@ -43,11 +43,19 @@ export PATH="$HOME/Android/Sdk/platform-tools:$PATH"
 
 python3 scripts/phone/test-sm8850-ios-gpu-visual.py -v
 make -C runtime/xnuhost -j8 build/host/test_xnuhost
-runtime/xnuhost/build/host/test_xnuhost
+# This test opens ../../kernel/... and include/... relative to its cwd.
+# Its test fixture intentionally leaves mock devices allocated; match Makefile's ASAN policy.
+( cd runtime/xnuhost && ASAN_OPTIONS=detect_leaks=0 ./build/host/test_xnuhost )
 
 python3 scripts/phone/sm8850-ios-gpu-visual.py run --touch \
   --duration 240 --ram-mib 4096
 ```
+
+The native test must report `xnuhost tests: N checks, 0 failed` before
+running the phone command. If it fails, stop before any guest attempt.
+`ASAN_OPTIONS=detect_leaks=0` only disables leak checking for this legacy
+fixture test; ASan and UBSan instrumentation remain active. This is the
+same setting used by `runtime/xnuhost/Makefile`.
 
 **Do not touch the phone until both** `LIVE_TOUCH_GRABBED=YES` and
 `LIVE_DISPLAY_FIRST_FRAME=POSTED` are printed. Then interact with the

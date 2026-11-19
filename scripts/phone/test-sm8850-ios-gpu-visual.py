@@ -84,6 +84,14 @@ class VisualBenchTests(unittest.TestCase):
         self.assertIn('NATIVE_TEST_STAGE=cleanup', source)
         self.assertNotIn('freopen("/dev/null"', source)
 
+    def test_native_test_documentation_uses_correct_cwd_and_asan_policy(self):
+        # Native C tests use paths relative to runtime/xnuhost, not repo root.
+        doc = (HERE.parent.parent / 'docs/SM8850_IOS_TOUCH_PREVIEW.md').read_text()
+        makefile = (HERE.parent.parent / 'runtime/xnuhost/Makefile').read_text()
+        self.assertIn('cd runtime/xnuhost && ASAN_OPTIONS=detect_leaks=0 ./build/host/test_xnuhost', doc)
+        self.assertIn('ASAN_OPTIONS=detect_leaks=0 $(H)/test_xnuhost', makefile)
+        self.assertNotIn('runtime/xnuhost/build/host/test_xnuhost', doc)
+
     def test_sysctl_is_guarded_before_first_guest_attempt(self):
         s = visual.make_visual_script(bench, STAGE, 240, 4096)
         self.assertIn('CURRENT_MAP_COUNT=$(cat /proc/sys/vm/max_map_count)', s)
