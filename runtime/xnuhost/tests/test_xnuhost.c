@@ -2743,6 +2743,10 @@ static void test_usb(const char *dir)
 
 int main(void)
 {
+  // A normal failure must be visible even when a sanitizer aborts before
+  // stdio's final flush (e.g., during the configuration checks).
+  setvbuf(stdout, NULL, _IONBF, 0);
+  fprintf(stderr, "NATIVE_TEST_STAGE=begin\n");
   char dir[] = "/tmp/xnuhost-test-XXXXXX";
   if (!mkdtemp(dir)) return 2;
   xh_log_open(NULL, getenv("ONEIOS_GPU_TRACE") ? XH_LOG_INFO : XH_LOG_ERROR);
@@ -2758,6 +2762,7 @@ int main(void)
   test_virtio_gpu();
   test_virtio_gpu3d();
   test_virtio_gpu3d_reset_overlap();
+  fprintf(stderr, "NATIVE_TEST_STAGE=virtio_input\n");
   test_virtio_input();
   test_input_filter();
   test_pen();
@@ -2768,11 +2773,16 @@ int main(void)
   test_cpu_window();
   test_perf();
   test_discard();
+  fprintf(stderr, "NATIVE_TEST_STAGE=ramfix\n");
   test_ramfix(dir);
   test_free_report();
   test_usb(dir);
-  if (!freopen("/dev/null", "w", stderr)) failures++;   // the refusals below print their reasons
+  // Never redirect sanitizer/runtime diagnostics to /dev/null: the optional
+  // touch-exclusive configuration checks can expose real failures here.
+  // Expected-invalid configuration warnings are useful and now visible.
+  fprintf(stderr, "NATIVE_TEST_STAGE=config\n");
   test_config(dir);
+  fprintf(stderr, "NATIVE_TEST_STAGE=cleanup\n");
   char command[300];
   snprintf(command, sizeof command, "rm -rf %s", dir);
   if (system(command)) failures++;

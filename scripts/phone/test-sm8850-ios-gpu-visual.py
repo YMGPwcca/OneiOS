@@ -77,6 +77,13 @@ class VisualBenchTests(unittest.TestCase):
         self.assertIn('if (config.touch_exclusive)', main)
         self.assertIn('return -1;', main.split('if (config.touch_exclusive)',1)[1].split('}',1)[0])
 
+    def test_native_harness_does_not_hide_sanitizer_failures(self):
+        source = (HERE.parent.parent / 'runtime/xnuhost/tests/test_xnuhost.c').read_text()
+        self.assertIn('setvbuf(stdout, NULL, _IONBF, 0)', source)
+        self.assertIn('NATIVE_TEST_STAGE=config', source)
+        self.assertIn('NATIVE_TEST_STAGE=cleanup', source)
+        self.assertNotIn('freopen("/dev/null"', source)
+
     def test_sysctl_is_guarded_before_first_guest_attempt(self):
         s = visual.make_visual_script(bench, STAGE, 240, 4096)
         self.assertIn('CURRENT_MAP_COUNT=$(cat /proc/sys/vm/max_map_count)', s)
