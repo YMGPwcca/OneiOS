@@ -126,9 +126,17 @@ echo PREPARED=PASS
 '''
 
 
-def device_run_script(stage, seconds, memory_mib, *, retry_preboot=False):
+BENCH_DURATION_MAX_SECONDS = 300
+VISUAL_DURATION_MAX_SECONDS = 1800
+
+
+def device_run_script(stage, seconds, memory_mib, *, retry_preboot=False, max_duration_seconds=BENCH_DURATION_MAX_SECONDS):
     stage_name(stage)
-    if seconds < 30 or seconds > 300 or memory_mib < 2048 or memory_mib > 5120 or memory_mib % 256:
+    if max_duration_seconds not in (BENCH_DURATION_MAX_SECONDS, VISUAL_DURATION_MAX_SECONDS):
+        raise ValueError("unsupported guest duration cap")
+    if retry_preboot and max_duration_seconds != BENCH_DURATION_MAX_SECONDS:
+        raise ValueError("preboot retry must remain limited to 300 seconds")
+    if seconds < 30 or seconds > max_duration_seconds or memory_mib < 2048 or memory_mib > 5120 or memory_mib % 256:
         raise ValueError("bounded test limits exceeded")
     log_dir = "gpu-bench/retry-preboot" if retry_preboot else "gpu-bench"
     binary = "xnuhost-gpu-retry" if retry_preboot else "xnuhost-gpu"

@@ -58,7 +58,10 @@ def ensure_one(text, old, new):
 def make_visual_script(bench, stage, seconds, ram_mib, touch=False):
     """Reuse the hardened one-shot guest checks and optionally grab ONLY sec_touchscreen."""
     bench.stage_name(stage)
-    script = bench.device_run_script(stage, seconds, ram_mib, retry_preboot=False)
+    script = bench.device_run_script(
+        stage, seconds, ram_mib, retry_preboot=False,
+        max_duration_seconds=bench.VISUAL_DURATION_MAX_SECONDS,
+    )
     script = ensure_one(
         script,
         "    --gpu auto --display none --no-input \\\n",
@@ -358,18 +361,18 @@ def run_visible(args, report):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("action", choices=("run",))
-    p.add_argument("--duration", type=int, default=240)
+    p.add_argument("--duration", type=int, default=240, help="guest lifetime in seconds (90..1800; default 240), strictly bounded on device")
     p.add_argument("--touch", action="store_true", help="bench-only exclusive native sec_touchscreen to iOS; physical Android touch suspended")
     p.add_argument("--ram-mib", type=int, default=4096)
     p.add_argument("--serial")
     p.add_argument("--adb", default=shutil.which("adb") or str(Path.home() / "Android/Sdk/platform-tools/adb"))
     p.add_argument("--output", type=Path)
     args = p.parse_args(argv)
-    if not 90 <= args.duration <= 300 or args.ram_mib not in range(2048, 5121, 256):
-        p.error("duration must be 90..300 seconds, RAM 2048..5120 MiB in 256 MiB steps")
+    if not 90 <= args.duration <= load_tool("sm8850-ios-gpu-bench.py", "oneios_visual_duration").VISUAL_DURATION_MAX_SECONDS or args.ram_mib not in range(2048, 5121, 256):
+        p.error("duration must be 90..1800 seconds, RAM 2048..5120 MiB in 256 MiB steps")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = args.output or ROOT / "out/sm8850/gpu-acceptance" / (stamp + "-ios-gpu-visual.json")
-    report = {"tag": stamp, "action": args.action, "IOS_VULKAN": "UNVERIFIED",
+    report = {"tag": stamp, "action": args.action, "duration_seconds": args.duration, "IOS_VULKAN": "UNVERIFIED",
               "FRAMEWORK_TAKEOVER": "BLOCKED", "scope": "one-shot visible SHM guest; fresh Data clone; no takeover",
               "touch_requested": args.touch}
     rc = 0

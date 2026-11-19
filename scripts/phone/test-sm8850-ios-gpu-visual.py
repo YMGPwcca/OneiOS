@@ -145,7 +145,7 @@ class VisualBenchTests(unittest.TestCase):
         self.assertNotIn('rmtree(', source)
 
     def test_runner_rejects_invalid_duration_and_ram_without_work(self):
-        for duration, ram in ((30,4096),(301,4096),(240,1024),(240,5130)):
+        for duration, ram in ((30,4096),(89,4096),(1801,4096),(240,1024),(240,5130)):
             with self.subTest(duration=duration, ram=ram):
                 from contextlib import redirect_stderr
                 from io import StringIO
@@ -153,6 +153,33 @@ class VisualBenchTests(unittest.TestCase):
                     with self.assertRaises(SystemExit):
                         visual.main(['run','--duration',str(duration),'--ram-mib',str(ram)])
 
+
+    def test_custom_visual_duration_is_bounded_on_phone_and_preserves_one_shot(self):
+        # Long sessions need their own explicit device-side TERM/KILL deadline.
+        # No unlimited/0 timeout, no reuse of the booted APFS clone.
+        for seconds in (301, 600, 900, 1800):
+            with self.subTest(seconds=seconds):
+                script = visual.make_visual_script(bench, STAGE, seconds, 4096, touch=True)
+                self.assertIn(f'ONEIOS_GPU_TRACE=1 timeout -s TERM -k 15 {seconds}', script)
+                self.assertIn(f'timeout -s TERM -k 10 {seconds + 45}', script)
+                self.assertIn('gpu-bench/attempted', script)
+                self.assertIn('launch.claim', script)
+                self.assertIn('--set touch-exclusive=1', script)
+                self.assertIn('--set bridges=0', script)
+                self.assertNotRegex(script, r'(?m)^\s*[^#\n]*--takeover')
+                self.assertEqual(0, subprocess.run(['sh', '-n'], input=script, text=True, capture_output=True).returncode)
+
+    def test_visual_extension_does_not_extend_generic_bench_or_retry(self):
+        self.assertEqual(300, bench.BENCH_DURATION_MAX_SECONDS)
+        self.assertEqual(1800, bench.VISUAL_DURATION_MAX_SECONDS)
+        with self.assertRaisesRegex(ValueError, 'bounded test limits exceeded'):
+            bench.device_run_script(STAGE, 301, 4096)
+        with self.assertRaisesRegex(ValueError, 'bounded test limits exceeded'):
+            bench.device_run_script(STAGE, 1801, 4096, max_duration_seconds=1800)
+        with self.assertRaisesRegex(ValueError, 'preboot retry'):
+            bench.device_run_script(STAGE, 600, 4096, retry_preboot=True, max_duration_seconds=1800)
+        with self.assertRaisesRegex(ValueError, 'unsupported guest duration cap'):
+            bench.device_run_script(STAGE, 60, 4096, max_duration_seconds=999999)
 
     def test_map_count_gate_runs_before_snapshot(self):
         from types import SimpleNamespace

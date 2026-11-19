@@ -48,7 +48,7 @@ make -C runtime/xnuhost -j8 build/host/test_xnuhost
 ( cd runtime/xnuhost && ASAN_OPTIONS=detect_leaks=0 ./build/host/test_xnuhost )
 
 python3 scripts/phone/sm8850-ios-gpu-visual.py run --touch \
-  --duration 240 --ram-mib 4096
+  --duration 600 --ram-mib 4096
 ```
 
 The native test must report `xnuhost tests: N checks, 0 failed` before
@@ -75,10 +75,34 @@ Results:
   the OS releases the fd even if this message is absent.
 - `IOS_VULKAN=UNVERIFIED` remains correct without vkCreateDevice tracing.
 
-The guest has an on-device `timeout -s TERM -k 15 240` and the display
-helper a separate timeout. The script never stops Android's zygote,
-`system_server`, SurfaceFlinger or watchdog; it does not take over
-the Android Framework and does not reuse an already-booted Data clone.
+## User-selectable duration (still bounded)
+
+The interactive visual runner accepts `--duration SECONDS`, **90..1800 seconds**:
+`240` (4 min, default), `600` (10 min), `900` (15 min), or `1800`
+(30 min maximum). This is **not** an unlimited/takeover mode.
+
+For example: `python3 scripts/phone/sm8850-ios-gpu-visual.py run --touch --duration 900 --ram-mib 4096`.
+
+The headless GPU acceptance runner **remains capped at 300 seconds**,
+including its narrowly authorized preboot retry. The 1800-second extension
+is explicitly passed only from the visual runner.
+
+The guest has an on-device `timeout -s TERM -k 15 SECONDS` and the
+display helper a separate `SECONDS + 45` timeout. Those timers are
+device-side: disconnecting ADB does not cancel the bound. Manual exit remains
+`adb shell -n -T "su -c 'pkill -TERM -x xnuhost-gpu'"`.
+
+**Risk:** the 2026-11-19 240-second run had a SpringBoard PID change,
+up to 742 ms touch-to-frame latency and only ~1.55 GiB Android
+MemAvailable near shutdown while 4 GiB guest RAM was locked. Start with
+600 s for observation, not 1800 s, and do not leave the phone unattended.
+Longer duration does not solve FPS, cold icon loading or crash loops.
+Each run creates a **new** APFS Data clone and checks free space; it does
+not resume modifications from the last consumed snapshot.
+
+The script never stops Android's zygote, `system_server`, SurfaceFlinger
+or watchdog; it does not take over the Android Framework and does not
+reuse an already-booted Data clone.
 
 ## Emergency release
 
@@ -97,8 +121,8 @@ A lost SSH/USB connection does not cancel the device-side guest timeout.
 
 ### Known limitations
 
-Native touch exclusivity has host tests and source review but is **not
-yet proven on the real S26 Ultra**. If Samsung SELinux or driver policy
+Native touch exclusivity was physically demonstrated on S26 Ultra on
+2026-11-19 (5 complete gestures and successful navigation to Settings). If Samsung SELinux or driver policy
 rejects `EVIOCGRAB`, report the logged error and do not remove the
 exclusive guard to force boot. There remains a global `vm.max_map_count`
 change from the first GPU session; the visual runner requires that it is
