@@ -2685,7 +2685,7 @@ int main(void)
 {
   char dir[] = "/tmp/xnuhost-test-XXXXXX";
   if (!mkdtemp(dir)) return 2;
-  xh_log_open(NULL, XH_LOG_ERROR);
+  xh_log_open(NULL, getenv("ONEIOS_GPU_TRACE") ? XH_LOG_INFO : XH_LOG_ERROR);
   xh_virtio_translate = xh_ram;
   test_insn();
   test_return();

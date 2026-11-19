@@ -1,0 +1,158 @@
+diff --git a/crates/metal2vulkan-runtime/src/device/create.rs b/crates/metal2vulkan-runtime/src/device/create.rs
+--- a/crates/metal2vulkan-runtime/src/device/create.rs
++++ b/crates/metal2vulkan-runtime/src/device/create.rs
+@@ -448,6 +448,16 @@
+     vk::FALSE
+ }
+
++// Initialization diagnostics are opt-in and do not change the Vulkan result.
++macro_rules! trace_init {
++    ($($arg:tt)*) => {
++        if std::env::var_os("ONEIOS_VK_INIT").is_some() {
++            use std::io::Write as _;
++            let _ = writeln!(std::io::stderr(), "oneios-vk-init pid={} {}", std::process::id(), format_args!($($arg)*));
++        }
++    };
++}
++
+ /// Whether `entry`'s loader lists `VK_KHR_portability_enumeration`.
+ pub(super) fn lists_portability(entry: &ash::Entry) -> Result<bool, Error> {
+     lists_instance_extension(entry, ash::khr::portability_enumeration::NAME)
+@@ -456,8 +466,9 @@
+ /// Whether the loader lists the instance extension `name`.
+ fn lists_instance_extension(entry: &ash::Entry, name: &CStr) -> Result<bool, Error> {
+     // SAFETY: a global command of a loaded entry.
+-    let available =
+-        unsafe { entry.enumerate_instance_extension_properties(None) }.map_err(vulkan)?;
++    let result = unsafe { entry.enumerate_instance_extension_properties(None) };
++    trace_init!("vkEnumerateInstanceExtensionProperties result={}", result.as_ref().err().map_or(0, |r| r.as_raw()));
++    let available = result.map_err(vulkan)?;
+     Ok(available
+         .iter()
+         .any(|extension| extension.extension_name_as_c_str() == Ok(name)))
+@@ -522,8 +533,12 @@
+     };
+     for path in &tried {
+         // SAFETY: opening the loader runs its initialization; the runtime assumes nothing else.
+-        if let Ok(entry) = unsafe { ash::Entry::load_from(path) } {
+-            return Ok(entry);
++        match unsafe { ash::Entry::load_from(path) } {
++            Ok(entry) => {
++                trace_init!("Vulkan entry path={} loaded", path.display());
++                return Ok(entry);
++            }
++            Err(err) => trace_init!("Vulkan entry path={} error={err}", path.display()),
+         }
+     }
+     Err(Error::LoaderNotFound(LoaderNotFound { tried }))
+@@ -585,7 +600,9 @@
+     let extension_names: Vec<*const c_char> = extensions.iter().map(|n| n.as_ptr()).collect();
+     let api_version = instance_version(options.instance_api_version, || {
+         // SAFETY: a global command of a loaded entry.
+-        let version = unsafe { entry.try_enumerate_instance_version() }.map_err(vulkan)?;
++        let result = unsafe { entry.try_enumerate_instance_version() };
++        trace_init!("vkEnumerateInstanceVersion result={:?}", result.as_ref().map_err(|r| r.as_raw()));
++        let version = result.map_err(vulkan)?;
+         // A loader without `vkEnumerateInstanceVersion` is a Vulkan 1.0 loader.
+         Ok(version.map_or(ApiVersion { major: 1, minor: 0 }, ApiVersion::from_packed))
+     })?;
+@@ -636,7 +653,10 @@
+     let mut dropped: Vec<CString> = Vec::new();
+     let raw = loop {
+         // SAFETY: `info` and everything it points at live for the call.
+-        match unsafe { new_instance(&entry, &info) } {
++        let result = unsafe { new_instance(&entry, &info) };
++        trace_init!("vkCreateInstance result={} api={}.{} extensions={extensions:?} layers={layers:?}",
++            result.as_ref().err().map_or(0, |r| r.as_raw()), api_version.major, api_version.minor);
++        match result {
+             Ok(raw) => break raw,
+             Err(vk::Result::ERROR_INCOMPATIBLE_DRIVER) => return Err(Error::NoDevice),
+             Err(error) if drops_layers(error, layers) => {
+@@ -651,7 +671,9 @@
+         (Some(sink), Some(info)) => {
+             let loader = ash::ext::debug_utils::Instance::new(&entry, &raw);
+             // SAFETY: the instance enabled `VK_EXT_debug_utils`; the sink lives in the messenger.
+-            match unsafe { loader.create_debug_utils_messenger(info, None) } {
++            let result = unsafe { loader.create_debug_utils_messenger(info, None) };
++            trace_init!("vkCreateDebugUtilsMessengerEXT result={}", result.as_ref().err().map_or(0, |r| r.as_raw()));
++            match result {
+                 Ok(handle) => Some(Messenger {
+                     loader,
+                     handle,
+@@ -668,7 +690,9 @@
+     };
+     let relay = if relays {
+         // SAFETY: the instance is live, from `entry`, and enabled `VK_EXT_debug_utils`.
+-        match unsafe { super::relay::Messenger::new(&entry, &raw) } {
++        let result = unsafe { super::relay::Messenger::new(&entry, &raw) };
++        trace_init!("vkCreateDebugUtilsMessengerEXT relay result={}", result.as_ref().err().map_or(0, |r| r.as_raw()));
++        match result {
+             Ok(relay) => Some(relay),
+             Err(error) => {
+                 if let Some(messenger) = &messenger {
+@@ -732,13 +756,18 @@
+     options: &DeviceOptions,
+ ) -> Result<Vec<vk::PhysicalDevice>, Error> {
+     // SAFETY: the instance is live.
+-    let physical = unsafe { instance.raw.enumerate_physical_devices() }.map_err(vulkan)?;
++    let result = unsafe { instance.raw.enumerate_physical_devices() };
++    trace_init!("vkEnumeratePhysicalDevices result={} device_count={}",
++        result.as_ref().err().map_or(0, |r| r.as_raw()), result.as_ref().map_or(0, Vec::len));
++    let physical = result.map_err(vulkan)?;
+     let mut ranked: Vec<(u8, vk::PhysicalDevice)> = physical
+         .into_iter()
+         .filter_map(|physical| {
+             // SAFETY: `physical` was enumerated from the instance.
+-            let ty = unsafe { instance.raw.get_physical_device_properties(physical) }.device_type;
+-            let kind = DeviceKind::of(ty);
++            let properties = unsafe { instance.raw.get_physical_device_properties(physical) };
++            trace_init!("vkGetPhysicalDeviceProperties device={:?} vendor={:#x} id={:#x} api={:#x} driver={:#x}",
++                properties.device_name_as_c_str(), properties.vendor_id, properties.device_id, properties.api_version, properties.driver_version);
++            let kind = DeviceKind::of(properties.device_type);
+             (options.kinds.is_empty() || options.kinds.contains(&kind))
+                 .then_some((kind.preference(), physical))
+         })
+@@ -1287,13 +1316,13 @@
+     let compile =
+         metal2vulkan::device::Device::new(enabled.clone(), options.policy).map_err(device_error)?;
+     // SAFETY: as above.
+-    let listed: BTreeSet<CString> =
+-        unsafe { instance.raw.enumerate_device_extension_properties(physical) }
+-            .map_err(vulkan)?
+-            .iter()
+-            .filter_map(|extension| extension.extension_name_as_c_str().ok())
+-            .map(CStr::to_owned)
+-            .collect();
++    let extensions = unsafe { instance.raw.enumerate_device_extension_properties(physical) };
++    trace_init!("vkEnumerateDeviceExtensionProperties device={:?} result={}",
++        enabled.device_name, extensions.as_ref().err().map_or(0, |r| r.as_raw()));
++    let listed: BTreeSet<CString> = extensions.map_err(vulkan)?.iter()
++        .filter_map(|extension| extension.extension_name_as_c_str().ok())
++        .map(CStr::to_owned)
++        .collect();
+     // The runtime's own need, outside the vocabulary, where listed: GPU times on the host's
+     // clock (`gpu_time.rs`).
+     let calibration = gpu_time::Extension::among(&listed);
+@@ -1474,7 +1503,9 @@
+         })
+         .collect();
+     // At the user-initiated class: MoltenVK compiles its command shaders as it makes the device.
+-    let raw = enables
++    trace_init!("vkCreateDevice request device={:?} driver_version={:#x} queue_families={taken:?} extensions={:?} features={:?}",
++        enabled.device_name, enabled.driver_version, enables.names().collect::<Vec<_>>(), set.features);
++    let result = enables
+         .with_create_info(&queues, |info| {
+             let asked = super::compiles::Sent::new(info);
+             let instance = &instance.raw;
+@@ -1483,8 +1514,9 @@
+                 // waits for it; `physical` is the instance's.
+                 unsafe { instance.create_device(physical, asked.into_inner(), None) }
+             })
+-        })
+-        .map_err(vulkan)?;
++        });
++    trace_init!("vkCreateDevice device={:?} result={}", enabled.device_name, result.as_ref().err().map_or(0, |r| r.as_raw()));
++    let raw = result.map_err(vulkan)?;
+     // SAFETY: the device was just created: its word is the loader's.
+     let loader_word = unsafe { LoaderWord::of_device(raw.handle()) };
+     let primary = families.get(queue_family as usize);
