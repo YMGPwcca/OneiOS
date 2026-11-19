@@ -2103,6 +2103,15 @@ static void test_config(const char *dir)
   CHECK(xh_display_boot_args(args, sizeof args, 3, 120, XH_PIXELS_RGBA16F) == 0 && !strcmp(args, "oneios-display-wide=1 offline-legacy-unit-scale=3 sheng-vsync=120"));
   strcpy(args, "oneios-display-wide=0");
   CHECK(xh_display_boot_args(args, sizeof args, 3, 120, XH_PIXELS_RGBA16F) == 0 && !strcmp(args, "oneios-display-wide=0 offline-legacy-unit-scale=3 sheng-vsync=120"));
+  strcpy(args, "-v oneios-data-wait=3000 other-vgpu-3d=0");
+  CHECK(xh_gpu_boot_args(args, sizeof args, false) == 0 && !strcmp(args, "-v oneios-data-wait=3000 other-vgpu-3d=0"));
+  CHECK(xh_gpu_boot_args(args, sizeof args, true) == 0 && !strcmp(args, "-v oneios-data-wait=3000 other-vgpu-3d=0 vgpu-3d=1"));
+  CHECK(xh_gpu_boot_args(args, sizeof args, true) == 0 && !strcmp(args, "-v oneios-data-wait=3000 other-vgpu-3d=0 vgpu-3d=1"));
+  strcpy(args, "-v vgpu-3d=0");
+  CHECK(xh_gpu_boot_args(args, sizeof args, true) == 0 && !strcmp(args, "-v vgpu-3d=0"));
+  strcpy(args, "-v");
+  CHECK(xh_gpu_boot_args(args, 12, true) == -1 && !strcmp(args, "-v"));
+  CHECK(xh_gpu_boot_args(args, 13, true) == 0 && !strcmp(args, "-v vgpu-3d=1"));
   // display-format: the two names, nothing else; half floats need the shm back end
   {
     xh_config f;

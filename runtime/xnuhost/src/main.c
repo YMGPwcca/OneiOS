@@ -614,6 +614,11 @@ static int boot(void)
     if (!gpu3d && !strcmp(config.gpu, "3d")) { LOGE("gpu: no 3D: %s", why); return -1; }
     if (!gpu3d) LOGI("gpu: 2D only: %s", why);
   }
+  const size_t boot_args_size = config.legacy_boot_args ? XL_BOOT_LINE_LENGTH_LEGACY : sizeof config.boot_args;
+  if (xh_gpu_boot_args(config.boot_args, boot_args_size, gpu3d != NULL)) {
+    LOGE("gpu: no room in the boot arguments for vgpu-3d=1");
+    return -1;
+  }
   if (!input || !xh_virtio_gpu_create_3d(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, fb_width, fb_height, gpu3d)) return -1;
   kinds[ndev++] = XL_DEV_GPU;
   // The hardware backend of each bridge (hw-backend, bridges/hw_backend.h): set before any of them opens.

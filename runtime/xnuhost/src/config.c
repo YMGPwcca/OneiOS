@@ -616,6 +616,17 @@ static bool has_switch(const char *args, const char *name)
   return false;
 }
 
+int xh_gpu_boot_args(char *args, size_t size, bool drm_native)
+{
+  // The guest's DEFAULT_3D query checks this boot argument independently of
+  // the negotiated virtio features. Custom boot arguments replace the defaults.
+  if (!drm_native || has_switch(args, "vgpu-3d")) return 0;
+  const char *add = *args ? " vgpu-3d=1" : "vgpu-3d=1";
+  if (strlen(args) + strlen(add) >= size) return -1;
+  strcat(args, add);
+  return 0;
+}
+
 bool xh_boot_args_hides_vmm_from(const char *args, const char *name)
 {
   static const char key[] = "owner-hide-vmm=";
