@@ -38,6 +38,7 @@ case "$1" in "$ONEIOS_TEST_ROOT"/data/local/tmp/oneios/oneios_*.sh) ;; *) exit 9
 entry="$ONEIOS_TEST_ROOT/proc/$$"
 mkdir -p "$entry"
 printf '%s\\0' "$@" > "$entry/cmdline"
+/usr/bin/cat "/proc/$$/stat" > "$entry/stat"
 exec "$PHASE3_SHELL" "$@"
 """
 
@@ -111,6 +112,7 @@ class Fixture:
         self.write("selinux", "Enforcing\n")
         self.write("proc/1/mountinfo", MOUNT)
         self.write("proc/sys/kernel/random/boot_id", "phase3-boot\n")
+        self.write("proc/uptime", "100.00 0.00\n")
         self.proc(1, "init")
         self.write("vendor/etc/vintf/manifest.xml", "<name>android.hardware.graphics.composer3</name>\n")
         props = {
@@ -182,6 +184,7 @@ class Fixture:
         (directory / "ns/mnt").symlink_to(ns)
         (directory / "cmdline").write_bytes(command.replace(" ", "\0").encode() + b"\0")
         (directory / "comm").write_text(command.split()[0] + "\n")
+        (directory / "stat").write_text(f"{pid} (fixture) S " + "0 " * 18 + "800\n")
         if cgroup:
             self.write(f"{CGROUP}/cgroup.procs", f"{pid}\n", append=True)
         if mounted:
@@ -400,13 +403,10 @@ def watcher_without_return_script(f):
 
 
 def lost_feeder(f):
-    f.write(f"{SESSION}/control/watchdog.target", "watchdog0 f2:0\n")
-    f.write(f"{SESSION}/control/feeder.ready", "36000\n")
-    f.write(f"{SESSION}/control/feeder.pid", "36000\n")
-    f.proc(36000, "sh oneios_switch.sh --feed")
+    watchdog_fixture_ready(f)
     watcher, output = f.watcher()
     wait_for("watcher acquired the wake lock", lambda: f.read(f.root / "sys/power/wake_lock") == "oneios_session")
-    shutil.rmtree(f.root / "proc/36000")
+    shutil.rmtree(f.root / "proc/4500")
     f.check("lost feeder causes watcher failure", 1, watcher.wait(15))
     f.check("feeder failure creates a request", True, f.request().startswith("watchdog feeder failed:"))
     f.check("feeder readiness invalidated", "", f.read(f.control / "feeder.ready"))
@@ -502,6 +502,8 @@ def watchdog_fixture(f, *, supported=True):
     for name, value in {"dev": "242:0", "identity": "Software Watchdog", "state": "active", "timeout": "100"}.items():
         f.write(f"sys/class/watchdog/watchdog0/{name}", value + "\n")
     f.write(f"{SESSION}/control/watchdog.target", "watchdog0 f2:0\n")
+    f.write(f"{SESSION}/control/watchdog.generation", "fixture-watchdog\n")
+    f.write(f"{SESSION}/control/feeder.arm", "fixture-watchdog 100\n")
 
 
 def watchdog_s26_refused(f):
@@ -536,6 +538,7 @@ def watchdog_fixture_ready(f):
     f.write(f"{SESSION}/control/feeder.pid", "4500\n")
     f.write(f"{SESSION}/control/feeder.ready", "4500\n")
     f.proc(4500, "sh oneios_switch.sh --feed")
+    f.write(f"{SESSION}/control/feeder.heartbeat", "fixture-watchdog 4500 800 100\n")
 
 
 def watchdog_stuck_feeder(f):
@@ -545,11 +548,13 @@ def watchdog_stuck_feeder(f):
     watcher, _ = f.watcher()
     f.ticks(3)
     f.wait_tick()
-    f.check("ready but stuck PID alone does not trigger return", "", f.request())
+    f.check("feeder has not timed out at the same monotonic second", "", f.request())
+    f.write("proc/uptime", "105.00 0.00\n")
     (f.clock / "step").unlink()
-    f.write(f"{SESSION}/session/return.request", "fixture out-of-band request\n")
+    f.check("stall requests recovery without an external request", True, bool(wait_for("automatic stall request", f.request, 2)))
     f.check("watcher returns through simulated failsafe", 1, watcher.wait(15))
-    f.failsafe("watchdog feeder still holds its descriptor")
+    f.failsafe("watchdog feeder failed")
+    f.check("lost progress diagnosed", True, "keepalive progress stalled" in f.request())
     f.check("feeder still cannot be removed", True, (f.root / "proc/4500").exists())
 
 
@@ -563,6 +568,7 @@ def watchdog_handoff_order(f):
             0 <= log.find("watchdog feeder released") < log.find("One UI's zygote started"))
     f.check("observed fixture reacquisition", True, "watchdog ownership confirmed" in log)
     f.check("no transfer-side simulated watchdog I/O", [], f.log("watchdog"))
+    f.check("normal shutdown does not report feeder failure", False, (f.control / "feeder.failed").exists())
 
 
 def watchdog_framework_never_reacquires(f):
@@ -573,6 +579,105 @@ def watchdog_framework_never_reacquires(f):
     f.check("no in-place success despite running framework", False, f.outcome().startswith("inplace "))
 
 
+def watchdog_invalid_heartbeat(f):
+    watchdog_fixture_ready(f)
+    for label, record in (
+        ("future", "fixture-watchdog 4500 800 101"),
+        ("stale generation", "old-watchdog 4500 800 100"),
+        ("invalid timestamp", "fixture-watchdog 4500 800 -1"),
+        ("overflow", "fixture-watchdog 4500 800 99999999999999999"),
+        ("before arm", "fixture-watchdog 4500 800 99"),
+        ("missing", None),
+    ):
+        if record is None:
+            (f.control / "feeder.heartbeat").unlink()
+        else:
+            f.write(f"{SESSION}/control/feeder.heartbeat", record + "\n")
+        f.check(label + " heartbeat rejected", 2, f.run("switch", "--watchdog-health")[0])
+    f.write(f"{SESSION}/control/feeder.heartbeat", "fixture-watchdog 4500 800 100\n")
+    f.write("proc/4500/stat", "4500 (same command line) S " + "0 " * 18 + "801\n")
+    f.check("reused PID with same command rejected", 2, f.run("switch", "--watchdog-health")[0])
+    f.write(f"{SESSION}/control/feeder.off", "")
+    f.check("normal close is inactive", 1, f.run("switch", "--watchdog-health")[0])
+
+
+def block_fixture_ping(f, when):
+    f.write("behave/hold_ping", when + "\n")
+    (f.root / "bin/watchdog-io").rename(f.root / "stubs/watchdog-io")
+    f.executable("bin/watchdog-io", """#!/bin/sh
+root=$ONEIOS_TEST_ROOT
+if [ "$1" = ping ] && { [ "$(cat "$root/behave/hold_ping")" = first ] ||
+                        [ -e "$root/behave/watchdog_pinged" ]; }; then
+    touch "$root/behave/ping_entered"
+    while [ ! -e "$root/behave/ping_released" ]; do /usr/bin/sleep 0.01; done
+fi
+exec "$root/stubs/watchdog-io" "$@"
+""")
+
+
+def watchdog_delayed_first_ping(f):
+    watchdog_fixture(f)
+    block_fixture_ping(f, "first")
+    feeder, _ = f.start("switch", "--watchdog-test", "feed")
+    wait_for("mock first keepalive entered", lambda: (f.root / "behave/ping_entered").exists())
+    f.check("in-flight keepalive publishes no heartbeat", False, (f.control / "feeder.heartbeat").exists())
+    f.check("first-ping window still open", 1, f.run("switch", "--watchdog-health")[0])
+    f.write("proc/uptime", "103.00 0.00\n")
+    f.check("first-ping deadline exceeded", 2, f.run("switch", "--watchdog-health")[0])
+    f.write("behave/ping_released", "")
+    f.check("late first ping is rejected", 4, feeder.wait(8))
+    f.check("no heartbeat after late first ping", False, (f.control / "feeder.heartbeat").exists())
+    f.check("late first success requests recovery", True, "first keepalive missed its deadline" in f.request())
+
+
+def watchdog_blocked_second_ping(f):
+    watchdog_fixture(f)
+    block_fixture_ping(f, "after_first")
+    feeder, _ = f.start("switch", "--watchdog-test", "feed")
+    wait_for("mock second keepalive blocked", lambda: (f.root / "behave/ping_entered").exists())
+    last = f.read(f.control / "feeder.heartbeat")
+    f.check("first successful ping is fresh", 0, f.run("switch", "--watchdog-health")[0])
+    f.check("heartbeat contains completed first ping", "100", last.split()[-1])
+    f.write("proc/uptime", "105.00 0.00\n")
+    watcher, _ = f.watcher()
+    f.check("watcher initiated simulated failsafe", 1, watcher.wait(15))
+    f.check("blocked write did not publish progress", last, f.read(f.control / "feeder.heartbeat"))
+    f.check("feeder still alive on stall", None, feeder.poll())
+    f.check("automatic stall reason", True, "keepalive progress stalled" in f.request())
+    f.failsafe("watchdog feeder failed")
+    f.write("behave/ping_released", "")
+    f.check("late keepalive cannot make the feeder healthy again", 4, feeder.wait(8))
+    f.check("late completion does not overwrite the heartbeat", last, f.read(f.control / "feeder.heartbeat"))
+
+
+def watchdog_guard_supervises_a_return(f):
+    watchdog_fixture_ready(f)
+    f.write(f"{SESSION}/control/state", "returning\n")
+    f.write(f"{SESSION}/control/return.guard", "fixture-guard\n")
+    f.write("proc/uptime", "105.00 0.00\n")
+    guard, _ = f.start("return", "--guard", "fixture-guard")
+    wait_for("return guard requested recovery", f.request)
+    f.check("return guard records stalled progress", True, "keepalive progress stalled" in f.request())
+    (f.control / "return.guard").unlink()
+    f.check("disarmed guard exits quietly", 0, guard.wait(5))
+    f.check("guard did not start a second return", [], f.log("setprop"))
+
+
+def watchdog_concurrent_recovery(f):
+    watchdog_fixture_ready(f)
+    f.write("proc/uptime", "106.00 0.00\n")
+    f.write(f"{SESSION}/session/return.request", "existing independent recovery request\n")
+    stale, _ = f.start("switch", "--watchdog-supervise", "old-watchdog")
+    f.check("superseded supervisor exits quietly", 1, stale.wait(5))
+    f.check("old generation did not record a fault", False, (f.control / "feeder.failed").exists())
+    f.check("late watcher cannot return a new generation", 0, f.run("return", "watcher", "old-watchdog")[0])
+    f.check("no init commands by the late watcher", [], f.log("setprop"))
+    supervisors = [f.start("switch", "--watchdog-supervise", "fixture-watchdog")[0] for _ in range(2)]
+    f.check("both supervisors detect the fault", [0, 0], [p.wait(5) for p in supervisors])
+    f.check("one failure diagnostic", 1, f.read(f.control / "watchdog_feeder.log").count("progress stalled"))
+    f.check("earlier request is preserved", "existing independent recovery request", f.request())
+
+
 CASES = (
     event_chord_and_watcher, single_key_without_accessory, brief_bounce, premature_release,
     polling_after_watcher_death, watcher_without_return_script, lost_feeder, stale_lock_and_watch_race,
@@ -580,6 +685,8 @@ CASES = (
     gate_a_failure, gate_b_failure, gate_c_failure,
     watchdog_s26_refused, watchdog_exclusive_open_busy, watchdog_ping_fails_after_first_success,
     watchdog_stuck_feeder, watchdog_handoff_order, watchdog_framework_never_reacquires,
+    watchdog_invalid_heartbeat, watchdog_delayed_first_ping, watchdog_concurrent_recovery,
+    watchdog_blocked_second_ping, watchdog_guard_supervises_a_return,
 )
 
 

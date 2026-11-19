@@ -85,7 +85,10 @@ possible semantics without establishing this firmware's implementation.
    possible, require attributable runtime registration evidence from that
    build before approving a handoff.
 
-## Phase 4A.2 pinned OneOS review
+## Phase 4A.2 baseline OneOS review
+
+The review below describes baseline commit `21b8e53`. Phase 4A.2b addresses
+the software stall-detection gap while leaving physical acceptance blocked.
 
 - The feeder is S24-profile scoped and requires identity, state and timeout
   metadata. Its legacy-alias inference and ordinary nonempty write are
@@ -132,6 +135,25 @@ JAVA_HOME=/usr/lib/jvm/java-21-openjdk ANDROID_HOME="$HOME/Android/Sdk" \
 ONEOS_TEST_MKSH=/path/to/mksh ./gradlew --offline --console=plain \
   :core:root:testDebugUnitTest --tests '*OneiosScriptTest.watchdog*'
 ```
+
+## Phase 4A.2b heartbeat
+
+The same production watcher now requests recovery when an alive feeder
+has no recent successful keepalive. The fake-clock regression failed in
+Bash and mksh against `21b8e53` and passed with the heartbeat.
+A second fixture blocks the mock write itself and verifies that the
+heartbeat stays at the last successful ping. A late completion cannot
+reannounce readiness. The return guard watches the active feeder after
+the session watcher yields, and supervision ends at the deliberate close
+before framework restart. Fault reporting preserves the first fault
+and any request that already exists.
+
+The 3 s first-ping and 5 s freshness thresholds are for the existing
+S24 software watchdog supervision, using whole seconds of boot uptime.
+Polling and scheduling add latency. An SM8850 handoff still requires
+matched driver semantics, measured hardware timing, proof of actual
+descriptor closure and first framework keepalive, and a separately
+validated recovery channel. No Phase 4A.3 entry criterion has been waived.
 
 ## Phase 4A.3 entry and acceptance checklist
 
