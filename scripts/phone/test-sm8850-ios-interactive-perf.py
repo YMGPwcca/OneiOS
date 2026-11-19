@@ -46,7 +46,7 @@ class InteractivePerfTests(unittest.TestCase):
         self.assertIn('not iOS animation FPS', r['caveats'][0])
 
     def test_spotlight_and_gpu_trace_are_measured_not_inferred(self):
-        guest = "\\n".join((
+        guest = "\n".join((
             '[1] guest oneios-cpu: 10 s: Spotlight[194] 101%, backboardd[52] 13%',
             '[2] guest neios-cpu: 10 s: Spotlight[194] 92%, SpringBoard[30] 3%',
             '[3] guest oneios-cpu-sys: 10 s: Spotlight[194] 14%, kernel_task[0] 8%',
@@ -54,6 +54,8 @@ class InteractivePerfTests(unittest.TestCase):
             '[5] xnuhost I gpu trace: submit queue_gen=2',
             '[6] xnuhost I gpu trace: complete queue_gen=2',
         ))
+        # Six physical lines are required; a literal backslash-n breaks sampling.
+        self.assertEqual(6, len(guest.splitlines()))
         result = perf.analyze_logs(guest, '')
         self.assertEqual(101, result['cpu']['spotlight_percent_of_one_core_max'])
         self.assertEqual(2, result['cpu']['spotlight_observed_windows'])
