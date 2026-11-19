@@ -213,6 +213,10 @@ class VisualBenchTests(unittest.TestCase):
         self.assertNotIn('CPU_PROBE_MODE=', baseline)
         self.assertIn('CPU_PROBE_MODE=read_only_5s', measured)
         self.assertIn('limit=138', measured)
+        self.assertNotIn('CPU_PROBE_PARENT', measured)
+        self.assertIn('oneios-cpu-probe-start:', measured)
+        self.assertIn('oneios-cpu-probe-status:', measured)
+        self.assertIn('while [ "$n" -lt "$limit" ]; do', measured)
         self.assertIn('oneios-cpu-policy: uptime_s=', measured)
         self.assertIn('oneios-cpu-probe: uptime_s=', measured)
         self.assertIn('Cpus_allowed_list:', measured)
@@ -227,6 +231,31 @@ class VisualBenchTests(unittest.TestCase):
         self.assertNotIn('--takeover ', measured)
         self.assertEqual(0, subprocess.run(['sh', '-n'], input=measured,
                                           text=True, capture_output=True).returncode)
+
+    def test_cpu_probe_sampler_enters_loop_without_guest_or_adb(self):
+        # This live shell smoke test would fail the previous implementation:
+        # CPU_PROBE_PARENT was a literal dollar sign, so kill -0 aborted
+        # the loop before collecting a single sample.
+        with tempfile.TemporaryDirectory() as td:
+            stage = Path(td)
+            (stage / 'gpu-bench').mkdir()
+            shell = (
+                'set -eu\n'
+                + 'STAGE=' + str(stage) + '\n'
+                + 'FAIL="$STAGE/gpu-bench/run.log"\n'
+                + visual.CPU_PROBE_SCRIPT.replace('__CPU_PROBE_LIMIT__', '2')
+                                          .replace('sleep 5', 'sleep 0')
+                + 'wait "$CPU_PROBE_PID"\n'
+            )
+            proc = subprocess.run(['sh'], input=shell, text=True,
+                                  capture_output=True, timeout=5)
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            probe = (stage / 'gpu-bench/cpu-probe.log').read_text()
+            self.assertIn('oneios-cpu-probe-start: limit=2', probe)
+            self.assertIn('oneios-cpu-probe-stop: max_samples=2', probe)
+            self.assertEqual(2, probe.count('oneios-cpu-probe-status: '))
+            self.assertIn('CPU_PROBE_MODE=read_only_5s',
+                          (stage / 'gpu-bench/run.log').read_text())
 
     def test_cpu_probe_collect_flag_is_rejected_before_adb(self):
         from contextlib import redirect_stderr

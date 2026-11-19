@@ -222,3 +222,28 @@ to keep the GPU logging workload fixed. Only after reading the actual
 clock/scheduling evidence should a separated, host-only CPU scheduling
 bridge be considered. In particular do not set `bridges=1`, which the
 exclusive-touch bench guard forbids.
+
+
+### CPU probe zero-sample regression
+
+The 2026-11-19 CPU probe run was ended early with SIGTERM:
+`DEVICE_BENCH_STATE=finished:0`, `TOUCH_RELEASE_LOGGED=True` and
+`SYSTEM_SERVER_AFTER=yes`. Its 52 display windows mostly contained idle
+frames; peak posted rate was 8.13Hz. These metrics are not comparable
+to the previous trace-off 600-second session because the guest ran
+fewer interactions (7 logged gestures) and longer idle stretches.
+
+The CPU probe was falsely classified enabled despite 0 process and
+0 policy samples. Root cause: the generated shell assignment
+`CPU_PROBE_PARENT=$` was a lone dollar sign; the `kill -0` condition
+aborted every loop before the first sample. This was an instrumentation
+bug, not evidence of CPU throttling, a broken CPU scheduler or a
+Vulkan regression. Fix: replace parent-PID liveness gating with a
+strictly bounded five-second iteration loop and guest-exit kill;
+emit start/status diagnostics and treat missing numeric clock
+samples as invalid. Added host-only runnable smoke regression.
+
+Run a NEW 120-second one-shot Data clone for CPU measurement.
+Do not enable `bridges=1`, force CPU clocks or edit system governors
+until sampling confirms allowed cores, scheduling wait, and policy
+frequency relative to the limit.

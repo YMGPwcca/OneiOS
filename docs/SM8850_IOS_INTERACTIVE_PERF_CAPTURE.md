@@ -226,3 +226,33 @@ next guest frame. Its 15.67Hz median active-post cadence was lower than
 the older 19.92Hz trace-enabled result despite better worst touch latency.
 These are different interaction sequences (72 vs 110 touches), so neither
 proves improvement or regression from trace removal.
+
+
+### Fix for zero CPU samples and short 120-second CPU run
+
+The first 2026-11-19 CPU-only sampler run booted and cleaned up normally,
+but collected `CPU_PROBE_SAMPLES=0` and `CPU_PROBE_POLICY_SAMPLES=0`.
+The enabled marker only meant the sampler was requested, not that it
+collected data. The generated sampler had `CPU_PROBE_PARENT=$` rather than
+a process ID, and `kill -0 "$CPU_PROBE_PARENT"` prevented the first
+loop iteration. The sampler no longer gates on that PID: it has a
+strict maximum number of iterations plus explicit stop on guest exit,
+with `oneios-cpu-probe-start:` and `oneios-cpu-probe-status:` breadcrumbs
+to diagnose missing processes. Regression tests now *execute* the
+generated sampler loop with no guest, no ADB, and no phone.
+
+Before the next guest run, validate local regression tests. Then launch
+a fresh, 120-second session, not 600 seconds:
+
+```sh
+python3 scripts/phone/sm8850-ios-gpu-visual.py run \
+  --touch --duration 120 --ram-mib 4096 --detach \
+  --no-gpu-trace --cpu-probe
+```
+
+After the guest finishes, reconnect the USB cable and run the normal
+`collect --stage <printed-exact-stage>` command. It now prints
+`CPU_PROBE_VALID=True` only when an actual host process sample and
+a numeric CPU clock measurement exist. Otherwise it prints a warning
+and the first sampler diagnostic lines. Do not interpret zero
+samples as no CPU usage. Never reuse a consumed Data snapshot.
