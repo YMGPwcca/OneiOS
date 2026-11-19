@@ -97,6 +97,9 @@ up to 742 ms touch-to-frame latency and only ~1.55 GiB Android
 MemAvailable near shutdown while 4 GiB guest RAM was locked. Start with
 600 s for observation, not 1800 s, and do not leave the phone unattended.
 Longer duration does not solve FPS, cold icon loading or crash loops.
+See [the measured interactive performance triage](SM8850_IOS_INTERACTIVE_PERF_TRIAGE.md)
+for the SpringBoard/backboardd PID change, CPU syscall/fault pressure, icon
+service workload, GPU fence outliers and next read-only investigations.
 Each run creates a **new** APFS Data clone and checks free space; it does
 not resume modifications from the last consumed snapshot.
 
