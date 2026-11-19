@@ -33,6 +33,10 @@ static void trace(char event) {
 
 int __wrap_open(const char *path, int flags, ...) {
     if (strcmp(path, "/dev/watchdog0")) {
+        // The control directory is the only real open requested by the test
+        // binary. Unexpected watchdog paths must never reach the host.
+        if (!(flags & O_DIRECTORY))
+            abort();
         root = __real_open(path, flags);
         return root;
     }
