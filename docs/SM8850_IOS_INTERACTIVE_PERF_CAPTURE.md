@@ -112,3 +112,53 @@ policy, `ram-prefault`, vCPU count, resolution or frame pacing heuristics.
 An A/B optimization follows only after collecting two comparable active
 windows and cold/warm Settings observations. The 600s session is unverified
 on this new instrumentation until S26 Ultra device acceptance succeeds.
+
+
+## Unplugged 10-minute preview with deferred log collection
+
+The first physical-USB unplug trial did not necessarily stop the iOS guest.
+The old host polling loop failed with `adb: device ... not found` while
+the 600-second on-device script continued. Reconnected log analysis had
+117 five-second display windows, 19.92 Hz median active-post cadence,
+912.5 ms worst touch-to-frame, 32 touches without a subsequent guest frame,
+39.42 ms maximum GPU fence, 55,975 task traps/s peak and only 1006 MiB
+minimum Android MemAvailable. SpringBoard/backboardd maintained PIDs 30/52.
+20 host_statistics64 ABI warnings remain. This does not prove a GPU fault
+or isolate exactly why Settings icon loading takes ~3 seconds.
+
+Use an explicit detached run when walking around with the phone:
+
+```sh
+python3 scripts/phone/sm8850-ios-gpu-visual.py run \
+  --touch --duration 600 --ram-mib 4096 --detach
+```
+
+Keep USB attached until `DETACH_READY=YES; SAFE_TO_UNPLUG_USB=YES`,
+which requires exact `running` state, the exclusive physical touch grab,
+first posted frame and positive guest GPU fence. The runner then stops
+host ADB polling and saves the stage path; **the 600-second device-side
+TERM/KILL deadline remains armed**. It does not stop the guest or start
+another one. The APFS clone is consumed and must never be booted again.
+
+After the phone returns to One UI and USB is reconnected, run:
+
+```sh
+python3 scripts/phone/sm8850-ios-gpu-visual.py collect \
+  --stage /data/adb/oneios-m3q-gpu-snapshot-REPLACE_WITH_16_HEX
+```
+
+Replace the placeholder with the exact `COLLECT_AFTER_RECONNECT_STAGE`
+value from the detached run. `collect` does not build, create a snapshot,
+launch a guest, write sysctls or perform takeover. It refuses live or
+invalid stages and downloads the three existing logs only after the state
+is `finished:<code>`, then prints/saves performance metrics in the usual
+`out/sm8850/gpu-acceptance/` directory. Read-only collection can repeat.
+
+If USB is disconnected before readiness or while running the old
+non-detached CLI, a PC-side ADB error does not prove that the guest died.
+Do not launch a second guest. Preserve the printed STAGE_PATH, allow the
+on-device deadline to end, reconnect and use `collect`.
+
+The manual ADB emergency-stop procedure is unchanged. Note the small
+Android memory reserve in the last measured session: do not increase the
+session beyond 600 seconds or leave the phone unattended for now.

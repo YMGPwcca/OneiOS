@@ -157,6 +157,12 @@ def preview_summary(display_log):
     }
 
 
+def can_detach(state, *, touch, touch_seen, frame_seen, fence_seen):
+    """Only hand off a confirmed live GPU guest with its visible input ready."""
+    return (state == "running" and frame_seen and fence_seen and
+            (not touch or touch_seen))
+
+
 def checked_build():
     targets = [
         ["make", "-C", str(ROOT / "runtime/xnuhost"), "-j8", "build/android/xnuhost"],
@@ -219,6 +225,9 @@ def acquire_evidence(harness, adb, stage, report, bench):
     host_log, host_err = get(logbase + "/xnuhost.log")
     display_log, display_err = get(logbase + "/display.log", limit=2 << 20)
     run_log, run_err = get(logbase + "/run.log", limit=1 << 20)
+    if report.get("action") == "collect":
+        # Derive this from the original on-device log, not collect's CLI flags.
+        report["touch_requested"] = "VISUAL_MODE=shm_touch_exclusive" in run_log
     artifact_out = ROOT / "out/sm8850/gpu-acceptance"
     artifact_out.mkdir(parents=True, exist_ok=True)
     stamp = report["tag"]
@@ -317,6 +326,7 @@ def run_visible(args, report):
         acknowledgment = harness.root(adb, launch, seconds=25).stdout
         if "VISUAL_RUN_PID=" not in acknowledgment:
             raise RuntimeError("device-side visual runner was not acknowledged")
+        report["device_launch_acknowledged"] = True
         print("LIVE_VIEW=CHECK_PHONE_SCREEN_NOW", flush=True)
         if touch:
             print("TOUCH_PREVIEW=WAIT_FOR_LIVE_TOUCH_GRABBED_BEFORE_SWIPING", flush=True)
@@ -324,6 +334,7 @@ def run_visible(args, report):
         deadline = time.monotonic() + args.duration + 210
         state, frame_seen, fence_seen = "pending", False, False
         touch_seen = False
+        detached = False
         while time.monotonic() < deadline:
             p = harness.root(adb, "cat '%s/gpu-bench/state' 2>/dev/null || echo pending" % stage,
                              seconds=18).stdout.strip()
@@ -353,42 +364,110 @@ def run_visible(args, report):
                     print("LIVE_ADRENO_FENCES=OBSERVED", flush=True)
             if state.startswith("finished:") or state.startswith("blocked"):
                 break
+            if getattr(args, "detach", False) and can_detach(
+                state, touch=touch, touch_seen=touch_seen,
+                frame_seen=frame_seen, fence_seen=fence_seen
+            ):
+                # The device-side runner owns its TERM/KILL timeout.
+                # Only the host ADB polling/collection ends here.
+                detached = True
+                break
             time.sleep(5)
         report["polled_state"] = state
-        acquire_evidence(harness, adb, stage, report, bench)
-        print("VISUAL_BENCH_FINISHED=YES", flush=True)
+        if detached:
+            report["collection_status"] = "DEFERRED_UNTIL_RECONNECT"
+            report["detached"] = True
+            report["device_timeout_seconds"] = args.duration
+        else:
+            acquire_evidence(harness, adb, stage, report, bench)
+            print("VISUAL_BENCH_FINISHED=YES", flush=True)
     finally:
         # Only remove uploads with this run's exact nonce; never delete a snapshot.
+        # The fully staged binaries are independent of these incoming copies.
         try:
             harness.root(adb, "rm -f " + " ".join("'%s'" % p for p in uploads.values()), seconds=20)
         except Exception as exc:
             report["upload_cleanup_warning"] = str(exc)
+    if detached:
+        # Print only AFTER cleanup. The owner may now safely disconnect USB.
+        print("DETACH_READY=YES; SAFE_TO_UNPLUG_USB=YES", flush=True)
+        print("COLLECT_AFTER_RECONNECT_STAGE=" + stage, flush=True)
+        print("PHONE_SIDE_TIMEOUT_SECONDS=" + str(args.duration), flush=True)
+
+
+def collect_finished(args, report):
+    """Read-only evidence recovery for a consumed, finished, detached session."""
+    bench = load_tool("sm8850-ios-gpu-bench.py", "oneios_collect_bench")
+    harness = load_tool("sm8850-gpu-acceptance.py", "oneios_collect_acceptance")
+    stage = bench.stage_name(args.stage)  # exact /data/adb/..16-hex nonce
+    adb = harness.select_usb(args.adb, args.serial)
+    report["serial"] = adb[-1]
+    report["stage"] = stage
+    # Refuse collection while an active guest might be writing the logs.
+    # No guest launch, snapshot, chown, sysctl, takeover or stop operation.
+    required = (stage + "/gpu-bench/attempted", stage + "/gpu-bench/launch.claim",
+                stage + "/source-verified.sha256.txt")
+    checks = " && ".join("[ %s '%s' ]" % ("-d" if p.endswith("launch.claim") else "-f", p) +
+                       " && [ ! -L '%s' ]" % p for p in required)
+    evidence = harness.root(adb, "if " + checks + "; then echo COLLECT_STAGE=VERIFIED; "
+                            "else echo COLLECT_STAGE=INVALID; fi", seconds=20).stdout.strip()
+    if evidence != "COLLECT_STAGE=VERIFIED":
+        raise RuntimeError("collect requires a previously attempted exact private snapshot stage")
+    state = harness.root(adb,
+                         "cat '%s/gpu-bench/state' 2>/dev/null || echo missing" % stage,
+                         seconds=20).stdout.strip()
+    if not re.fullmatch(r"finished:[0-9]+", state):
+        raise RuntimeError("guest not confirmed finished; leave iOS running, reconnect later; state=" + state[:80])
+    report["collection_status"] = "POST_RUN_READ_ONLY"
+    print("COLLECT_SOURCE_STAGE=" + stage, flush=True)
+    acquire_evidence(harness, adb, stage, report, bench)
+    print("COLLECT_COMPLETE=YES", flush=True)
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("action", choices=("run",))
+    p.add_argument("action", choices=("run", "collect"))
     p.add_argument("--duration", type=int, default=240, help="guest lifetime in seconds (90..1800; default 240), strictly bounded on device")
     p.add_argument("--touch", action="store_true", help="bench-only exclusive native sec_touchscreen to iOS; physical Android touch suspended")
+    p.add_argument("--detach", action="store_true", help="return after live guest GPU/display/touch are confirmed; collect logs after USB reconnect")
+    p.add_argument("--stage", help="collect only: exact private snapshot path printed by run --detach")
     p.add_argument("--ram-mib", type=int, default=4096)
     p.add_argument("--serial")
     p.add_argument("--adb", default=shutil.which("adb") or str(Path.home() / "Android/Sdk/platform-tools/adb"))
     p.add_argument("--output", type=Path)
     args = p.parse_args(argv)
-    if not 90 <= args.duration <= load_tool("sm8850-ios-gpu-bench.py", "oneios_visual_duration").VISUAL_DURATION_MAX_SECONDS or args.ram_mib not in range(2048, 5121, 256):
-        p.error("duration must be 90..1800 seconds, RAM 2048..5120 MiB in 256 MiB steps")
+    if args.action == "run":
+        if args.stage:
+            p.error("--stage is only accepted for collect; run always makes a fresh Data clone")
+        if not 90 <= args.duration <= load_tool("sm8850-ios-gpu-bench.py", "oneios_visual_duration").VISUAL_DURATION_MAX_SECONDS or args.ram_mib not in range(2048, 5121, 256):
+            p.error("duration must be 90..1800 seconds, RAM 2048..5120 MiB in 256 MiB steps")
+    else:
+        if not args.stage or args.detach or args.touch:
+            p.error("collect requires --stage and cannot launch or detach a guest")
+        try:
+            load_tool("sm8850-ios-gpu-bench.py", "oneios_collect_validate").stage_name(args.stage)
+        except ValueError as exc:
+            p.error(str(exc))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = args.output or ROOT / "out/sm8850/gpu-acceptance" / (stamp + "-ios-gpu-visual.json")
-    report = {"tag": stamp, "action": args.action, "duration_seconds": args.duration, "IOS_VULKAN": "UNVERIFIED",
-              "FRAMEWORK_TAKEOVER": "BLOCKED", "scope": "one-shot visible SHM guest; fresh Data clone; no takeover",
-              "touch_requested": args.touch}
+    report = {"tag": stamp, "action": args.action,
+              "duration_seconds": args.duration if args.action == "run" else None,
+              "IOS_VULKAN": "UNVERIFIED", "FRAMEWORK_TAKEOVER": "BLOCKED",
+              "scope": "one-shot visible SHM guest; no takeover; bounded phone-side timeout",
+              "touch_requested": args.touch if args.action == "run" else None}
     rc = 0
     try:
-        run_visible(args, report)
+        if args.action == "run":
+            run_visible(args, report)
+        else:
+            collect_finished(args, report)
     except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
         rc = 2
         report["error"] = str(exc)
         print("VISUAL_BENCH_ERROR=" + str(exc), file=sys.stderr, flush=True)
+        if args.action == "run" and report.get("device_launch_acknowledged"):
+            print("DEVICE_SESSION_MAY_STILL_BE_RUNNING=YES; DO_NOT_RETRY_OR_REUSE_STAGE", file=sys.stderr, flush=True)
+            print("COLLECT_AFTER_RECONNECT_STAGE=" + report["stage"], file=sys.stderr, flush=True)
     finally:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

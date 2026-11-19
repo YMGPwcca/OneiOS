@@ -266,5 +266,131 @@ class VisualBenchTests(unittest.TestCase):
         self.assertTrue(any('--display shm' in x for x in calls))
 
 
+
+class DetachCollectTests(unittest.TestCase):
+    def test_detach_requires_a_running_guest_frame_and_gpu_fence(self):
+        f = visual.can_detach
+        self.assertTrue(f("running", touch=True, touch_seen=True, frame_seen=True, fence_seen=True))
+        self.assertTrue(f("running", touch=False, touch_seen=False, frame_seen=True, fence_seen=True))
+        for state in ("pending", "preparing", "blocked:2", "finished:124", ""):
+            self.assertFalse(f(state, touch=True, touch_seen=True, frame_seen=True, fence_seen=True))
+        for frame, fence, touch_ok in ((False, True, True), (True, False, True), (True, True, False)):
+            self.assertFalse(f("running", touch=True, touch_seen=touch_ok, frame_seen=frame, fence_seen=fence))
+
+    def test_detach_after_live_confirmation_does_not_wait_or_collect(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+        log = []
+        def root(_adb, shell, **_kw):
+            log.append(shell)
+            if "echo PREPARED=PASS" in shell:
+                return SimpleNamespace(stdout="PREPARED=PASS\n")
+            if "echo VISUAL_ARTIFACTS=PASS" in shell:
+                return SimpleNamespace(stdout="VISUAL_ARTIFACTS=PASS\n")
+            if "echo VISUAL_RUN_PID" in shell:
+                return SimpleNamespace(stdout="VISUAL_RUN_PID=222\n")
+            if "gpu-bench/state' 2>/dev/null" in shell:
+                return SimpleNamespace(stdout="running\n")
+            if "touch-exclusive: sec_touchscreen grabbed" in shell:
+                return SimpleNamespace(stdout="input: touch-exclusive: sec_touchscreen grabbed\n")
+            if "first frame posted" in shell:
+                return SimpleNamespace(stdout="oneios-display: first frame posted\n")
+            if "backboardd fences" in shell:
+                return SimpleNamespace(stdout="backboardd fences 3\n")
+            return SimpleNamespace(stdout="map_count=1048576\n")
+        harness = SimpleNamespace(
+            select_usb=lambda *_: ["adb", "-s", "testusb"],
+            root=root,
+            decode_kv=lambda _: {"map_count": "1048576"},
+            validate_preflight=lambda _: ({}, []),
+            DEVICE_AUDIT="audit",
+        )
+        report = {"tag": "testdetach", "action": "run"}
+        with tempfile.TemporaryDirectory() as td:
+            guest_binary = Path(td) / "xnuhost"
+            guest_binary.write_bytes(b"touch-exclusive=1 requires")
+            files = {name: Path(td) / name for name in ("xnuhost", *visual.DISPLAY_ARTIFACTS)}
+            digests = {name: "a"*64 for name in files}
+            args = SimpleNamespace(adb="adb", serial=None, duration=600,
+                                   ram_mib=4096, touch=True, detach=True)
+            def stage_snapshot(_adb, _harness, new_report):
+                new_report["stage"] = STAGE
+                return STAGE
+            with patch.object(visual, "load_tool", side_effect=[harness, bench]), \
+                 patch.object(visual, "checked_build"), \
+                 patch.object(visual, "verified_local_artifacts", return_value=(files, digests)), \
+                 patch.object(visual, "snapshot_new", side_effect=stage_snapshot) as snap, \
+                 patch.object(visual, "push_file"), \
+                 patch.object(visual, "acquire_evidence", side_effect=AssertionError("detach must not collect")), \
+                 redirect_stdout(StringIO()) as stdout:
+                visual.run_visible(args, report)
+        snap.assert_called_once()
+        self.assertTrue(report["detached"])
+        self.assertEqual("DEFERRED_UNTIL_RECONNECT", report["collection_status"])
+        self.assertEqual("running", report["polled_state"])
+        self.assertIn("DETACH_READY=YES; SAFE_TO_UNPLUG_USB=YES", stdout.getvalue())
+        self.assertIn("COLLECT_AFTER_RECONNECT_STAGE=" + STAGE, stdout.getvalue())
+        self.assertIn("PHONE_SIDE_TIMEOUT_SECONDS=600", stdout.getvalue())
+        self.assertTrue(any("rm -f" in cmd for cmd in log))
+        self.assertTrue(any("timeout -s TERM -k 15 600" in cmd for cmd in log))
+        self.assertTrue(any("timeout -s TERM -k 10 645" in cmd for cmd in log))
+        self.assertFalse(any("pkill" in cmd or "stop system_server" in cmd for cmd in log))
+
+    def test_collect_waits_until_finished_and_does_not_boot(self):
+        from types import SimpleNamespace
+        states = ["running", "finished:124"]
+        calls = []
+        def root(_adb, shell, **_kw):
+            calls.append(shell)
+            if "COLLECT_STAGE=VERIFIED" in shell:
+                return SimpleNamespace(stdout="COLLECT_STAGE=VERIFIED\n")
+            if "/gpu-bench/state" in shell:
+                return SimpleNamespace(stdout=states[0] + "\n")
+            raise AssertionError("unexpected root command during read-only collect: " + shell)
+        harness = SimpleNamespace(select_usb=lambda *_: ["adb", "-s", "testusb"], root=root)
+        args = SimpleNamespace(adb="adb", serial=None, stage=STAGE)
+        report = {"tag": "collect", "action": "collect"}
+        with patch.object(visual, "load_tool", side_effect=[bench, harness]), \
+             patch.object(visual, "acquire_evidence") as evidence:
+            with self.assertRaisesRegex(RuntimeError, "not confirmed finished"):
+                visual.collect_finished(args, report)
+            evidence.assert_not_called()
+        states[0] = "finished:124"
+        with patch.object(visual, "load_tool", side_effect=[bench, harness]), \
+             patch.object(visual, "acquire_evidence") as evidence:
+            visual.collect_finished(args, report)
+            evidence.assert_called_once_with(harness, ["adb", "-s", "testusb"], STAGE, report, bench)
+        self.assertEqual("POST_RUN_READ_ONLY", report["collection_status"])
+        self.assertTrue(all("rm -f" not in cmd and "timeout " not in cmd and "nohup" not in cmd for cmd in calls))
+
+    def test_collect_rejects_untrusted_paths_and_detach_flags_without_adb(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        with patch.object(visual, "run_visible", side_effect=AssertionError("must not run guest")), \
+             patch.object(visual, "collect_finished", side_effect=AssertionError("must not collect")), \
+             redirect_stderr(StringIO()):
+            for arglist in (
+                ["collect"],
+                ["collect", "--stage", "/data/local/tmp/a"],
+                ["collect", "--stage", STAGE + ";rm -rf /"],
+                ["collect", "--stage", STAGE, "--detach"],
+                ["collect", "--stage", STAGE, "--touch"],
+                ["run", "--stage", STAGE],
+            ):
+                with self.subTest(args=arglist), self.assertRaises(SystemExit):
+                    visual.main(arglist)
+
+    def test_detach_does_not_change_device_timeout_or_original_data(self):
+        script = visual.make_visual_script(bench, STAGE, 600, 4096, touch=True)
+        self.assertIn("ONEIOS_GPU_TRACE=1 timeout -s TERM -k 15 600", script)
+        self.assertIn("timeout -s TERM -k 10 645", script)
+        self.assertIn('--data "$STAGE/data"', script)
+        self.assertNotIn('--data "$BASE/data"', script)
+        self.assertIn("gpu-bench/attempted", script)
+        self.assertIn("launch.claim", script)
+        self.assertEqual(0, subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True).returncode)
+
+
 if __name__ == '__main__':
     unittest.main()

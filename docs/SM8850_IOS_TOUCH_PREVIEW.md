@@ -139,3 +139,14 @@ The visual preview now records five-second frame-pacing statistics in
 stored under `performance` in the report JSON. See
 [SM8850 interactive GUI performance capture](SM8850_IOS_INTERACTIVE_PERF_CAPTURE.md).
 No extra timeout or takeover privileges are needed.
+
+
+### Safe USB disconnect
+
+For a physical, walk-around 10-minute session, run
+`sm8850-ios-gpu-visual.py run --touch --duration 600 --detach`.
+Unplug USB only after `DETACH_READY=YES`, not merely the first frame.
+After the device-side timeout, reconnect and run `collect --stage` with
+the exact `COLLECT_AFTER_RECONNECT_STAGE` printed by the run.
+The collection is read-only; the consumed Data clone is never booted
+again. See [detached performance capture](SM8850_IOS_INTERACTIVE_PERF_CAPTURE.md).
