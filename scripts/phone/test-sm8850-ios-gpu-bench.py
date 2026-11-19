@@ -259,5 +259,17 @@ class GuestFullLogAnalysisTests(unittest.TestCase):
         self.assertTrue(marks['legacy_vulkan_failure'])
         self.assertFalse(marks['gpu_execution_observed'])
 
+
+    def test_missing_guest_log_preserves_preboot_device_error(self):
+        source = SOURCE.read_text()
+        begin = source.index('        log_name = stage + "/" + log_dir + "/xnuhost.log"')
+        until_runlog = source.index('        device_log = harness.root', begin)
+        collection = source[begin:until_runlog]
+        self.assertIn('2>/dev/null || echo 0', collection)
+        self.assertIn('host_log = ""', collection)
+        self.assertIn('log_collection_warning', collection)
+        self.assertNotIn('raise RuntimeError', collection)
+        self.assertIn('device_log', source[until_runlog:])
+
 if __name__=='__main__':
     unittest.main()

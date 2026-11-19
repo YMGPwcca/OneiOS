@@ -374,14 +374,20 @@ def stage_and_run(args, harness, adb, report):
         if not (state.startswith("finished:") or state.startswith("blocked")):
             raise RuntimeError("remote deadline not confirmed; device-side timeout should still enforce bounded lifetime")
         log_name = stage + "/" + log_dir + "/xnuhost.log"
-        log_size_text = harness.root(adb, "stat -c '%s' '" + log_name + "'", seconds=20).stdout.strip()
-        if not log_size_text.isdigit() or not 0 < int(log_size_text) <= (64 << 20):
-            raise RuntimeError("guest log is absent, empty or over the 64 MiB collection limit")
-        # Do not tail: the initial boot-args and DRM-native lines were among the
-        # first 3,000 lines of the 10,874-line real SM8850 GPU log.
-        host_log = harness.root(adb, "cat '" + log_name + "'", seconds=120).stdout
-        if not host_log.strip():
-            raise RuntimeError("complete guest log collection returned no content")
+        log_size_text = harness.root(adb, "stat -c '%s' '" + log_name + "' 2>/dev/null || echo 0", seconds=20).stdout.strip()
+        # Do not lose run.log when a preboot blocker produced no guest log.
+        # A live guest log is read in full, not truncated to 7,000 lines.
+        host_log = ""
+        if not log_size_text.isdigit():
+            report["log_collection_warning"] = "device returned invalid guest log size"
+        elif int(log_size_text) > (64 << 20):
+            report["log_collection_warning"] = "guest log exceeds 64 MiB collection cap"
+        elif int(log_size_text) > 0:
+            host_log = harness.root(adb, "cat '" + log_name + "'", seconds=120).stdout
+            if not host_log.strip():
+                report["log_collection_warning"] = "guest log collection returned empty content"
+        else:
+            report["log_collection_warning"] = "guest log absent (possible preboot block)"
         device_log = harness.root(adb, "cat '" + stage + "/" + log_dir + "/run.log' 2>/dev/null || :", seconds=20).stdout
         logpath = Path(args.output).with_suffix(".xnuhost.log") if args.output else ROOT / "out/sm8850/gpu-acceptance" / (args.tag + "-ios-gpu-bench.log")
         logpath.parent.mkdir(parents=True, exist_ok=True)
@@ -395,6 +401,8 @@ def stage_and_run(args, harness, adb, report):
         report_guest_gpu(host_log, report)
         if state.startswith("blocked"):
             raise RuntimeError("device-side guest bench blocked; see run.log and report")
+        if not host_log.strip():
+            raise RuntimeError("guest finished without a readable log; see device run.log and report")
     finally:
         try:
             harness.root(adb, "rm -f '" + incoming + "'", seconds=15)
