@@ -92,6 +92,34 @@ regression covers custom arguments, exact-token matching, explicit
 selection. The Turnip replay reaches the DRM-native open with the fixed
 arguments and stops at that boundary.
 
+### Follow-up DRM-native replay
+
+The host's built-in boot-argument string also supplied `vgpu-3d=1`
+before deciding whether a renderer was available. The default is now
+set only after the DRM-native renderer opens. Tests cover default
+arguments with and without a renderer, explicit `vgpu-3d=0` with
+`--gpu auto`, explicit `vgpu-3d=1` with `--gpu 2d`, and the
+608-byte legacy command-line limit. The host's `2d` mode determines
+what capabilities it advertises independently of an explicit guest
+argument.
+
+| Milestone | Local result | Adreno evidence |
+| --- | --- | --- |
+| DRM-native client and capset | The staged Darwin transport ran against an IOKit stand-in and opened `0x4149`, used DRM capset 6, established a context and mapped the response buffer. GET_PARAM and submit queue creation passed. | The saved capture opened the initial `0x4149` probe. The prior standalone host test confirmed the capset. |
+| Enumeration and selection | The replay fed the host's capset layout into Darwin Turnip. Mesa's device table resolved `0x44050a00` to Adreno 840. A separate Vulkan probe successfully enumerated and selected the real Radeon 880M through RADV. | The saved iOS capture failed enumeration in the legacy path. Successful iOS enumeration with the corrected arguments remains unverified. |
+| `vkCreateDevice` | Passed on Radeon 880M with a transfer-capable queue. | Unverified for iOS Turnip. |
+| Allocation, submit and fence | The Darwin transport replay passed BO allocation, GEM_NEW, CPU map, fenced EXECBUFFER, pre-retirement timeout, completion and GEM_CLOSE. The Radeon Vulkan probe filled a 4,096-byte buffer, waited for its fence and verified 1,024 words. | The prior standalone Adreno test imported and mapped memory, submitted commands and observed retirement after 6.14 ms with zero faults or async errors. That test exercised `drm2kgsl` directly on the host. |
+
+The IOKit replay compiled the staged `tu_knl_darwin_virtgpu.cc` and
+Mesa's device-table lookup on Linux. It used simulated IOKit replies
+with AddressSanitizer and UndefinedBehaviorSanitizer enabled, and
+covered the board default plus the `TU_DARWIN_VIRTGPU=0/1` overrides.
+The Vulkan device steps ran on RADV. The local setup has no execution
+environment for the arm64e Darwin Turnip Vulkan driver.
+[Transport replay](../out/sm8850/gui-crash/drm-replay/drm-native.log) ·
+[RADV buffer probe](../out/sm8850/gui-crash/drm-replay/vulkan-buffer.log) ·
+[Saved Adreno evidence](../out/sm8850/gpu-standalone-triage.txt)
+
 For an instrumented build, guest boot argument `oneios-vk-init=1`
 enables process-tagged stderr and Mesa diagnostics. They record the
 Vulkan entry path, instance creation, enumeration, physical device
@@ -136,6 +164,18 @@ The private wrapper list remains invisible to both traces. An
 addon-off capture and an accelerated guest capture are required to
 determine what triggers the software import and whether acceleration
 bypasses it during GUI use.
+
+The saved call-site instructions use the same `x20` context for the
+import and `push_surface` and pass the returned wrapper unchanged
+between them. The normal tracking and push paths choose the same
+list offsets (`0x60` or `0x68`) using the wrapper's flag `0x400`.
+This rules out a caller switching contexts between the two calls.
+The software import retains the IOSurface and returns its wrapper
+without the normal tracking-list insertion. The host generation replay
+exercises a different ownership mechanism and supplies no link from a
+reused virtio resource to the crashing wrapper. The issue stays
+**OPEN**. A guest trace covering creation and registration or the
+addon-off control is still needed to identify the compatibility trigger.
 
 ## Queue reset fix from `7227956`
 
@@ -190,16 +230,43 @@ through 3172 passed the container and volume checks. `apfsutil`
 independently located Data, and OneiOS and apfs-fuse returned identical
 bytes for `/.oneios-seed`.
 
-The file read pass traversed 28,358 directories and read 12,453 files
-totaling 2,142,878,991 bytes. Fourteen `.atx` files returned `EIO` from
-apfs-fuse. Their inodes carry `com.apple.decmpfs` methods `0x0f` and
-`0x10` (six inline and eight with resource forks). The independent
-OneiOS file lookup did not recover those entries by path. An earlier
-bulk extraction to NTFS stopped at a literal asterisk in a filename,
-which is a scratch destination restriction. The container and recent
-checkpoints are readable. Full restore readiness remains unverified
-pending a reader that can decode those entries and a restore check on
-compatible APFS tooling. The guest boot gate remains closed.
+### Follow-up restoration rehearsal
+
+**`RESTORE_READY=PASS` for offline recovery of the captured Data pair.**
+The disposable raw target opened read-only at xid 3172. The OneiOS
+reader restored the full regular-file tree to a disposable Btrfs
+directory. It recovered 12,455 regular files totaling 2,139,526,899
+bytes, including 86 compressed files, with zero skipped. An independent
+comparison matched the SHA-256 of 12,441 files against apfs-fuse and
+the other 14 against system liblz4. All 28,355 directories and three
+symlink targets matched. The raw target retains APFS metadata and the
+eight socket records, which the directory extraction omits.
+
+The 14 `.atx` files are MercuryPoster snapshot cache resources. They
+share BSD flag `UF_COMPRESSED`, UID/GID 501/501 and mode `0100777`.
+Six use `com.apple.decmpfs` type `0x0f` with inline LZ4 and eight use
+type `0x10` with chunked resource forks. Their `bv41` frames match
+Apple's documented [LZ4 framing](https://developer.apple.com/documentation/compression/compression_lz4).
+Each fork's raw bytes agreed between FUSE xattr reads and direct extent
+reads. All 318 frames decoded to their declared sizes, producing
+20,447,184 bytes with the expected ATX signature and matching digests
+from both LZ4 implementations.
+
+The installed apfs-fuse returned `EIO` on all 14 file reads. The
+previous OneiOS path probe passed FUSE's additional `/root` component
+to a reader already rooted at APFS inode 2, causing path lookup to
+fail. Using the correct path, the previous decoder stopped on unknown
+type 15 or treated type 16's header-only xattr as inline data. The new
+decoder reads Apple's LZ4 frames and validates type 16's fork offset
+table, block bounds and decoded sizes. The independent recovery
+explains the observed failures as reader limitations.
+
+The original backup pair and the disposable raw target both matched
+the original SHA-256 manifest after the rehearsal. Hardware guest boot
+and use of recovered Data remain unverified and are outside this
+offline gate.
+[Exact paths and file metadata](../out/sm8850/gui-crash/restore-rehearsal/files.json) ·
+[Restore comparison](../out/sm8850/gui-crash/restore-rehearsal/restore-comparison.json)
 
 ## Preservation
 
