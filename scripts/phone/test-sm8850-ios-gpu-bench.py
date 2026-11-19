@@ -208,5 +208,56 @@ class FixedBenchTests(unittest.TestCase):
             (d/'run.log').write_text('ERROR=trusted_addon_missing\n')
             self.assertEqual(0,check().returncode)
 
+
+class GuestFullLogAnalysisTests(unittest.TestCase):
+    def test_old_head_and_real_fence_windows_avoid_tail_false_negative(self):
+        # The actual 2026-11-19 guest log was 10,874 lines; old collection
+        # truncated its boot args and renderer-negotiation lines.
+        log = ('xnuhost I placed: boot-args "debug=1 vgpu-3d=1"\n'
+               'guest oneios-gpu: virtio GPU with the DRM native context\n'
+               + 'guest idle\n' * 8000
+               + 'xnuhost I gpu: 10 s host: backboardd fences 125, submit->retired mean 2424 us\n'
+               + 'xnuhost I gpu: 10 s host: backboardd fences 84, submit->retired mean 2107 us\n'
+               + 'xnuhost I gpu: 10 s host: backboardd fences 27, submit->retired mean 3071 us\n')
+        full = bench.summarize_log(log)
+        self.assertTrue(full['bootargs_vgpu_3d'])
+        self.assertTrue(full['gpu_drm_native'])
+        self.assertTrue(full['gpu_execution_observed'])
+        self.assertEqual(125, full['backboardd_fences_max'])
+        self.assertEqual(236, full['backboardd_fences_reported_total'])
+        self.assertEqual(3, full['backboardd_fence_windows'])
+        # Regression evidence: the former tail-only summarizer was wrong.
+        tail_only = bench.summarize_log('\n'.join(log.splitlines()[-7000:]))
+        self.assertFalse(tail_only['bootargs_vgpu_3d'])
+        self.assertFalse(tail_only['gpu_execution_observed'])
+
+    def test_analyze_log_without_phone_never_calls_adb(self):
+        import json
+        from unittest.mock import patch
+        log = ('xnuhost I placed: boot-args "debug vgpu-3d=1"\n'
+               'guest oneios-gpu: virtio GPU with the DRM native context\n'
+               'xnuhost I gpu: backboardd fences 12, submit->retired mean 1000 us\n')
+        with tempfile.TemporaryDirectory() as td:
+            file = Path(td) / 'full.log'
+            report_file = Path(td) / 'report.json'
+            file.write_text(log)
+            with patch.object(bench, 'load_harness', side_effect=AssertionError('ADB is forbidden for analyze-log')):
+                rc = bench.main(['analyze-log', '--log', str(file), '--output', str(report_file)])
+            self.assertEqual(0, rc)
+            result = json.loads(report_file.read_text())
+            self.assertEqual('OBSERVED', result['GUEST_GPU_PATH'])
+            self.assertEqual('UNVERIFIED', result['IOS_VULKAN'])
+            self.assertEqual(12, result['markers']['backboardd_fences_reported_total'])
+            self.assertEqual(str(file), result['source_log'])
+
+    def test_vk_error_prevents_gpu_path_pass(self):
+        sample = ('xnuhost I placed: boot-args "debug=1 vgpu-3d=1"\n'
+                  'oneios-gpu: virtio GPU with the DRM native context\n'
+                  'xnuhost I gpu: backboardd fences 8\n'
+                  'oneios-gpu-text Vulkan(VkResultCode(-3))\n')
+        marks = bench.summarize_log(sample)
+        self.assertTrue(marks['legacy_vulkan_failure'])
+        self.assertFalse(marks['gpu_execution_observed'])
+
 if __name__=='__main__':
     unittest.main()

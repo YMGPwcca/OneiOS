@@ -3,7 +3,8 @@
 
 Keep the existing signed GPU addon, image and trustcache for this first test.
 Use a freshly built xnuhost with the corrected vgpu-3d=1 default.
-No takeover, physical input, watchdog device, APFS source writes or sysctl changes.
+No takeover, physical input, watchdog device or original APFS writes.
+Note: xnuhost currently raises global vm.max_map_count for guest mappings.
 """
 import argparse
 import hashlib
@@ -225,12 +226,50 @@ def summarize_log(log):
         "quartzcore_abort": bool(re.search(r'ogl-context\.cpp:1309|found != slist->end|backboardd\[[0-9]+\] status 0x6', log)),
         "guest_first_frame": bool(re.search(r'guest ready: first frame', log)),
     }
+    # The host reports retired fences per ~10-second accounting interval, not
+    # a monotonic total. A single highest interval is not a run-wide count.
     fences = [int(n) for n in re.findall(r'\bbackboardd fences ([0-9]+)\b', log)]
     stamps["backboardd_fences_max"] = max(fences, default=0)
+    stamps["backboardd_fences_reported_total"] = sum(fences)
+    stamps["backboardd_fence_windows"] = len(fences)
     stamps["gpu_execution_observed"] = (stamps["bootargs_vgpu_3d"] and
                                          stamps["gpu_drm_native"] and
-                                         stamps["backboardd_fences_max"] > 0)
+                                         stamps["backboardd_fences_max"] > 0 and
+                                         not stamps["legacy_vulkan_failure"])
+    # This path is independent of vkCreateDevice API tracing, which the existing
+    # signed addon did not provide. Do not turn it into IOS_VULKAN=PASS.
     return stamps
+
+
+def report_guest_gpu(log, report):
+    """Classify full guest evidence, never infer vkCreateDevice from a fence."""
+    marks = summarize_log(log)
+    report["markers"] = marks
+    report["GUEST_GPU_PATH"] = "OBSERVED" if marks["gpu_execution_observed"] else "UNVERIFIED"
+    report["IOS_VULKAN"] = "UNVERIFIED"
+    print("GPU_BOOTARGS_VGPU3D=" + str(marks["bootargs_vgpu_3d"]))
+    print("GPU_DRM_NATIVE=" + str(marks["gpu_drm_native"]))
+    print("GPU_FENCES_MAX=" + str(marks["backboardd_fences_max"]))
+    print("GPU_FENCES_REPORTED_TOTAL=" + str(marks["backboardd_fences_reported_total"]))
+    print("GPU_FENCE_WINDOWS=" + str(marks["backboardd_fence_windows"]))
+    print("VK_ERROR_MINUS3=" + str(marks["legacy_vulkan_failure"]))
+    print("QUARTZCORE_ABORT=" + str(marks["quartzcore_abort"]))
+    print("GUEST_GPU_PATH=" + report["GUEST_GPU_PATH"])
+    print("IOS_VULKAN=UNVERIFIED (no guest vkCreateDevice trace in existing signed addon)")
+
+
+def analyze_existing_log(path, report):
+    """Host-only replay of an already collected full log; no ADB or guest run."""
+    if path is None or not path.is_file():
+        raise ValueError("--log must point to an existing full xnuhost log")
+    if path.stat().st_size > (64 << 20):
+        raise ValueError("refusing to read an xnuhost log larger than 64 MiB")
+    log = path.read_text(encoding="utf-8", errors="replace")
+    if not log.strip():
+        raise ValueError("existing xnuhost log is empty")
+    report["source_log"] = str(path)
+    report["log_bytes"] = path.stat().st_size
+    report_guest_gpu(log, report)
 
 
 def inspect_stage(stage, harness, adb, report):
@@ -334,7 +373,15 @@ def stage_and_run(args, harness, adb, report):
         print("DEVICE_BENCH_STATE=" + state)
         if not (state.startswith("finished:") or state.startswith("blocked")):
             raise RuntimeError("remote deadline not confirmed; device-side timeout should still enforce bounded lifetime")
-        host_log = harness.root(adb, "tail -n 7000 '" + stage + "/" + log_dir + "/xnuhost.log' 2>/dev/null || :", seconds=65).stdout
+        log_name = stage + "/" + log_dir + "/xnuhost.log"
+        log_size_text = harness.root(adb, "stat -c '%s' '" + log_name + "'", seconds=20).stdout.strip()
+        if not log_size_text.isdigit() or not 0 < int(log_size_text) <= (64 << 20):
+            raise RuntimeError("guest log is absent, empty or over the 64 MiB collection limit")
+        # Do not tail: the initial boot-args and DRM-native lines were among the
+        # first 3,000 lines of the 10,874-line real SM8850 GPU log.
+        host_log = harness.root(adb, "cat '" + log_name + "'", seconds=120).stdout
+        if not host_log.strip():
+            raise RuntimeError("complete guest log collection returned no content")
         device_log = harness.root(adb, "cat '" + stage + "/" + log_dir + "/run.log' 2>/dev/null || :", seconds=20).stdout
         logpath = Path(args.output).with_suffix(".xnuhost.log") if args.output else ROOT / "out/sm8850/gpu-acceptance" / (args.tag + "-ios-gpu-bench.log")
         logpath.parent.mkdir(parents=True, exist_ok=True)
@@ -345,14 +392,7 @@ def stage_and_run(args, harness, adb, report):
         print("DEVICE_RUN_LOG_BEGIN")
         print(device_log.strip() or "(empty; check device-run.log)")
         print("DEVICE_RUN_LOG_END")
-        report["markers"] = summarize_log(host_log)
-        report["IOS_VULKAN"] = "UNVERIFIED"  # Old addon has no vkCreateDevice instrumentation.
-        print("GPU_BOOTARGS_VGPU3D=" + str(report["markers"]["bootargs_vgpu_3d"]))
-        print("GPU_DRM_NATIVE=" + str(report["markers"]["gpu_drm_native"]))
-        print("GPU_FENCES_MAX=" + str(report["markers"]["backboardd_fences_max"]))
-        print("VK_ERROR_MINUS3=" + str(report["markers"]["legacy_vulkan_failure"]))
-        print("QUARTZCORE_ABORT=" + str(report["markers"]["quartzcore_abort"]))
-        print("IOS_VULKAN=UNVERIFIED (old signed addon; verify GPU rendering and errors)")
+        report_guest_gpu(host_log, report)
         if state.startswith("blocked"):
             raise RuntimeError("device-side guest bench blocked; see run.log and report")
     finally:
@@ -364,15 +404,19 @@ def stage_and_run(args, harness, adb, report):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("action", choices=("plan", "run", "inspect", "retry-preboot"))
-    p.add_argument("--stage", required=True)
+    p.add_argument("action", choices=("plan", "run", "inspect", "retry-preboot", "analyze-log"))
+    p.add_argument("--stage", help="private snapshot stage; not needed for analyze-log")
+    p.add_argument("--log", type=Path, help="existing complete xnuhost log for host-only analyze-log")
     p.add_argument("--duration", type=int, default=240)
     p.add_argument("--ram-mib", type=int, default=4096)
     p.add_argument("--adb", default=shutil.which("adb") or str(Path.home() / "Android/Sdk/platform-tools/adb"))
     p.add_argument("--serial")
     p.add_argument("--output", type=Path)
     args = p.parse_args(argv)
-    stage_name(args.stage)
+    if args.action != "analyze-log":
+        if not args.stage:
+            p.error("--stage is required except for analyze-log")
+        stage_name(args.stage)
     if args.duration not in range(30, 301) or args.ram_mib not in range(2048, 5121, 256):
         p.error("duration must be 30..300 seconds and RAM 2048..5120 MiB in 256 MiB steps")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -382,13 +426,16 @@ def main(argv=None):
               "FRAMEWORK_TAKEOVER": "BLOCKED", "scope": "one-shot no-takeover bench, isolated Data"}
     rc = 0
     try:
-        harness = load_harness()
-        adb = harness.select_usb(args.adb, args.serial)
-        report["serial"] = adb[-1]
-        if args.action == "inspect":
-            inspect_stage(args.stage, harness, adb, report)
+        if args.action == "analyze-log":
+            analyze_existing_log(args.log, report)
         else:
-            stage_and_run(args, harness, adb, report)
+            harness = load_harness()
+            adb = harness.select_usb(args.adb, args.serial)
+            report["serial"] = adb[-1]
+            if args.action == "inspect":
+                inspect_stage(args.stage, harness, adb, report)
+            else:
+                stage_and_run(args, harness, adb, report)
     except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as e:
         rc = 2
         report["error"] = str(e)

@@ -72,7 +72,7 @@ reason inside the local JSON report. It still may report `IOS_VULKAN=UNVERIFIED`
 when the signed addon lacks Vulkan API-level instrumentation.
 
 **Safety:** No Framework takeover, watchdog operations, kernel/firmware changes,
-original Data writes or sysctl changes. A real 4-GiB iOS guest still consumes
+original Data writes. However `xnuhost` raises the global `vm.max_map_count` to 1048576; the measured bench changed 65530 to 1048576 and did not restore it. A real 4-GiB iOS guest still consumes
 phone RAM, CPU and GPU resources, and has a 240-second device-side limit plus
 a 15-second TERM-to-KILL backstop. This is not a GUI stability test or a
 recovery-handback acceptance test.
