@@ -276,7 +276,7 @@ def acquire_evidence(harness, adb, stage, report, bench):
         "diagnostic_windows": sum(line.startswith("oneios-cpu-probe-status: ") for line in cpu_log.splitlines()),
         "valid": ("CPU_PROBE_MODE=read_only_5s" in run_log and
                   any(line.startswith("oneios-cpu-probe: ") for line in cpu_log.splitlines()) and
-                  any(re.search(r"\\bcur_khz=[0-9]+\\b", line)
+                  any(re.search(r"cur_khz=[0-9]+", line)
                       for line in cpu_log.splitlines()
                       if line.startswith("oneios-cpu-policy: "))),
     }
