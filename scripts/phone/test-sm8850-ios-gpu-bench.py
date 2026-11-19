@@ -153,8 +153,12 @@ class FixedBenchTests(unittest.TestCase):
         # Android returned "flock: Bad file descriptor" before the guest boot.
         for retry in (False, True):
             script = bench.device_run_script(STAGE, 240, 4096, retry_preboot=retry)
-            self.assertNotIn('flock -n 8', script)
-            self.assertNotIn('exec 8>', script)
+            active_script = "\n".join(
+                line for line in script.splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            self.assertNotRegex(active_script, r'(?m)^\s*(?:if\s+!\s*)?flock(?:\s|$)')
+            self.assertNotIn('exec 8>', active_script)
             self.assertIn('launch.claim', script)
             self.assertIn('mkdir -m 700 "$STAGE/', script)
             self.assertNotIn('rmdir "$STAGE/', script)

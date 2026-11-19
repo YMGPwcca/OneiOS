@@ -146,7 +146,7 @@ finish_state() {{
 }}
 trap finish_state EXIT
 # An atomic, permanent one-shot claim avoids Android shell FD inheritance
-# problems with flock -n 8. Never remove it: retry requires new audited evidence.
+# problems with numeric descriptor locks. Preserve the claim as run evidence.
 if ! mkdir -m 700 "$STAGE/{log_dir}/launch.claim"; then
     echo 'ERROR=launch_already_claimed' >> "$FAIL"
     exit 2
