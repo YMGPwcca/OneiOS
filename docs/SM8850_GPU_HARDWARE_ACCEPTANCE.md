@@ -69,3 +69,34 @@ python3 scripts/phone/sm8850-gpu-acceptance.py analyze \
 ## Remaining gate for an iOS hardware GUI run
 
 Do not reuse the original 8 GiB APFS Data file as a writable guest store. Offline `RESTORE_READY=PASS` established file recovery, but no safe on-phone copy-on-write adapter has been accepted. The no-copy design in `SM8850_NO_COPY_IMAGE_ADAPTER.md` is **not implemented**. A new guest run requires an independently verified writable Data clone/overlay, capacity beyond the required 30 GiB reserve, provenance of the instrumented Metal bundle and sidecars, bounded device-side termination, and reliable recovery. Until those are demonstrably present, a standalone GPU diagnostic and offline log analysis are the permitted steps; Framework takeover stays blocked.
+
+
+## Next: passive iOS GPU bench inventory after HOST_ADRENO=PASS
+
+The standalone Adreno test does not certify the guest runner. Before any new
+iOS boot, compare the current phone's bench image, effective disk configuration,
+GPU addon and xnuhost binary with the locally built artifacts. The existing
+bench binary may predate the corrected vgpu-3d default, and the existing addon
+may predate the new Vulkan initialization tracing.
+
+The dedicated inventory **only reads** the device; it never boots a guest,
+copies or writes Data, starts Framework takeover or changes a sysctl.
+
+```sh
+python3 scripts/phone/test-sm8850-ios-gpu-readiness.py -v
+python3 scripts/phone/sm8850-ios-gpu-readiness.py
+```
+
+The JSON report under `out/sm8850/gpu-acceptance/*-ios-readiness.json`
+records the pinned phone assets, sizes, inode identities, hashes of the
+staged addon and bench binary, image config excerpts, and local build hashes.
+It separately tests whether there is enough free space for an 8 GiB
+independent Data clone plus 2 GiB operating headroom **above** the 30 GiB
+reserve. It reports `SOURCE_ASSETS=PASS` only when that inventory
+is complete; it deliberately reports `GUEST_RUN_READY=BLOCKED` until the
+isolated writable Data store, effective disk paths, updated host binary,
+instrumented GPU addon, bounded termination and rollback are qualified.
+
+Do not treat the offline Data restore rehearsal, a matching hash for the old
+bench image, or `SOURCE_ASSETS=PASS` as permission to launch a
+guest against the original Data image.
