@@ -1,5 +1,13 @@
 # SM8850 P0 thermal preflight (passive evidence only)
 
+## P0 short-probe timebase correction (2026-11-21)
+
+The experimental OneOS `--framework-session probe` **does not promise 90 seconds of native iOS execution**. Its independent Framework recovery helper publishes a **reboot-return request deadline** at *device monotonic time of verified Framework stop + 90 seconds*, after mandatory memory checks/configuration. The earlier 45-second pre-stop fallback only protects initial preparation. Later guest setup/exec uses part of the deadline window; thermal/watchdog/watcher faults may return earlier, and the physical reboot may finish after the request. This clock is **not** started by the CachyOS ADB command.
+
+From recovered physical root logs, `04:23:34` was the **beginning** of Framework-stop phase (NOT the exact verified-stop timestamp); native xnuhost was launched at `04:23:46`, then independent thermal monitoring aborted at `04:23:47`, around one second after the guest launch. **The short probe ended early because of thermal fail-closed**, not because 90 seconds elapsed. Do not infer a precise verified-stop-to-exec interval from the phase header. Host observation time and device monotonic time have different origins.
+
+The OneOS draft now adds distinct `ONEIOS_GUEST_EXEC_ATTEMPT_TICK` and `P0_SHORT_PROBE_TIMING` log markers for future investigations, without moving or lengthening the +90-second return deadline or changing any thermal thresholds. Exact full guest-runtime-from-exec timing would require a separately reviewed exposure budget and explicit authorization; P0 hardware watchdog and unattended recovery remain unqualified. The owner does not have reliable physical-key-use attestation for the prior reboot, so `UNASSISTED_RETURN=UNVERIFIED`.
+
 This step does **not** implement, enable, or qualify a thermal guard. No guest session, root, watchdog, or Android Framework takeover is required.
 
 ## Run on CachyOS with stock One UI fully booted
