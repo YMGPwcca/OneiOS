@@ -48,6 +48,14 @@ class TakeoverTest(unittest.TestCase):
             self.assertEqual("/system/bin/sh -s -- --framework-audit-reboot", command)
             self.assertIn(b"framework_legacy_target", device.root.call_args.kwargs["input"])
 
+    def test_reboot_smoke_rejects_missing_separate_risk_consent(self):
+        with patch.object(TAKEOVER, "Phone") as phone, \
+                patch("sys.argv", ["sm8850-takeover.py", "--reboot-smoke", "--confirm"]), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            TAKEOVER.main()
+        self.assertEqual(2, error.exception.code)
+        phone.assert_not_called()
+
     def test_reboot_smoke_refusal_precedes_any_staging(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(TAKEOVER, "upload") as upload, \
                 patch.object(TAKEOVER, "Phone") as phone, contextlib.redirect_stdout(io.StringIO()):
@@ -60,7 +68,7 @@ class TakeoverTest(unittest.TestCase):
     def test_reboot_smoke_requires_key_proof_on_healthy_new_boot(self):
         baseline = "boot=old\nzygote=running pid=1\nsystem_server=12\n"
         after = (
-            "boot=new\ncontrol/framework.mode=smoke\ncontrol/framework.return=reboot\n"
+            "boot=new\nboot_completed=1\ncontrol/framework.mode=smoke\ncontrol/framework.return=reboot\n"
             "control/framework.takeover-confirmed=gen\n"
             "outcome=reboot-key 123 who=watcher reason=keys: Volume Up + Volume Down\n"
             "zygote=running pid=2\nzygote_next=running pid=3\n"
@@ -69,6 +77,7 @@ class TakeoverTest(unittest.TestCase):
         self.assertTrue(TAKEOVER.reboot_smoke_verified(baseline, after))
         for old, new in (
             ("boot=new", "boot=old"),
+            ("boot_completed=1", "boot_completed=0"),
             ("control/framework.return=reboot", "control/framework.return=inplace"),
             ("control/framework.takeover-confirmed=gen", "control/framework.takeover-confirmed="),
             ("outcome=reboot-key", "outcome=reboot-deadline-or-manual"),
