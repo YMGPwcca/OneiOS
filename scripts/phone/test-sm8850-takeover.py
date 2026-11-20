@@ -315,6 +315,7 @@ control/framework.result=smoke complete
         self.assertIn("IOS_DISPLAY_FIRST_FRAME_PRE_REBOOT=NOT_VERIFIED", values)
         self.assertIn("IOS_HOST_CPU_MASK_PRE_REBOOT=NOT_VERIFIED", values)
         self.assertIn("ANDROID_SYSTEM_SERVER_AFTER_REBOOT=NOT_VERIFIED", values)
+        self.assertIn("ANDROID_NEW_BOOT=NOT_VERIFIED", values)
         self.assertIn("FULL_TAKEOVER_DEADLINE_RETURN=NOT_VERIFIED_NO_ROOT_OUTCOME", values)
 
     def test_full_takeover_deadline_receipt_not_unassisted_boot_proof(self):
