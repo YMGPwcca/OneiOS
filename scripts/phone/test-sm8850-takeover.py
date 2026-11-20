@@ -239,8 +239,60 @@ control/framework.result=smoke complete
             with self.subTest(original=original):
                 self.assertFalse(TAKEOVER.restored_on_same_boot(baseline, after.replace(original, replacement), "smoke"))
 
+    def test_full_run_requires_explicit_600s_auto_gpu_and_legacy_consent(self):
+        cases = (
+            ["--run", "--confirm", "--duration", "600", "--gpu", "auto"],
+            ["--run", "--confirm", "--accept-legacy-watchdog-risk", "--duration", "240", "--gpu", "auto"],
+            ["--run", "--confirm", "--accept-legacy-watchdog-risk", "--duration", "600", "--gpu", "2d"],
+        )
+        for extra in cases:
+            with self.subTest(extra=extra), patch.object(TAKEOVER, "Phone") as phone, \
+                    patch("sys.argv", ["sm8850-takeover.py", *extra]), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exit_code:
+                TAKEOVER.main()
+            self.assertEqual(2, exit_code.exception.code)
+            phone.assert_not_called()
+
+    def test_full_run_reuses_oneos_legacy_reboot_audit_and_no_new_smoke(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(TAKEOVER, "audit", return_value=1) as audit, \
+                patch.object(TAKEOVER, "upload") as upload, \
+                contextlib.redirect_stdout(io.StringIO()):
+            phone = unittest.mock.Mock()
+            self.assertEqual(2, TAKEOVER.launch(phone, "run", Path(folder)))
+            audit.assert_called_once_with(
+                phone, Path(folder) / "preflight.txt", reboot_only=True
+            )
+            upload.assert_not_called()
+
+    def test_full_takeover_deadline_receipt_not_unassisted_boot_proof(self):
+        baseline = "boot=old\n"
+        after = (
+            "boot=new\nboot_completed=1\nboot_reason=reboot,oneios-sm8850-reboot-return\n"
+            "control/framework.launch=unique-token\ncontrol/framework.mode=run\n"
+            "control/framework.return=reboot\ncontrol/framework.takeover-confirmed=gen\n"
+            "outcome=reboot-deadline-or-manual 100 who=framework-deadline reason=framework deadline reached\n"
+            "return_request=framework deadline reached at 100 (deadline 100)\n"
+            "zygote=running pid=10\nzygote_next=running pid=11\n"
+            "system_server=12\nSELinux=Enforcing\n"
+        )
+        fn = TAKEOVER.full_takeover_deadline_result
+        self.assertTrue(fn(baseline, after, "unique-token"))
+        for src, dest in (
+            ("boot=new", "boot=old"),
+            ("boot_reason=reboot,oneios-sm8850-reboot-return", "boot_reason=reboot,hard"),
+            ("control/framework.mode=run", "control/framework.mode=smoke"),
+            ("control/framework.takeover-confirmed=gen", "control/framework.takeover-confirmed="),
+            ("who=framework-deadline", "who=watcher"),
+            ("return_request=framework deadline reached", "return_request=volume keys"),
+            ("system_server=12", "system_server="),
+        ):
+            with self.subTest(field=src):
+                self.assertFalse(fn(baseline, after.replace(src, dest), "unique-token"))
+
     def test_manifest_requires_sidecars_and_rejects_conflicting_paths(self):
-        base = "".join("1" * 64 + "  " + name + "\n" for name in sorted(TAKEOVER.REQUIRED))
+        names = TAKEOVER.REQUIRED | {"image/kernel.kc.trustcache"}
+        base = "".join("1" * 64 + "  " + name + "\n" for name in sorted(names))
         with tempfile.TemporaryDirectory() as folder:
             manifest = Path(folder) / "approved.sha256"
             manifest.write_text(base)
@@ -251,8 +303,12 @@ control/framework.result=smoke complete
                 with self.assertRaises(ValueError):
                     TAKEOVER.manifest_bytes(manifest)
             manifest.write_text(base.replace("image/kernel.kc.trustcache\n", "image/different\n"))
-            with self.assertRaisesRegex(ValueError, "kernel.kc.trustcache"):
+            with self.assertRaisesRegex(ValueError, "trustcache sidecar"):
                 TAKEOVER.manifest_bytes(manifest)
+            manifest.write_text(base.replace(
+                "image/kernel.kc.trustcache\n", "image/overlay/userland/owner-trust.json\n"
+            ) + "1" * 64 + "  image/trust/static.trustcache\n")
+            self.assertIn(b"owner-trust.json", TAKEOVER.manifest_bytes(manifest))
 
 
 if __name__ == "__main__":
