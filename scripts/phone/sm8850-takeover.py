@@ -44,8 +44,8 @@ done
 if [ -f "$stage/return.outcome" ]; then printf 'outcome='; cat "$stage/return.outcome"; fi
 if [ -f "$stage/session/return.request" ]; then
     printf 'return_request='
-    head -c 160 "$stage/session/return.request" | tr '\r\n' '  '
-    printf '\n'
+    head -c 160 "$stage/session/return.request" | tr '[:cntrl:]' ' '
+    echo
 fi
 if [ -f "$stage/image.ready" ]; then echo image_ready=1; else echo image_ready=0; fi
 for service in zygote zygote_next adbd surfaceflinger vendor.qti.hardware.display.composer; do
