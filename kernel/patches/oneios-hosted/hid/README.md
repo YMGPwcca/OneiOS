@@ -1,5 +1,9 @@
 # kernel/patches/oneios-hosted/hid: touch, buttons and the light sensor's HID device
 
+**OneiOS · SM8850 · Kernel / session interface**
+
+[← Handbook](../../../../docs/README.md) · [Current evidence](../../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: fable-hid (job Q4b of the board's queue of 2026-11-11). One archive of the hosted kernel,
 `build/oneios-hid/liboneioshid.a`, hooked into `kernel/build-hosted.sh` like `aes/`. There is no numbered patch: the
 start is called from `oneios_drivers_start` (`drivers/bridge/OneiOSBridge.c`, a weak default there).
@@ -92,7 +96,7 @@ Two things differ from `aes/`, both because the collection runs slid under xnuho
 
 ## Buttons
 
-| Report 2 bit | Usage | Host key (evdev code) | On the S24 Ultra |
+| Report 2 bit | Usage | Host key (evdev code) | On the earlier reference device |
 |---|---|---|---|
 | 0 | Consumer / Menu (Home) | `KEY_HOMEPAGE` 172 | no such key; Home is the swipe from the bottom edge |
 | 1 | Consumer / Power | `KEY_POWER` 116 | event2 |
@@ -195,7 +199,7 @@ Tested: the kernel with these edits builds (`HOSTED_OUT=spen`), its `kernel.kc` 
 
 The collection would give an `IOHIDInterface` of a Consumer or Digitizer device to the DriverKit event driver
 (`AppleUserHIDEventDriver` of `com.apple.AppleUserHIDDrivers.dext`, `DeviceUsagePairs` with pages 12 and 13), and
-defers its own kernel personalities (`IOMatchDefer`) until the IOKit daemon has sent every plist. On the S24 Ultra
+defers its own kernel personalities (`IOMatchDefer`) until the IOKit daemon has sent every plist. On the earlier reference device
 (session of 2026-11-11, devices started at 14652.6):
 
 | Time | Log |
@@ -356,7 +360,7 @@ Tested: five 70 s boots with `--input-script`, both devices start in each.
 
 ## The phone (lead, 2026-11-11)
 
-Read from the session log of the S24 Ultra (xnuhost `b528fd2`): xnuhost took `/dev/input/event8 "sec_touchscreen"`
+Read from the session log of the earlier reference device (xnuhost `b528fd2`): xnuhost took `/dev/input/event8 "sec_touchscreen"`
 (x 0..4095, y 0..4095) and left `event9 "sec_touchpad"`; both devices started 0.6 s into the boot; the table under
 "Which event driver" is that session. Once the kernel's driver had the device, backboardd was sent 447 events and
 11 contacts began, 7 of them at an edge. Whether the lock screen moved in that time was not recorded.
