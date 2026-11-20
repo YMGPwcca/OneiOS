@@ -1,5 +1,12 @@
 # SM8850: interactive iOS lock-screen touch preview, no Framework takeover
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Bounded touch preview**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> **Historical source or earlier experimental procedure.** The latest S26 Ultra full guest ran ~600.6 s with a displayed frame, but serious heat and unverified recovery remain open. Use the [physical ledger](SM8850_LIVE_STATUS_2026-11-20.md) for current decisions.
+
 The previous 2026-11-19 visual run physically displayed an iOS lock screen
 and Liquid Glass clock on S26 Ultra, with 291 posted SurfaceFlinger frames
 and 34 retired backboardd fences. It launched the guest with `--no-input`,
