@@ -86,6 +86,30 @@ After reconnecting, personally unlock One UI and test physical touch.
 A forced reboot or deadline-driven return is a recovery result, NOT a
 physical key chord pass.
 
+## Diagnosing a returned session without reboot
+
+If the host prints `REBOOT_SMOKE=SAME_BOOT_RETURNED_NO_KEY_REBOOT` or
+`REBOOT_SMOKE=SWITCH_EXITED_BEFORE_VERIFIED_KEY_REBOOT`, do not run another
+live smoke. The host's old generic `Recovery or phase verification failed`
+message also came from the same-boot `returned` path, which cannot prove
+a key-triggered reboot. Inspect the already collected evidence offline:
+
+```sh
+python3 scripts/phone/inspect-sm8850-smoke.py \
+  out/sm8850/takeover/reboot-smoke-<exact-evidence-id>
+```
+
+Read the first failure in `launches/<token>/switch.log`, the watcher in
+`return.log`, the original `return.outcome`, and whether
+`control/framework.takeover-confirmed` was written. A `control/stopped`
+file alone is not proof of a completed Framework stop because it is
+recorded before ctl.stop/kill completes.
+
+The currently installed root stage refuses to overwrite changed recovery
+scripts. Preserve its evidence and do not delete its files or bypass its
+existing-content check to force an update. Only carry out an explicit,
+verified no-active-session stage-upgrade procedure after root-cause review.
+
 ## Not yet enabled
 
 Do not infer full iOS boot approval from a reboot-only smoke. The normal
