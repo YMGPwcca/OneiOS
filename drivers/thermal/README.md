@@ -1,5 +1,12 @@
 # Thermal: the phone's temperatures and pressure level in iOS
 
+**OneiOS · SM8850 · Kernel / driver implementation**
+
+[← Handbook](../../docs/README.md) · [Latest evidence](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
+> [!WARNING]
+> The measured full-run used `bench/bridges=0`: the OneiOS thermal bridge described below was **inactive**. The phone became very hot. A dedicated independent thermal monitor/guard is P0, not an already accepted protection.
+
 `OneiOSThermal.cpp`, started by `oneios_drivers_start()` after the battery. The host end and the levels are in
 `runtime/bridges/thermal/README.md`.
 
