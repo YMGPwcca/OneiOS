@@ -19,7 +19,7 @@ SPEC.loader.exec_module(TAKEOVER)
 
 class TakeoverTest(unittest.TestCase):
     def test_change_requires_opt_in_before_contacting_a_device(self):
-        for action in ("--recovery-smoke", "--run", "--storage-probe", "--prepare"):
+        for action in ("--recovery-smoke", "--reboot-smoke", "--run", "--storage-probe", "--prepare"):
             with self.subTest(action=action), patch.object(TAKEOVER, "Phone") as phone, \
                     patch("sys.argv", ["sm8850-takeover.py", action]), \
                     contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
@@ -37,6 +37,46 @@ class TakeoverTest(unittest.TestCase):
             self.assertEqual(1, device.root.call_count)
             self.assertEqual("/system/bin/sh -s -- --framework-audit", device.root.call_args.args[0])
             self.assertEqual("BLOCKED: watchdog\n", (Path(folder) / "preflight.txt").read_text())
+
+    def test_reboot_audit_is_passive_and_selects_dedicated_mode(self):
+        with patch.object(TAKEOVER, "Phone") as phone:
+            device = phone.return_value
+            device.root.return_value = subprocess.CompletedProcess([], 0, b"WATCHDOG_QUALIFICATION=UNVERIFIED_REBOOT_ONLY\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, TAKEOVER.audit(device, reboot_only=True))
+            command = device.root.call_args.args[0]
+            self.assertEqual("/system/bin/sh -s -- --framework-audit-reboot", command)
+            self.assertIn(b"framework_legacy_target", device.root.call_args.kwargs["input"])
+
+    def test_reboot_smoke_refusal_precedes_any_staging(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(TAKEOVER, "upload") as upload, \
+                patch.object(TAKEOVER, "Phone") as phone, contextlib.redirect_stdout(io.StringIO()):
+            device = phone.return_value
+            device.root.return_value = subprocess.CompletedProcess([], 1, b"BLOCKED: legacy watchdog\n")
+            self.assertEqual(2, TAKEOVER.launch(device, "smoke", Path(folder), reboot_only=True))
+            upload.assert_not_called()
+            self.assertIn("--framework-audit-reboot", device.root.call_args.args[0])
+
+    def test_reboot_smoke_requires_key_proof_on_healthy_new_boot(self):
+        baseline = "boot=old\nzygote=running pid=1\nsystem_server=12\n"
+        after = (
+            "boot=new\ncontrol/framework.mode=smoke\ncontrol/framework.return=reboot\n"
+            "control/framework.takeover-confirmed=gen\n"
+            "outcome=reboot-key 123 who=watcher reason=keys: Volume Up + Volume Down\n"
+            "zygote=running pid=2\nzygote_next=running pid=3\n"
+            "system_server=40\nSELinux=Enforcing\n"
+        )
+        self.assertTrue(TAKEOVER.reboot_smoke_verified(baseline, after))
+        for old, new in (
+            ("boot=new", "boot=old"),
+            ("control/framework.return=reboot", "control/framework.return=inplace"),
+            ("control/framework.takeover-confirmed=gen", "control/framework.takeover-confirmed="),
+            ("outcome=reboot-key", "outcome=reboot-deadline-or-manual"),
+            ("system_server=40", "system_server="),
+            ("SELinux=Enforcing", "SELinux=Permissive"),
+        ):
+            with self.subTest(field=old):
+                self.assertFalse(TAKEOVER.reboot_smoke_verified(baseline, after.replace(old, new)))
 
     def test_readiness_reports_blockers_without_phone_modifications(self):
         baseline = ("boot=abc\nzygote=running pid=12\nsystem_server=30\n"
