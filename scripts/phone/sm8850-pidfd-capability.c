@@ -90,18 +90,13 @@ static int target_comm(pid_t pid, const char *want) {
 
 int main(int argc, char **argv) {
     pid_t pid = 0;
-    int selftest = 0;
-    int owned_null = -1;
 
     if (argc == 2 && strcmp(argv[1], "--selftest") == 0) {
-        selftest = 1;
         pid = getpid();
         /* Only selftest may open its OWN harmless /dev/null. */
         FILE *f = fopen("/dev/null", "r");
         if (!f) { perror("selftest /dev/null"); return 2; }
-        owned_null = fileno(f);
         /* Keep f alive until after the pidfd_getfd check. */
-        (void)owned_null;
         int probe_fd = benign_fd(pid);
         if (probe_fd < 0) {
             puts("PIDFD_PROBE=NO_BENIGN_FD");
