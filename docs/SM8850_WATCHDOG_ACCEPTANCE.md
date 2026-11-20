@@ -1,5 +1,14 @@
 # SM8850 watchdog attribution and recovery acceptance
 
+> **2026-11-20 status reconciliation:** the "no handoff was attempted" and
+> blocked entries below are historical Phase 4A passive findings. The
+> *separate*, explicitly risk-acknowledged root-only SM8850 profile has
+> since run Framework stop, guest iOS 27.0.1 ~600.6 s and named
+> reboot-return. **These events still do not qualify** the actual driver,
+> timeout, watchdog transfer or entirely unassisted One UI recovery.
+> Current evidence: [SM8850_LIVE_STATUS_2026-11-20.md](SM8850_LIVE_STATUS_2026-11-20.md).
+
+
 ## Phase 4A.1 and 4A.2 checklist
 
 - [x] Verify the parent checkout and the clean OneOS `21b8e53` pin.
