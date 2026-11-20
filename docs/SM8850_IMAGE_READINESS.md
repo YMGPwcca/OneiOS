@@ -1,5 +1,12 @@
 # Phase 4B image and host boot readiness
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Image provenance and readiness notes**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This page is earlier device evidence or an experimental design record. Compare with the [latest physical status](SM8850_LIVE_STATUS_2026-11-20.md); do not infer current safety or performance from a historical PASS.
+
 > **Historical 2026-11 readiness phase:** staging later advanced to a
 > successful isolated F2FS/BusyBox mount probe and verified one-shot
 > APFS Data rearm. A separate root-only full experiment physically
