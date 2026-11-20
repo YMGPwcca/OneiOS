@@ -311,6 +311,19 @@ and recovery acceptance. No app-side S26 iOS Switch permission is changed.
 
 ## Separate full iOS 27 takeover experiment (not a repeat smoke)
 
+> **2026-11-20 outcome:** this separate experiment has now actually
+> run: Framework stopped, hosted iOS 27.0.1 reported guest-ready, the
+> guest's first frame appeared and `xnuhost` ran ~600.6 s. Post-reboot
+> Android was seen, but the device lost ephemeral root and the exact
+> deadline caller/unassisted recovery remains unverified. Severe lag
+> and a hot device block performance/thermal acceptance. The legacy
+> watchdog is still not independently qualified. Current evidence:
+> [SM8850_LIVE_STATUS_2026-11-20.md](SM8850_LIVE_STATUS_2026-11-20.md).
+> The paragraphs below record the pretrial experiment design, not a
+> recommendation to repeat the 600-second run.
+>
+
+
 The 20-second Framework-only reboot smoke already has physical evidence;
 **do not rerun it** merely to unlock guest admission. The separate
 full iOS 27 experimental path is documented in
