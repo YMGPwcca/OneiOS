@@ -1,5 +1,14 @@
 # SM8850: visually verify iOS GPU on the phone (no takeover)
 
+> **Scope: historical no-takeover touch/graphics preview.** The
+> 2026-11-20 separate root-only 8-vCPU/600s Framework takeover has since
+> booted iOS and posted its first frame; the warnings below are about
+> the preview's own safety gate, not a claim that the physical full
+> experiment never ran. Severe lag/heat and independent return
+> qualification remain unresolved. See
+> [current full-run status](SM8850_LIVE_STATUS_2026-11-20.md).
+
+
 This is **not** a recovery or Framework-takeover test. The 2026-11-19 full
 headless capture already established `vgpu-3d=1`, a DRM-native guest renderer,
 AGX type `0x4149`, 236 retired backboardd fences across 13 windows, and six
