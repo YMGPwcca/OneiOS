@@ -224,7 +224,10 @@ def full_run_rootless_receipt(passive, *, guest_ready, display_first_frame, cpu_
     system_server = passive.get("system_server_pid", "")
     return [
         "FULL_TAKEOVER_POST_REBOOT=ROOT_STATUS_UNAVAILABLE",
-        "ANDROID_NEW_BOOT=BOOT_COMPLETED_OBSERVED_VIA_UNPRIVILEGED_ADB",
+        "ANDROID_NEW_BOOT=" + (
+            "BOOT_COMPLETED_OBSERVED_VIA_UNPRIVILEGED_ADB"
+            if passive.get("boot_completed") == "1" else "NOT_VERIFIED"
+        ),
         "BOOT_REASON=" + reason,
         "IOS_GUEST_READY_PRE_REBOOT=" + ("OBSERVED" if guest_ready else "NOT_VERIFIED"),
         "IOS_DISPLAY_FIRST_FRAME_PRE_REBOOT=" + ("OBSERVED" if display_first_frame else "NOT_VERIFIED"),
