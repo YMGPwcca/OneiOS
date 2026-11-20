@@ -133,7 +133,7 @@ class TakeoverTest(unittest.TestCase):
     def test_deadline_return_acceptance_is_separate_from_physical_keys(self):
         baseline = "boot=boot-old\n"
         after = (
-            "boot=boot-new\nboot_completed=1\ncontrol/framework.launch=token-123\n"
+            "boot=boot-new\nboot_completed=1\nboot_reason=reboot,oneios-sm8850-reboot-return\ncontrol/framework.launch=token-123\n"
             "control/framework.mode=smoke\ncontrol/framework.return=reboot\n"
             "control/framework.takeover-confirmed=verified-gen\n"
             "outcome=reboot-deadline-or-manual 123 who=framework-deadline reason=framework deadline reached\n"
@@ -147,6 +147,7 @@ class TakeoverTest(unittest.TestCase):
         for old, new in (
             ("boot=boot-new", "boot=boot-old"),
             ("boot_completed=1", "boot_completed=0"),
+            ("boot_reason=reboot,oneios-sm8850-reboot-return", "boot_reason=reboot,hard"),
             ("control/framework.takeover-confirmed=verified-gen", "control/framework.takeover-confirmed="),
             ("outcome=reboot-deadline-or-manual", "outcome=reboot-key"),
             ("return_request=framework deadline reached", "return_request=watchdog feeder failed"),
