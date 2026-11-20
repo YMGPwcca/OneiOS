@@ -295,6 +295,22 @@ def reboot_stage_check(phone, output):
                                   else "BLOCKED"))
     return 0 if check.returncode == 0 else 2
 
+def reboot_smoke_ready(state, baseline_boot, token):
+    """Only tell the operator to press the chord after the verified stop."""
+    values = dict(line.split("=", 1) for line in state.splitlines() if "=" in line)
+    return (
+        values.get("boot") == baseline_boot
+        and values.get("control/framework.launch") == token
+        and values.get("control/framework.mode") == "smoke"
+        and values.get("control/framework.return") == "reboot"
+        and values.get("control/state") == "running"
+        and bool(values.get("control/framework.takeover-confirmed"))
+        and values.get("zygote", "").startswith("stopped")
+        and not values.get("system_server")
+        and "return_request=" not in state
+    )
+
+
 def reboot_smoke_verified(baseline, after):
     """Success requires recorded Framework stop, key-triggered reboot and healthy One UI."""
     before = dict(line.split("=", 1) for line in baseline.splitlines() if "=" in line)
@@ -342,8 +358,13 @@ mkdir launches/{token}
 """, timeout=10).returncode:
         return 2
     print(f"Framework {session_mode} requested. Recovery runs on the device.", flush=True)
+    if reboot_only:
+        print("PHYSICAL_KEYS=DO_NOT_PRESS_YET", flush=True)
+        print("Wait for TAKEOVER_CONFIRMED=YES and PHYSICAL_KEYS=PRESS_NOW.", flush=True)
+        print("Pressing Volume Up + Down before the confirmation CANCELS the takeover.", flush=True)
     end = time.monotonic() + 1000
     reboot_seen = None
+    confirmed_announced = False
     with (output / "timeline.txt").open("w") as timeline:
         while time.monotonic() < end:
             try:
@@ -351,6 +372,11 @@ mkdir launches/{token}
                 timeline.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n{state}\n")
                 timeline.flush()
                 current_boot = re.search(r"^boot=(.+)$", state, re.M).group(1)
+                if reboot_only and not confirmed_announced and reboot_smoke_ready(state, boot, token):
+                    print("TAKEOVER_CONFIRMED=YES", flush=True)
+                    print("PHYSICAL_KEYS=PRESS_NOW", flush=True)
+                    print("Hold Volume Up + Volume Down together for at least 3 seconds.", flush=True)
+                    confirmed_announced = True
                 if reboot_only and current_boot != boot:
                     # Do not fail early when the phone has rebooted but
                     # boot_completed/zygote_next/system_server are still starting.
@@ -378,8 +404,10 @@ mkdir launches/{token}
                         # the same boot. Do not apply the in-place predicate
                         # and then report the misleading generic failure.
                         values = dict(line.split("=", 1) for line in state.splitlines() if "=" in line)
-                        print("REBOOT_SMOKE=SAME_BOOT_RETURNED_NO_KEY_REBOOT")
-                        print("TAKEOVER_MARKER=" + str(bool(values.get("control/framework.takeover-confirmed"))))
+                        took_over = bool(values.get("control/framework.takeover-confirmed"))
+                        print("REBOOT_SMOKE=" + ("SAME_BOOT_RETURNED_NO_KEY_REBOOT" if took_over
+                                               else "ABORTED_BEFORE_FRAMEWORK_STOP"))
+                        print("TAKEOVER_MARKER=" + str(took_over))
                         print("RETURN_OUTCOME=" + values.get("outcome", "UNAVAILABLE"))
                         print("See device-logs.tar / launches/*/switch.log for the earliest failure.")
                         return 4
