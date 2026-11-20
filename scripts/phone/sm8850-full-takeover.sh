@@ -98,6 +98,7 @@ PY
 
     echo "===== LOCAL REGRESSION (NO PHONE FRAMEWORK STOP) ====="
     python3 scripts/phone/test-sm8850-takeover.py -v
+    python3 scripts/phone/test-sm8850-full-takeover.py -v
     python3 scripts/phone/test-sm8850-oneos-legacy-feeder.py -v
     python3 scripts/phone/test-sm8850-stage-upgrade.py -v
 
