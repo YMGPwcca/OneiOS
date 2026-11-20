@@ -121,3 +121,12 @@ The new host fake-ADB test module adds 5 tests, bringing the strict combined run
 - The operator's log shows two audited scripts were staged and the host-script reported successful post-check; cleanup is designed into the host script, but the log alone does **not** prove the temporary directory was removed. No watchdog/governor/reboot path was intentionally invoked.
 - **Next sensor mapping:** the existing OneiOS thermal backend documents 28 genuine zones including real CPU zone `cpu-0-5-1` around 40.5 C on a 2026-11-16 S26 Ultra pass, while `cpu-hw-trip-0/1` were constant 105 C pseudo-zones and must never be treated as live sensors. The three battery/LRP/board paths do **not** cover the SoC junction. Before expanding the OneOS reader, positively map the exact firmware thermal-zone path for a genuine CPU sensor and verify stable units/sampling with read-only, bounded access; do not attempt root recursive sysfs scans.
 - **Safety gate:** the `--framework-session run` source refusal remains on the draft branch only; the phone's prior staged switch is unchanged. Independent thermal protection and unassisted reboot-return are still NOT QUALIFIED. Full 600-second takeover remains BLOCKED.
+
+
+## CPU thermal zone candidate mapping (next operator read-only check)
+
+The existing OneiOS Samsung thermal backend (`runtime/bridges/thermal/thermal.c`) already discovers genuine `cpu-*`, `cpuss-*`, `gpuss-*`, DDR and XO thermal zones and excludes `cpu-hw-trip-*` pseudo-zones. Its 2026-11-16 hardware report recorded a true CPU candidate `cpu-0-5-1` at approximately 40.5 C in one sample. Battery/LRP/board nodes are insufficient to monitor SoC junctions under iOS load.
+
+Companion OneOS draft PR #6 now contains `scripts/phone/sm8850-soc-candidate-map.py` that, when explicitly run on intact One UI, does a **bounded unprivileged one-level read of only thermal-zone `type`**, matches exactly `cpu-0-5-1` and samples only the validated matching `/temp` node. It never reads the pseudo-zone temperatures or recursively traverses sysfs. Root fallback is restricted to the exact matched temperature file after permission denial. It remains a **candidate mapping**, not thermal protection or certified thresholds.
+
+Nine additional offline tests are pending user's CachyOS, bringing OneOS P0 test count from the verified 72 to 81. No additional physical iOS/Framework takeover is authorized.
