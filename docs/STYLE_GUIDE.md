@@ -34,6 +34,7 @@
 - Older test-device anecdotes belong in Git history, not the project's landing page or the current roadmap. Never migrate their SoC clocks, GPU identifiers, screen parameters or return behavior into the S26 Ultra facts table.
 - Preserve source-code paths, ABI names, citations and exact prior test evidence when the technical detail is still needed to understand a function; explicitly mark historical/other-device data as not a current measurement.
 - The OneOS general Android guest compatibility matrix describes many devices and is **not** the OneiOS SM8850 app allowlist.
+- **Do not silently delete unique technical evidence when shortening documentation.** For an editorial rewrite affecting old logs, record the original commit, link an [engineering evidence index](HISTORICAL_ENGINEERING_EVIDENCE.md), and explicitly migrate S26-relevant findings before considering the cleanup complete. Do not copy prior-device timings or paths into SM8850 acceptance.
 
 ## Safety boundary
 

@@ -35,7 +35,7 @@ The firmware-specific sensor nodes, units, trustworthy thermal zones, sample cad
 
 ## Open implementation and verification checklist
 
-- [ ] Passively inventory real firmware thermal zones and battery/SoC/skin sensors, ownership, unit conversions, cadence and range.
+- [ ] Passively identify **specific, firmware-reviewed** thermal-zone and battery/SoC/skin paths, units, cadence and range **from source or a known trusted inventory**. Never recursively traverse sysfs, proc, debugfs or configfs as root: a historical vendor show-callback panic makes bulk reads an unacceptable approach. That event was on a different device, **not** proof of the same fault on SM8850.
 - [ ] Build isolated reader and supervisor tied to boot ID and exact session token, outside guest namespace/cgroup.
 - [ ] Specify documented firmware-specific warning/critical thresholds and hysteresis from measured/device evidence.
 - [ ] Test stale/malformed/missing readings, sudden rise, monitor crash, watcher crash, stale token, repeat run and deadline races in local simulated tests.

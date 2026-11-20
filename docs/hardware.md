@@ -29,7 +29,7 @@
 | GPU / KGSL | **OBSERVED** | Command submissions/imported memory/fence; Vulkan conformance **NOT VERIFIED** |
 | Display | **OBSERVED** | Guest image presented; ~200 s excerpt includes many no-post windows; not sustained 60 FPS |
 | Touch | **OBSERVED** in earlier bounded preview | Interactive gestures reached iOS; full-run latency needs matched timestamps |
-| Haptics | **PASS** standalone native HEAVY_CLICK with physically felt pulse | Does not certify a complete iOS haptics bridge in full takeover |
+| Haptics | **PASS** standalone native HEAVY_CLICK with physically felt pulse | [2026-11-16 HAL + PCM/opt-in evidence](SM8850_HAPTIC_EVIDENCE_2026-11-16.md); complete iOS guest bridge **NOT VERIFIED** |
 | Video encoder | **PASS** HEVC/H.264 host keyframe/EOS tests | Not comprehensive iOS VideoToolbox acceptance |
 | Guest RAM | **OBSERVED** 4 GiB locked | No guest swap in measured excerpt; page tables/GPU blobs still significant |
 | Battery and skin temperature | **NOT VERIFIED** for live full-run | Thermal time series and independent OneiOS thermal guard are missing |
@@ -68,6 +68,10 @@ While the Framework is stopped, the OneOS script's protected service inventory i
 > The owner reported severe heat and lag in the ~600-second full Framework session. **No synchronized skin/SoC/battery temperature trace is available.** Qualcomm/Samsung kernel and firmware protections remain active, but the OneiOS thermal bridge is not used in the full-run bench profile. Do not force clocks, override global governors or disable thermal trips to chase FPS.
 
 **P0 work:** inventory thermal sensors and units read-only, implement a narrowly scoped temperature guard available with `bridges=0`, and connect its critical return request to the already-bounded OneOS recovery path. Missing or invalid sensors must fail safely.
+
+## Preserved SM8850 haptic work
+
+The [native-impact evidence note](SM8850_HAPTIC_EVIDENCE_2026-11-16.md) restores S26-specific details from the long original hardware guide: felt standalone HAL click, host fake-vibrator waveform tests, opt-in refusal, and the open guest-to-HAL tactile gate. The [historical engineering index](HISTORICAL_ENGINEERING_EVIDENCE.md) identifies the exact Git revision containing older cross-component debug records without merging unrelated device facts into SM8850.
 
 ## Bridge reference map
 

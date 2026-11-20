@@ -49,6 +49,10 @@ JOBS=8 ./scripts/ci-local.sh all 0.0.0-ci
 
 Keep command output, exact Git commit, branch, firmware, input hashes and failure markers. A local PASS is **not** a physical phone PASS.
 
+## Safe kernel-node inspection
+
+**Read known, firmware-reviewed paths only.** Do not run `find`, recursive `grep`, `ls -R`, `du` or bulk reads over `/sys`, `/proc`, `debugfs` or `configfs` as root on a physical phone. A historical device investigation recorded a kernel panic following a vendor sysfs show callback; that finding is **not a proven SM8850 defect**, but it warrants a conservative inspection policy. For P0 thermal work, determine exact sensor names from firmware/kernel source, then read only those explicitly reviewed nodes and log which paths were touched. See [historical provenance](HISTORICAL_ENGINEERING_EVIDENCE.md) and [thermal guard design](SM8850_THERMAL_GUARD.md).
+
 ## Unsafe shortcuts
 
 > [!CAUTION]

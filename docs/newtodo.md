@@ -5,7 +5,7 @@
 [← Handbook](README.md) · [Roadmap](TODO.md) · [Current evidence](SM8850_LIVE_STATUS_2026-11-20.md)
 
 > [!NOTE]
-> This compatibility redirect is intentionally retained so older links do not fail. The former multi-day pause transcript and its stale task assignments belonged to an earlier development stage. Those notes remain in Git history for forensic review, but are not current execution instructions.
+> This compatibility redirect is intentionally retained so older links do not fail. The former multi-day pause transcript and its stale task assignments belonged to an earlier development stage. Those notes remain in Git history for forensic review; see the [exact old PR handover and source revision](HISTORICAL_ENGINEERING_EVIDENCE.md). They are not current execution instructions.
 
 ## Current priority
 

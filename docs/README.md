@@ -58,6 +58,7 @@
 | [SM8850 IOS GPU BENCH RETRY](SM8850_IOS_GPU_BENCH_RETRY.md) | Earlier preflight failure and follow-up |
 | [SM8850 GPU HARDWARE ACCEPTANCE](SM8850_GPU_HARDWARE_ACCEPTANCE.md) | KGSL/Adreno hardware evidence |
 | [SM8850 GPU DATA SNAPSHOT](SM8850_GPU_DATA_SNAPSHOT.md) | Isolated APFS Data clone protocol |
+| [SM8850 HAPTIC EVIDENCE 2026-11-16](SM8850_HAPTIC_EVIDENCE_2026-11-16.md) | Restored standalone HAL/PCM regression evidence; guest haptics remain unverified |
 | [SM8850 GUI CRASH](SM8850_GUI_CRASH.md) | Guest GUI crash investigation |
 
 ## 04 · Build, image & runtime reference
@@ -82,6 +83,7 @@
 | [plan](plan.md) | Current S26 Ultra engineering plan |
 | [newtodo](newtodo.md) | Redirect for the former pause log and superseded work queues |
 | [STYLE GUIDE](STYLE_GUIDE.md) | Layout, status vocabulary and link conventions |
+| [HISTORICAL ENGINEERING EVIDENCE](HISTORICAL_ENGINEERING_EVIDENCE.md) | Exact pre-rewrite technical sources and preservation map, read-only |
 
 ---
 
