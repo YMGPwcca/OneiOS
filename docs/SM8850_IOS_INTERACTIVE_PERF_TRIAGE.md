@@ -1,5 +1,9 @@
 # SM8850 iOS 27 interactive performance: 2026-11-19 evidence and next acceptance
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Measured performance and hypotheses**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
 ## 2026-11-20: first real 8-vCPU full Framework takeover and 600-second workload
 
 **Different experimental profile from the older 4-vCPU/120s Android-on
