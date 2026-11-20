@@ -1,5 +1,15 @@
 # SM8850 GPU hardware acceptance (no guest boot)
 
+> **Historical hardware-only GPU gate (2026-11-16), updated 2026-11-20:**
+> the separate SM8850 root-only Framework experiment subsequently did boot
+> hosted iOS 27.0.1 with a displayed first frame, live KGSL GPU traffic
+> and ~600.6 s of host execution. Do **not** read the earlier statements
+> "no guest boot" or "Framework takeover stays blocked" below as the
+> current physical result. Full Vulkan API conformance, interactive FPS,
+> heat safety and independent return remain unverified. See
+> [current evidence](SM8850_LIVE_STATUS_2026-11-20.md).
+
+
 This is a **bounded, non-takeover diagnostic** for the Samsung SM-S948B / m3q / SM8850 with pinned firmware `S948BXXS4BZIG`. It runs `gpuctl` through the real `drm2kgsl` / KGSL / Adreno driver, and audits saved iOS 27 logs. It does **not** run the iOS guest, switch Android Framework, open a watchdog, change kernel settings, or write an APFS image.
 
 The source fix for `vgpu-3d=1` was already tested offline. The correct iOS Turnip hardware path, `vkEnumeratePhysicalDevices`, `vkCreateDevice`, GUI performance and QuartzCore's `push_surface` remain separate **unverified** milestones.
