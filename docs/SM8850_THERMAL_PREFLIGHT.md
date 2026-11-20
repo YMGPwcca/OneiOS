@@ -187,3 +187,12 @@ OneOS draft PR #6 now contains a **boot-pinned four-sensor reader prototype**: `
 The companion [OneOS P0.2 guard acceptance contract](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-p0-thermal-reader-sim/docs/SM8850_P0_INDEPENDENT_GUARD_ACCEPTANCE.md) now specifies root monitor ownership outside xnuhost/guest cgroups, genuine CPU/GPU/DDR sensor admission, versioned boot/generation/launch/heartbeat binding, independent liveness supervision, mandatory reboot-only return escalation, persistent next-boot verification and the no-bypass source gate. **This is documentation of required future behavior, not a running implementation.**
 
 OneOS's proposed next sensor inventory has 16 additional host tests; the operator last confirmed 107/107 tests on the previous revision. Full takeover remains blocked until genuine vendor limits and independent recovery are physically certified.
+
+## 2026-11-21 acceptance checkpoint: 123/123 offline + 28 genuine junction zones
+
+- Operator verified exact OneOS revision `cdcc89d211fe8af4b10833dd248aad0405897664` on CachyOS: **123/123 local offline tests PASS**, with `ONEOS_P0_OFFLINE_123=PASS` and `P0_SAFETY_STATUS=OFFLINE_SIMULATION_ONLY_NO_PHYSICAL_GUARD`.
+- Explicit stock One UI read-only thermal inventory: **28 selected real CPU/GPU/DDR zones**, `ERRORS=0`, `UNREADABLE_TYPES=0`, `COVERAGE_COMPLETE=YES`. The optional XO group was `UNAVAILABLE`; do not silently treat it as a present or validated sensor.
+- Current-boot group maxima: CPU **37.0 C** from `cpu-0-5-1` at `/sys/class/thermal/thermal_zone16/temp`; GPU **35.1 C** from `gpuss-2` at `/sys/class/thermal/thermal_zone38/temp`; DDR **35.1 C** from `ddr` at `/sys/class/thermal/thermal_zone47/temp`. These are current-boot mappings, **not stable thermal_zone numbers**.
+- Host evidence path reported: `out/sm8850/thermal-junction-inventory/junction-20261120T190828Z-74aab3.json` (raw JSON was not uploaded for independent direct inspection).
+- `COVERAGE_COMPLETE=YES` means the survey's selected relevant zones all yielded valid reads and CPU/GPU/DDR were represented during that brief One UI snapshot. It does **not** prove vendor-calibrated limits, post-Framework sensor access, independent monitor survival, or successful unassisted reboot.
+- Next engineering action is an independent, **inert** root-side monitor/heartbeat integration and mocked death-supervision, initially with no physical return action and no bypass of the 600-second admission block.
