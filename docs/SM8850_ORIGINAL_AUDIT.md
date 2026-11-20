@@ -1,4 +1,12 @@
-# SM8850 audit against the original S24 Ultra OneiOS switch/return contract
+# SM8850 audit · original switch and return gates
+
+
+**OneiOS · Galaxy S26 Ultra / SM8850 · Original device audit (historical)**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> **Historical research.** This document records earlier source/diagnostic decisions, not current SM8850 runtime admission. Live guest boot, performance and safety conclusions belong to the [physical status ledger](SM8850_LIVE_STATUS_2026-11-20.md).
 
 Audit started 2026-11-17. **No new device claims without a local report**.
 This is a comparison and passive test harness, not authorization to boot
@@ -8,7 +16,7 @@ an iOS guest on Samsung SM-S948B / m3q / SM8850.
 
 - Local feature OneiOS: `YMGPwcca/OneiOS` branch `feat/oneios-sm8850-m3q`, starting audit from `bec7efec`.
 - Its OneOS fork: `YMGPwcca/OneOS` branch `feat/oneios-sm8850-m3q` at `b81a6032`.
-- Original S24 Ultra source: `akshaynexus/OneiOS:main` at `7b810126`, and
+- Original earlier reference device source: `akshaynexus/OneiOS:main` at `7b810126`, and
   `akshaynexus/OneOS:oneios` at `bdf3db05`.
 - The existing submodule pin in the feature OneiOS tree is `820253bf`;
   that is **not** the OneOS feature-branch head `b81a6032`.
@@ -57,7 +65,7 @@ This matrix is derived from
 | Original S24 condition | Passive audit | What remains |
 | --- | --- | --- |
 | UID root, SHA-256 utility, SELinux | Read UID/commands/SELinux | Compare actual policy AVCs only if needed |
-| Exact model SM-S928*, e3q, SM8650 | Record exact SM-S948B/m3q/SM8850; old allowlist **BLOCKED** | Never blindly bypass |
+| Exact model original non-SM8850 model, original device codename, earlier reference SoC | Record exact SM-S948B/m3q/SM8850; old allowlist **BLOCKED** | Never blindly bypass |
 | Stage root ownership, no symlinks; pinned switch/return | Stage inventory | No OneiOS stage exists yet |
 | Runtime ABI 1, non-placeholder, ARM64 ELF; full SHA list | Files and signatures when staged | Verify real runtime then; no stage now |
 | Image format, manifest, image hashes, changed-file IDs | Image inventory | Kernelcache, iOS image and manifest absent |
@@ -222,7 +230,7 @@ the Samsung vendor composer, volume-key capability, battery at 96%,
   or `oneios-audio`. No OneiOS stage exists yet, so absence of staged
   binaries is expected and does not mean they are missing from the
   built archive. A host-side archive inventory is needed.
-- The original `SM-S928*/e3q/SM8650` switch guard is **BLOCKED**,
+- The original `original non-SM8850 model/original device codename/earlier reference SoC` switch guard is **BLOCKED**,
   correctly, on `SM-S948B/m3q/SM8850`; no code should bypass it.
   OneOS APK 0.5.16 (versionCode 145) being installed is not proof of
   staging or switch support.
@@ -347,7 +355,7 @@ imply a staged runtime exists.
    certified without a controlled recovery exercise.
 
 **No switch permission follows from this audit.** Keep the
-`SM-S928*/e3q/SM8650` root guard and app-level m3q block until
+`original non-SM8850 model/original device codename/earlier reference SoC` root guard and app-level m3q block until
 recovery can be demonstrated independently.
 
 
