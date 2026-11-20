@@ -60,3 +60,20 @@ The script uses unprivileged `adb shell cat` by default. **If a known node is UN
 Review `summary.json` and `thermalservice.txt` before sharing, since raw diagnostics may include device-specific metadata. The report logs samples with identity and an exact boot ID, plus any denied/malformed readings. A small difference does **not prove** the same physical sensor, synchronous sampling, or sensor reachability after Android Framework stops. No firmware thresholds, monitor TTL, reboot guard, or production behavior are qualified by this passive check.
 
 **Safety remains:** `P0.1=PARTIAL`, `INDEPENDENT_GUARD=NOT_IMPLEMENTED`, `600S_TAKEOVER=BLOCKED`.
+
+
+## Physical targeted kernel reading — completed 2026-11-20
+
+The operator ran all **12/12 offline regression tests** on CachyOS successfully. The targeted non-root probe showed `BOARD_AP=READ 32.6C`, but `battery/temp` and `battery/lrp` both returned `Permission denied` (not missing files). The opt-in, exactly-three-nodes root retry then reported:
+
+| Node | Reader output | Interpretation |
+| --- | --- | --- |
+| `battery/temp` | `BATTERY=READ 28.5C via root_named_cat` | Verified this named kernel node is readable as root with One UI running |
+| `battery/lrp` | `LRP=READ 30.3C via root_named_cat` | Verified named Samsung LRP file is readable as root with One UI running |
+| `sec-ap-thermistor/temperature` | `BOARD_AP=READ 29.7C via shell_named_cat` | Verified board node is readable without root |
+
+Original output paths: `out/sm8850/thermal-known-nodes/20261120T170502Z-3cb4d781` (unprivileged) and `out/sm8850/thermal-known-nodes/20261120T170748Z-335f6407` (root fallback) on the operator's machine. The raw JSON and `thermalservice.txt` from the root fallback were **not attached** to this discussion.
+
+At an earlier different sample, HAL BAT was 29.5 C and HAL SKIN was 31.8 C, versus root-read battery 28.5 C and LRP 30.3 C at a later time. **Do not compute sensor calibration or assert alias identity from asynchronous readings.** Board AP is not the HAL's CPU-labeled AP. `SUBBAT=0.0` remains suspect and is excluded from any safety evidence.
+
+The independent OneOS reader and fail-closed **simulation** groundwork are now in draft [OneOS PR #6](https://github.com/YMGPwcca/OneOS/pull/6). This proves neither post-Framework availability nor a running independent safety monitor; **P0.1 remains PARTIAL and P0.2 remains NOT PHYSICALLY IMPLEMENTED**.
