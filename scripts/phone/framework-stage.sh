@@ -174,6 +174,17 @@ printf 'free=%s KiB reserve=%s KiB clone_upper_bound=%s KiB\n' "$free" "$MIN_FRE
     fail "insufficient space for an isolated snapshot and the benchmark reserve"
 
 install_stage
+# Earlier reboot-only smokes intentionally created an EMPTY $stage/data
+# even though no iOS guest was ever started. Preserve any non-empty tree,
+# but allow replacing this verified empty placeholder with a fresh clone.
+if [ -d "$stage/data" ]; then
+    root_dir "$stage/data" || fail "untrusted existing stage Data placeholder"
+    [ ! -L "$stage/data" ] || fail "stage Data is a symlink"
+    [ ! -e "$stage/data.consumed" ] || fail "one-shot Data was already used"
+    [ -z "$(find "$stage/data" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
+        fail "existing Data directory has contents; preserve it"
+    rmdir "$stage/data" || fail "could not retire empty smoke Data placeholder"
+fi
 for name in runtime image data runtime.conf image.conf runtime.sha256 image.sha256 image.ids image.ready; do
     [ ! -e "$stage/$name" ] && [ ! -L "$stage/$name" ] || fail "existing output $name needs preservation"
 done
