@@ -279,6 +279,22 @@ def restored_on_same_boot(baseline, after, mode):
     )
 
 
+def reboot_stage_check(phone, output):
+    """Install recovery scripts and verify reboot-smoke preflight; never stop Framework."""
+    if audit(phone, output / "preflight.txt", reboot_only=True):
+        return 2
+    if upload(phone, "install"):
+        return 2
+    check = phone.root(
+        f"/system/bin/sh {STAGE}/oneios_switch.sh --framework-check reboot-smoke",
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120,
+    )
+    (output / "stage-check.txt").write_bytes(check.stdout)
+    print(check.stdout.decode(errors="replace"), end="", flush=True)
+    print("REBOOT_STAGE_CHECK=" + ("PASS_NO_FRAMEWORK_STOP" if check.returncode == 0
+                                  else "BLOCKED"))
+    return 0 if check.returncode == 0 else 2
+
 def reboot_smoke_verified(baseline, after):
     """Success requires recorded Framework stop, key-triggered reboot and healthy One UI."""
     before = dict(line.split("=", 1) for line in baseline.splitlines() if "=" in line)
@@ -376,7 +392,7 @@ mkdir launches/{token}
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for mode in ("dry-run", "reboot-audit", "readiness", "recovery-smoke", "reboot-smoke", "run", "return", "status", "storage-probe", "prepare", "collect"):
+    for mode in ("dry-run", "reboot-audit", "readiness", "recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "return", "status", "storage-probe", "prepare", "collect"):
         modes.add_argument(f"--{mode}", dest="mode", action="store_const", const=mode)
     parser.add_argument("--confirm", action="store_true", help="Explicitly opt in to the requested device changes")
     parser.add_argument("--accept-legacy-watchdog-risk", action="store_true",
@@ -388,7 +404,7 @@ def main():
     parser.add_argument("--bench-manifest", type=Path)
     parser.add_argument("--output", type=Path, help="New local evidence directory")
     args = parser.parse_args()
-    if args.mode in {"recovery-smoke", "reboot-smoke", "run", "storage-probe", "prepare"} and not args.confirm:
+    if args.mode in {"recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "storage-probe", "prepare"} and not args.confirm:
         parser.error(f"--{args.mode} requires --confirm")
     if args.mode == "reboot-smoke" and not args.accept_legacy_watchdog_risk:
         parser.error("--reboot-smoke requires --accept-legacy-watchdog-risk")
@@ -424,6 +440,8 @@ def main():
         return readiness(phone, output)
     if args.mode == "collect":
         return 0 if collect(phone, output) else 4
+    if args.mode == "reboot-stage-check":
+        return reboot_stage_check(phone, output)
     if args.mode == "reboot-smoke":
         return launch(phone, "smoke", output, reboot_only=True)
     return launch(phone, "smoke" if args.mode == "recovery-smoke" else "run", output)
