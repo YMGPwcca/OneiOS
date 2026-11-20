@@ -167,7 +167,9 @@ class TakeoverTest(unittest.TestCase):
         self.assertNotIn("Hold Volume Up + Volume Down", source)
         self.assertIn("PHYSICAL_KEYS=DO_NOT_PRESS_VOLUME_UP_PLUS_DOWN", source)
         self.assertIn("AUTO_REBOOT=EXPECTED_AFTER_20_SECOND_FRAMEWORK_DEADLINE", source)
-        self.assertIn("REBOOT_SMOKE=PASS_AUTOMATIC_DEADLINE_AND_ONEUI", source)
+        self.assertNotIn("REBOOT_SMOKE=PASS_AUTOMATIC_DEADLINE_AND_ONEUI", source)
+        self.assertIn("REBOOT_SMOKE=DEADLINE_REQUEST_CONFIRMED_ONEUI_OBSERVED", source)
+        self.assertIn("UNASSISTED_RETURN_TO_ONEUI=NOT_VERIFIED", source)
         self.assertIn("PHYSICAL_KEY_REBOOT=NOT_VERIFIED", source)
 
     def test_readiness_reports_blockers_without_phone_modifications(self):
