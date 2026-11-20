@@ -1,5 +1,12 @@
 # kernel/patches/oneios-hosted: XNU as a process under xnuhost
 
+**OneiOS · SM8850 · Kernel / driver implementation**
+
+[← Handbook](../../../docs/README.md) · [Latest evidence](../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
+> [!NOTE]
+> Kernel patch history below includes earlier boot milestones. The **current** SM8850 full-run has physically reached guest-ready, first frame and ~600.6 s host execution. Performance and unassisted recovery are still not accepted.
+
 Owner: hosted-xnu. The machine layer that lets xnu-12377 run with no EL1 and no MMU, against xnuhost's
 host-call ABI (`runtime/xnuhost/include/xnuhost/hostcall.h`). Date: 2026-11-10.
 
@@ -42,7 +49,7 @@ armcpu-self-ipi=1 armcpu-spi-ipi=1 use_contiguous_hint=0 interrupt-masked-debug-
 ```
 
 `-cpu cortex-a710`, not qemu's default `max`: `max` has a 512-byte `DC ZVA` block and XNU's `bzero` assumes
-the 64 bytes every Arm core (and the S24 Ultra's) has; with `max` the first large `bzero` wipes its own stack.
+the 64 bytes every Arm core (and the earlier reference device's) has; with `max` the first large `bzero` wipes its own stack.
 
 ## How far it boots (qemu-aarch64 -cpu cortex-a710, 8 vCPUs, 4 GiB, `kernel.kc`, the real image set)
 
@@ -107,7 +114,7 @@ What that run showed is wrong or missing (none of it fixed yet unless a later li
   QuartzCore's `query_displays`, 40 s after backboardd opened the framebuffer). `display.sock` shows one flat colour,
   about two flushes a second; no swap from backboardd, no `session/ready`.
 
-- **The first phone boot (S24 Ultra, 2026-11-11)** got through the kernel, the root mount, the cryptexes, the
+- **The first phone boot (earlier reference device, 2026-11-11)** got through the kernel, the root mount, the cryptexes, the
   shared cache's hashing (5791 MiB in 23 s), 8 CPUs, the GPU, the HID devices, and stopped at the first user
   process: `newfs_apfs failed: wait status 0xb`, `panic: offline scratch Data mount failed: 5`. With
   `sheng-exc-name=newfs_apfs` in `IMAGE/xnuhost.conf`: a permission fault at `0x81f8d4ed30` in libobjc's
