@@ -37,7 +37,7 @@ REQUIRED = {
 }
 STATUS = f"""stage={STAGE}
 echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
-for name in boot state framework.mode framework.launch framework.deadline framework.result watchdog.phase; do
+for name in boot state framework.mode framework.return framework.takeover-confirmed framework.launch framework.deadline framework.result watchdog.phase; do
     if [ -f "$stage/control/$name" ]; then printf 'control/%s=' "$name"; cat "$stage/control/$name"; fi
 done
 if [ -f "$stage/return.outcome" ]; then printf 'outcome='; cat "$stage/return.outcome"; fi
@@ -159,8 +159,9 @@ fi
     return result.stdout.decode()
 
 
-def audit(phone, destination=None):
-    result = phone.root("/system/bin/sh -s -- --framework-audit",
+def audit(phone, destination=None, *, reboot_only=False):
+    audit_mode = "--framework-audit-reboot" if reboot_only else "--framework-audit"
+    result = phone.root("/system/bin/sh -s -- " + audit_mode,
                         input=(ASSETS / "oneios_switch.sh").read_bytes(), stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT, timeout=20)
     if destination:
@@ -277,14 +278,33 @@ def restored_on_same_boot(baseline, after, mode):
     )
 
 
-def launch(phone, mode, output):
-    # Refuse from current phone evidence before staging or launching anything.
-    if audit(phone, output / "preflight.txt"):
+def reboot_smoke_verified(baseline, after):
+    """Success requires recorded Framework stop, key-triggered reboot and healthy One UI."""
+    before = dict(line.split("=", 1) for line in baseline.splitlines() if "=" in line)
+    now = dict(line.split("=", 1) for line in after.splitlines() if "=" in line)
+    return (
+        bool(before.get("boot")) and bool(now.get("boot")) and now["boot"] != before["boot"]
+        and now.get("control/framework.mode") == "smoke"
+        and now.get("control/framework.return") == "reboot"
+        and bool(now.get("control/framework.takeover-confirmed"))
+        and now.get("outcome", "").startswith("reboot-key ")
+        and now.get("zygote", "").startswith("running pid=")
+        and now.get("zygote_next", "").startswith("running pid=")
+        and now.get("system_server", "").isdecimal()
+        and now.get("SELinux") == "Enforcing"
+    )
+
+
+def launch(phone, mode, output, *, reboot_only=False):
+    # A reboot-only smoke must have a real OneOS legacy-holder read-only
+    # audit. Normal in-place paths keep all existing watchdog gates.
+    if audit(phone, output / "preflight.txt", reboot_only=reboot_only):
         return 2
     if upload(phone, "install"):
         return 2
     shell = f"/system/bin/sh {STAGE}/oneios_switch.sh"
-    check = phone.root(f"{shell} --framework-check {mode}", timeout=120)
+    session_mode = "reboot-smoke" if reboot_only else mode
+    check = phone.root(f"{shell} --framework-check {session_mode}", timeout=120)
     if check.returncode:
         return check.returncode
     baseline = status(phone)
@@ -297,13 +317,13 @@ cd {STAGE}
 mkdir -p launches
 mkdir launches/{token}
 /data/adb/ksu/bin/busybox setsid /system/bin/sh -c '
-    {shell} --framework-session {mode} {ACK} {token}
+    {shell} --framework-session {session_mode} {ACK} {token}
     rc=$?
     printf "%s\n" "$rc" > launches/{token}/exit
 ' </dev/null > launches/{token}/switch.log 2>&1 &
 """, timeout=10).returncode:
         return 2
-    print(f"Framework {mode} requested. Recovery runs on the device.", flush=True)
+    print(f"Framework {session_mode} requested. Recovery runs on the device.", flush=True)
     end = time.monotonic() + 1000
     with (output / "timeline.txt").open("w") as timeline:
         while time.monotonic() < end:
@@ -314,6 +334,11 @@ mkdir launches/{token}
                 current_boot = re.search(r"^boot=(.+)$", state, re.M).group(1)
                 if current_boot != boot and "zygote=running" in state:
                     collect(phone, output)
+                    if reboot_only:
+                        verified = reboot_smoke_verified(baseline, state)
+                        print("REBOOT_SMOKE=" + ("PASS_PHYSICAL_KEY_AND_ONEUI" if verified
+                              else "INCOMPLETE_OR_AUTOMATIC_REBOOT"))
+                        return 0 if verified else 4
                     print("Device rebooted during recovery. See the archived evidence.", file=sys.stderr)
                     return 4
                 this_session = f"control/framework.launch={token}" in state
@@ -338,7 +363,7 @@ mkdir launches/{token}
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for mode in ("dry-run", "readiness", "recovery-smoke", "run", "return", "status", "storage-probe", "prepare", "collect"):
+    for mode in ("dry-run", "reboot-audit", "readiness", "recovery-smoke", "reboot-smoke", "run", "return", "status", "storage-probe", "prepare", "collect"):
         modes.add_argument(f"--{mode}", dest="mode", action="store_const", const=mode)
     parser.add_argument("--confirm", action="store_true", help="Explicitly opt in to the requested device changes")
     parser.add_argument("--serial", help="ADB USB serial. Defaults to the sole authorized USB device.")
@@ -348,7 +373,7 @@ def main():
     parser.add_argument("--bench-manifest", type=Path)
     parser.add_argument("--output", type=Path, help="New local evidence directory")
     args = parser.parse_args()
-    if args.mode in {"recovery-smoke", "run", "storage-probe", "prepare"} and not args.confirm:
+    if args.mode in {"recovery-smoke", "reboot-smoke", "run", "storage-probe", "prepare"} and not args.confirm:
         parser.error(f"--{args.mode} requires --confirm")
     if args.mode != "run" and (args.duration or args.gpu):
         parser.error("--duration and --gpu apply to --run")
@@ -358,6 +383,8 @@ def main():
     phone = Phone(args.adb, args.serial)
     if args.mode == "dry-run":
         return audit(phone)
+    if args.mode == "reboot-audit":
+        return audit(phone, reboot_only=True)
     if args.mode == "status":
         print(status(phone), end="")
         return 0
@@ -380,6 +407,8 @@ def main():
         return readiness(phone, output)
     if args.mode == "collect":
         return 0 if collect(phone, output) else 4
+    if args.mode == "reboot-smoke":
+        return launch(phone, "smoke", output, reboot_only=True)
     return launch(phone, "smoke" if args.mode == "recovery-smoke" else "run", output)
 
 
