@@ -1,5 +1,13 @@
 # Building and testing OneiOS
 
+
+**OneiOS · Galaxy S26 Ultra / SM8850 · Build and test reference**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This is a detailed implementation reference. Any old example or externally sourced configuration must be checked against the live SM8850 firmware; a passing host build or a historical source reference is not a new phone acceptance.
+
 Everything builds on a Linux x86_64 PC, iOS user-space code included (section 9); no Mac is needed. The runtime
 (section 4: xnuhost, the helpers, the phone tools, the package) also builds on a Mac, and its host tests run from
 the Mac in an arm64 Linux container. Long steps run in tmux with `scripts/bg.sh NAME CMD...` (log in `logs/NAME.log`, exit
@@ -625,7 +633,7 @@ agents** until the two are one.
 ### The same by hand (when the CLI fails or lacks a command)
 
 What the area agents followed to try a build in a real session (bringup, 2026-11-12; every command was run). The
-phone is the S24 Ultra on adb, KernelSU root, the OneOS fork 0.4.86 (versionCode 115) with its stage at
+phone is the earlier reference device on adb, KernelSU root, the OneOS fork 0.4.86 (versionCode 115) with its stage at
 `/data/local/tmp/oneios`. One agent at a time: hold the phone lock first (the coordinator's `phone-lock.sh`), and
 restore the baseline (`phone-baseline.txt` next to that script) before you release it.
 
