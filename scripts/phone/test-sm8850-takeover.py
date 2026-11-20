@@ -130,6 +130,45 @@ class TakeoverTest(unittest.TestCase):
             with self.subTest(field=old):
                 self.assertFalse(TAKEOVER.reboot_smoke_verified(baseline, after.replace(old, new)))
 
+    def test_deadline_return_acceptance_is_separate_from_physical_keys(self):
+        baseline = "boot=boot-old\n"
+        after = (
+            "boot=boot-new\nboot_completed=1\ncontrol/framework.launch=token-123\n"
+            "control/framework.mode=smoke\ncontrol/framework.return=reboot\n"
+            "control/framework.takeover-confirmed=verified-gen\n"
+            "outcome=reboot-deadline-or-manual 123 who=framework-deadline reason=framework deadline reached\n"
+            "return_request=framework deadline reached at 123 (deadline 123)\n"
+            "zygote=running pid=12\nzygote_next=running pid=15\n"
+            "system_server=25\nSELinux=Enforcing\n"
+        )
+        self.assertTrue(TAKEOVER.reboot_smoke_deadline_verified(baseline, after, "token-123"))
+        self.assertFalse(TAKEOVER.reboot_smoke_verified(baseline, after))
+        self.assertFalse(TAKEOVER.reboot_smoke_deadline_verified(baseline, after, "another-token"))
+        for old, new in (
+            ("boot=boot-new", "boot=boot-old"),
+            ("boot_completed=1", "boot_completed=0"),
+            ("control/framework.takeover-confirmed=verified-gen", "control/framework.takeover-confirmed="),
+            ("outcome=reboot-deadline-or-manual", "outcome=reboot-key"),
+            ("return_request=framework deadline reached", "return_request=watchdog feeder failed"),
+            ("zygote=running pid=12", "zygote=stopped pid="),
+            ("system_server=25", "system_server="),
+            ("SELinux=Enforcing", "SELinux=Permissive"),
+        ):
+            with self.subTest(field=old):
+                self.assertFalse(TAKEOVER.reboot_smoke_deadline_verified(
+                    baseline, after.replace(old, new), "token-123",
+                ))
+
+    def test_s26_usb_chord_is_not_requested_after_takeover(self):
+        from inspect import getsource
+        source = getsource(TAKEOVER.launch)
+        self.assertNotIn("PHYSICAL_KEYS=PRESS_NOW", source)
+        self.assertNotIn("Hold Volume Up + Volume Down", source)
+        self.assertIn("PHYSICAL_KEYS=DO_NOT_PRESS_VOLUME_UP_PLUS_DOWN", source)
+        self.assertIn("AUTO_REBOOT=EXPECTED_AFTER_20_SECOND_FRAMEWORK_DEADLINE", source)
+        self.assertIn("REBOOT_SMOKE=PASS_AUTOMATIC_DEADLINE_AND_ONEUI", source)
+        self.assertIn("PHYSICAL_KEY_REBOOT=NOT_VERIFIED", source)
+
     def test_readiness_reports_blockers_without_phone_modifications(self):
         baseline = ("boot=abc\nzygote=running pid=12\nsystem_server=30\n"
                     "SELinux=Enforcing\nimage_ready=0\nsmoke_current_boot=0\n"
