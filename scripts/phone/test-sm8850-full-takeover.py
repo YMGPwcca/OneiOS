@@ -86,6 +86,57 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('PHYSICAL_KEYS=DO_NOT_PRESS_BOTH_VOLUME_KEYS', script)
         self.assertIn('git -C app rev-parse HEAD', script)
 
+    def test_inner_guest_mount_protects_scripts_without_busybox_file_remount(self):
+        source = ONEOS_SWITCH.read_text()
+        begin = source.index('    --inner)')
+        end = source.index('    --stop-loop)', begin)
+        inner = source[begin:end]
+        self.assertIn('for d in data session; do', inner)
+        self.assertIn('mount --bind "/data/$d" "/data/$d"', inner)
+        self.assertIn('mount -o remount,bind,ro /data', inner)
+        self.assertIn('the staged /data root is writable', inner)
+        self.assertIn('guest writable island is read-only', inner)
+        self.assertIn('if true 2>/dev/null > /data/control/.w', inner)
+        self.assertNotIn('for d in runtime image control bin oneios_switch.sh oneios_return.sh', inner)
+        self.assertNotIn('mount -o remount,bind,ro "/data/$d"', inner)
+        self.assertLess(
+            inner.index('for d in data session; do'),
+            inner.index('mount -o remount,bind,ro /data'),
+            'Data/session write mounts must be isolated before making stage root ro',
+        )
+        self.assertLess(
+            inner.index('mount -o remount,bind,ro /data'),
+            inner.index('echo $ > /data/session/xnuhost.pid'),
+            'Fail-safe read-only guard must finish before guest pid is published',
+        )
+
+    def test_rearm_only_fresh_apfs_clone_and_preserve_old_image_logs(self):
+        stage = STAGER.read_text()
+        host = TAKEOVER_SOURCE.read_text()
+        wrapper = WRAPPER.read_text()
+        self.assertIn('probe|prepare|rearm-data)', stage)
+        self.assertIn('if [ "$operation" = rearm-data ]; then', stage)
+        self.assertIn('consumed APFS Data was modified; refusing to reset guest state', stage)
+        self.assertIn('mv "$stage/data" "$archive/data"', stage)
+        self.assertIn('mv "$stage/data.consumed" "$archive/data.consumed"', stage)
+        self.assertIn('mv "$stage/image.ready" "$stage/image.ready.rearm-pending"', stage)
+        self.assertIn('mv "$incoming/data" "$stage/data"', stage)
+        self.assertIn('APFS_DATA_REARMED=YES', stage)
+        self.assertIn('"rearm-data"', host)
+        self.assertIn('if [ "$mode" = rearm ]; then', wrapper.replace('elif', 'if'))
+        self.assertIn('--rearm-data --confirm --serial "$serial"', wrapper)
+        self.assertIn('FULL_TAKEOVER_STAGE=REARMED', wrapper)
+
+    def test_original_reboot_smoke_can_be_read_from_root_owned_archive(self):
+        source = ONEOS_SWITCH.read_text()
+        self.assertIn('sm8850_old_smoke_valid()', source)
+        self.assertIn('"$STAGE"/logs/session.*', source)
+        self.assertIn('root_only "$sr_archive"', source)
+        self.assertIn('root_only "$sr_outcome_path"', source)
+        self.assertIn('SM8850_SMOKE_PROOF_SOURCE=$smoke_proof', source)
+        self.assertIn('verified original smoke proof missing from current or archived session', source)
+        self.assertIn('smoke_proof=archived', source)
+
     def test_shell_syntax_bash_and_available_mksh(self):
         shells = [shutil.which("bash"), shutil.which("sh")]
         for shell in (shutil.which("mksh"),):
