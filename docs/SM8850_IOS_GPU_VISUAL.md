@@ -1,5 +1,12 @@
 # SM8850: visually verify iOS GPU on the phone (no takeover)
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Bounded visual GPU preview**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This page is earlier device evidence or an experimental design record. Compare with the [latest physical status](SM8850_LIVE_STATUS_2026-11-20.md); do not infer current safety or performance from a historical PASS.
+
 > **Scope: historical no-takeover touch/graphics preview.** The
 > 2026-11-20 separate root-only 8-vCPU/600s Framework takeover has since
 > booted iOS and posted its first frame; the warnings below are about
