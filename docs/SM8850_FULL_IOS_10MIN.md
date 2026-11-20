@@ -169,6 +169,7 @@ bash scripts/phone/sm8850-full-takeover.sh rearm R5GL64LZ9HA
 ```
 
 Expected staging-only result: `APFS_DATA_REARMED=YES`,
+`SM8850_MOUNT_NAMESPACE_PROBE=PASS_NO_FRAMEWORK_STOP`,
 `FULL_TAKEOVER_STAGE=REARMED` and `LIVE_FRAMEWORK_STOP=NO`.
 Do not run full takeover unless that succeeds and the user
 separately accepts the **still-unqualified** 600s legacy watchdog risk.
