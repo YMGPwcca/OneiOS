@@ -36,10 +36,9 @@ install_stage() {
     state=$(cat "$stage/control/state" 2>/dev/null || :)
     case "$state" in
         starting|running|returning)
-            [ "$operation" = upgrade ] &&
-                [ -s "$stage/control/boot" ] &&
+            [ -s "$stage/control/boot" ] &&
                 [ "$(cat "$stage/control/boot")" != "$(cat /proc/sys/kernel/random/boot_id)" ] ||
-                fail "experimental session still open or not proven stale from a previous boot" ;;
+                fail "experimental session still open on this boot" ;;
     esac
     # Never stage over a live XNU or iOS helper, even with stale control files.
     if pidof xnuhost xnuhost-gui-bench xnuhost-tasks OneiOSDisplay oneios-display >/dev/null 2>&1; then
