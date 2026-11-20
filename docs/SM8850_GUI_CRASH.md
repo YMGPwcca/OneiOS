@@ -1,5 +1,12 @@
 # SM8850 iOS 27.0.1 GUI crash
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · iOS GUI crash forensics**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This page is earlier device evidence or an experimental design record. Compare with the [latest physical status](SM8850_LIVE_STATUS_2026-11-20.md); do not infer current safety or performance from a historical PASS.
+
 ## Confirmed failing operation
 
 The four saved `backboardd` aborts on iPhone18,2 build 24A446 resolve
