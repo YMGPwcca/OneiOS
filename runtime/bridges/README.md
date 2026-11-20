@@ -1,5 +1,9 @@
 # runtime/bridges: the host side of OneiOS's hardware
 
+**OneiOS · SM8850 · Kernel / session interface**
+
+[← Handbook](../../docs/README.md) · [Current evidence](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: the bridges agent. What each device is, on the phone and for iOS: `docs/hardware.md`. The kernel side:
 `drivers/`.
 
