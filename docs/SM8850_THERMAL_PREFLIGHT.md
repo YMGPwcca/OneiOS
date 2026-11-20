@@ -196,3 +196,24 @@ OneOS's proposed next sensor inventory has 16 additional host tests; the operato
 - Host evidence path reported: `out/sm8850/thermal-junction-inventory/junction-20261120T190828Z-74aab3.json` (raw JSON was not uploaded for independent direct inspection).
 - `COVERAGE_COMPLETE=YES` means the survey's selected relevant zones all yielded valid reads and CPU/GPU/DDR were represented during that brief One UI snapshot. It does **not** prove vendor-calibrated limits, post-Framework sensor access, independent monitor survival, or successful unassisted reboot.
 - Next engineering action is an independent, **inert** root-side monitor/heartbeat integration and mocked death-supervision, initially with no physical return action and no bypass of the 600-second admission block.
+
+
+## P0.2 boot-specific sensor manifest builder (new, offline only)
+
+The last **user-verified** checkpoint remains **123/123 CachyOS tests PASS** at `cdcc89d211fe8af4b10833dd248aad0405897664`, with physical stock-OneUI inventory covering 28 real CPU/GPU/DDR zones, zero errors/unreadable types, and an optional absent XO zone. Current-boot peaks were CPU 37.0 C `cpu-0-5-1`, GPU 35.1 C `gpuss-2`, DDR 35.1 C `ddr`; no vendor threshold is inferred.
+
+The branch now contains `scripts/phone/sm8850-thermal-manifest.py`: by default **audit-only, no ADB and no disk writes**. Explicit `--build --inventory FILE --output-dir DIR` consumes the operator's local previously collected JSON and validates the entire report: exact firmware, same source boot ID, valid read methods, full CPU/GPU/DDR groups, matching per-index sysfs paths, exclusion of `cpu-hw-trip-*`, unique zone indices, complete zone count, plausible and internally consistent temperature units, no failed/unreadable zones and peak reports consistent with individual readings. Output is a **boot-bound, non-authorizing JSON manifest** of all named sensor paths with a SHA-256 fingerprint that is explicitly **not a signature**.
+
+Manifest creation cannot establish that this is the phone's **current** boot, that sensor paths remain valid, or that code outside One UI can access the nodes. Any future root-side monitor MUST independently verify boot ID and zone types before and during monitoring. The manifest explicitly sets `takeover_admission_granted=false`, `independent_guard_running=false`, `firmware_limits_qualified=false` and `recovery_certified=false`.
+
+`tests/test_sm8850_thermal_manifest.py` adds **16 new host-only integrity/anti-spoof regression cases** and the strict local runner now expects **139** total. These new 16 have **not yet been verified on the operator's CachyOS**; do not claim 139/139 PASS.
+
+Offline-only manifest construction command (against the real operator JSON):
+
+```bash
+python3 scripts/phone/sm8850-thermal-manifest.py --build \
+  --inventory "$HOME/projects/OneiOS/out/sm8850/thermal-junction-inventory/junction-20261120T190828Z-74aab3.json" \
+  --output-dir "$HOME/projects/OneiOS/out/sm8850/thermal-manifests"
+```
+
+This is the sensor manifest **foundation** for a future independently supervised root monitor, not that monitor itself. P0.2 recovery, watchdog and the 600-second takeover remain BLOCKED.
