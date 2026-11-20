@@ -767,6 +767,36 @@ def framework_timed_smoke(f):
     f.check("completed smoke gives a boot-scoped result", "phase3-boot", f.read(f.stage / "smoke.accepted"))
 
 
+def framework_reboot_key_requests_oneui_restart(f):
+    framework_smoke(f)
+    f.write(f"{SESSION}/control/framework.return", "reboot\n")
+    f.write(f"{SESSION}/session/return.request",
+            "keys: Volume Up + Volume Down held 3 s\n")
+    rc, _ = f.run("return", "watcher", "fixture-framework")
+    f.check("reboot-only key return signals init", True,
+            "sys.powerctl reboot,oneios-sm8850-reboot-return" in f.log("setprop"))
+    f.check("hardware chord is recorded before reboot", True,
+            f.outcome().startswith("reboot-key "))
+    f.check("no zygote restart attempted", False,
+            "ctl.start zygote" in f.log("setprop"))
+    f.check("reboot branch does not require native watchdog handback", False,
+            (f.control / "watchdog.handback").exists())
+    f.check("reboot-only branch terminates without claiming in-place", 1, rc)
+
+
+def framework_reboot_deadline_cannot_claim_key_success(f):
+    framework_smoke(f)
+    f.write(f"{SESSION}/control/framework.return", "reboot\n")
+    f.write(f"{SESSION}/session/return.request", "deadline reached\n")
+    rc, _ = f.run("return", "framework-deadline", "fixture-framework")
+    f.check("deadline requests reboot", True,
+            "sys.powerctl reboot,oneios-sm8850-reboot-return" in f.log("setprop"))
+    f.check("deadline is not a hardware-key PASS", True,
+            f.outcome().startswith("reboot-deadline-or-manual "))
+    f.check("no in-place return claimed", False, f.outcome().startswith("inplace "))
+    f.check("deadline return exits by reboot fallback", 1, rc)
+
+
 def framework_stale_deadline(f):
     f.env["ONEIOS_TEST_FRAMEWORK"] = "1"
     f.write(f"{SESSION}/control/watchdog.generation", "fixture-next\n")
@@ -917,7 +947,9 @@ CASES = (
     watchdog_blocked_second_ping, watchdog_guard_supervises_a_return,
 )
 FRAMEWORK_CASES = (framework_stop_needs_all_recovery_helpers, framework_deadline_after_watcher_loss,
-                   framework_timed_smoke, framework_stale_deadline, framework_manual_return_restores_map_count,
+                   framework_timed_smoke, framework_reboot_key_requests_oneui_restart,
+                   framework_reboot_deadline_cannot_claim_key_success,
+                   framework_stale_deadline, framework_manual_return_restores_map_count,
                    framework_changed_service_uses_failsafe, native_handback_armed_without_transport,
                    native_handback_disarmed_after_delayed_framework, native_handback_missing_release_failsafe,
                    native_handback_stuck_framework_guard, native_handback_missing_guard_refuses_release,
