@@ -119,3 +119,61 @@ Full iOS on the screen is the goal of this experiment; it does not
 establish robust 10-minute legacy watchdog hardware ownership,
 unassisted return to One UI, Vulkan API conformance, or production
 readiness. Do not claim these without physical evidence.
+
+
+## 2026-11-20 first live FULL takeover: root cause and retry procedure
+
+**Confirmed from on-device switch.log and xnuhost.log (not inferred):**
+Android Framework stopped, the OneOS `V` magic close succeeded,
+and an independent 600s deadline was armed. Then BusyBox rejected
+a **single-file bind-remount**:
+
+```text
+oneios inner: making /data/oneios_switch.sh read-only
+mount: can't find /data/oneios_switch.sh in /proc/mounts
+oneios inner: ... ended with status 70
+Return to One UI (switch-failed)
+```
+
+The guest never reached `xnuhost` exec; no GPU/iOS failure is proven.
+This was an intentional **early reboot-return on launcher failure**,
+not the 600s timeout. DirtyFrag temporary root may disappear after the
+normal hard reboot, so host telemetry now falls back to unprivileged
+ADB boot metadata instead of polling a missing `su` for 1000s.
+
+The fix does **not** weaken guest isolation: it remounts the **whole
+staged `/data` parent read-only**, including root-level scripts,
+runtime, image and control, after isolating `/data/data` and
+`/data/session` as independently writable bind mounts. Negative
+write probes verify these boundaries BEFORE guest PID publication.
+This approach was tested in a Linux user+mount namespace with BusyBox;
+the exact Samsung BusyBox and F2FS namespace still require live evidence.
+
+**The APFS Data clone was already marked consumed BEFORE Framework
+stop. Never use it again.** The new `rearm` operation does not
+re-copy the 24 image files, rebuild the image, rerun takeover, or
+repeat the reboot-only smoke. It rejects rearming if any bytes in the
+consumed Data files differ from the original seed; it archives both
+consumed data and its record under root-owned `.retired-data/`,
+and only then publishes a new one-shot clone. The existing image
+and runtime hashes, GPU sidecars, and watchdog configuration remain
+unchanged.
+
+On CachyOS, after temporary DirtyFrag root is available again:
+
+```bash
+cd ~/projects/OneiOS
+git pull --ff-only origin feat/oneios-sm8850-m3q
+git submodule update --init app
+bash scripts/phone/sm8850-full-takeover.sh rearm R5GL64LZ9HA
+```
+
+Expected staging-only result: `APFS_DATA_REARMED=YES`,
+`FULL_TAKEOVER_STAGE=REARMED` and `LIVE_FRAMEWORK_STOP=NO`.
+Do not run full takeover unless that succeeds and the user
+separately accepts the **still-unqualified** 600s legacy watchdog risk.
+
+The root switch accepts the already archived, root-owned original
+smoke evidence, not a fake current-boot marker; no repeated reboot-smoke
+is required. It still checks the current boot reason and refuses any
+unexpected firmware/root/watchdog changes.
