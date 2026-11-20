@@ -56,6 +56,7 @@ if [ "$mode" = recovery ]; then
   python3 scripts/phone/test-sm8850-smoke-evidence.py -v
   ONEOS_TEST_MKSH="$mksh_bin" python3 scripts/phone/test-sm8850-mksh-flock.py -v
   ONEOS_TEST_MKSH="$mksh_bin" python3 scripts/phone/test-sm8850-oneos-legacy-feeder.py -v
+  ONEOS_TEST_MKSH="$mksh_bin" python3 scripts/phone/test-sm8850-stage-upgrade.py -v
   observer=()
   if [ -n "${ONEIOS_RECOVERY_OBSERVER_REPORT:-}" ]; then
     observer=(--observer-report "$ONEIOS_RECOVERY_OBSERVER_REPORT")
