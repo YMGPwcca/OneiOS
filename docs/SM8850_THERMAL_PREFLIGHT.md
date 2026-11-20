@@ -81,6 +81,12 @@ The independent OneOS reader and fail-closed **simulation** groundwork are now i
 
 ## Follow-on OneOS P0.2 local CI checkpoint
 
-On CachyOS, the operator's **14/14 original OneOS thermal reader / policy simulation tests PASS** using the checkout at `~/projects/OneiOS/app`. The companion [OneOS draft PR #6](https://github.com/YMGPwcca/OneOS/pull/6) subsequently added **19 more fixture-only end-to-end regression cases** that exercise the real shell reader, strict boot/run/launch identity, synthetic watcher health and bounded read time; those passed assistant-side local Linux tests but are **not yet operator-verified on CachyOS**.
+On CachyOS, the operator's **14/14 original OneOS thermal reader / policy simulation tests PASS** using the checkout at `~/projects/OneiOS/app`. The companion [OneOS draft PR #6](https://github.com/YMGPwcca/OneOS/pull/6) subsequently added **19 more fixture-only end-to-end regression cases** that exercise the real shell reader, strict boot/run/launch identity, synthetic watcher health and bounded read time; the operator has now independently run **all 19/19 new E2E tests PASS on CachyOS**, completing **33/33 OneOS offline tests PASS**.
 
 No new S26 phone experiment was performed. The new driver only emits `WOULD_REQUEST_RETURN_NOT_EXECUTED`, never an actual reboot. These tests **do not prove an independent live thermal monitor**, post-Framework sensor availability, threshold calibration or watchdog recovery. The long takeover remains blocked.
+
+## Source-level safety lock in companion OneOS draft
+
+[OneOS PR #6](https://github.com/YMGPwcca/OneOS/pull/6) now blocks the actual `--framework-session run` code path with `P0_FULL_600S_TAKEOVER=BLOCKED_UNQUALIFIED_THERMAL_GUARD` **before any APFS Data consumption or Framework stop**; check-only diagnostics remain available. It also adds a bounded read-only thermal shadow observer and **17 new offline test methods** (14 shadow observer cases locally exercised by the assistant with the real shell reader, plus 3 source-gate contract tests awaiting operator CachyOS verification).
+
+**Critical distinction:** this source gate is currently only in the draft GitHub branch, **not the old script already staged on the phone**, and the shadow observer is neither a live independently supervised guard nor a reboot-return implementation. The 600-second iOS run remains prohibited from a safety-acceptance standpoint regardless of old script functionality.
