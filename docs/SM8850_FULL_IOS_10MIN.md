@@ -241,3 +241,12 @@ replacing only the APFS Data clone, executes a **passive full-run
 admission check** (no Framework stop). Do not claim device confirmation
 until `SM8850_MOUNT_NAMESPACE_PROBE=PASS_NO_FRAMEWORK_STOP` and
 `FULL_TAKEOVER_ADMISSION=PASS_NO_FRAMEWORK_STOP` appear.
+
+
+## 2026-11-21: 90s guarded probe refused before Framework stop — consumed APFS Data
+
+- The operator ran pinned OneOS `818e7c4a2e5d716bd887a2872aabfa3cab65c105`. Root 28-zone discovery and passive `--framework-check probe` returned PASS, but the **real `--framework-session probe` refused before stopping Android Framework** with `PREFLIGHT REFUSED: isolated APFS Data clone was already consumed`. There was **no 90s iOS takeover** and no recovery/reboot event in this attempt. The host had already installed switch/guard/manifest during preparation, so the preflight message `Nothing on the phone was changed` applies to the refused switch run, not all host staging.
+- OneOS now checks `data.consumed` and `image.ready.rearm-pending` **before saying probe preflight PASS or staging its new source**. The 600s source block stays unchanged.
+- For a **fresh isolated Data clone**, use only the existing OneiOS `sm8850-full-takeover.sh rearm` path. Do **NOT** delete/touch `data.consumed`, copy the consumed APFS image back to seed, or rebuild the 24 OS image files. Rearm re-verifies existing root-stage/runtime, performs a private mount-namespace probe, requires storage reserve and clones the original `bench/data` source into a new root stage while archiving the entire previous consumed clone and marker under `.retired-data/`.
+- The existing `framework-stage.sh` rearm now also handles a consumed clone **modified by the previous real iOS guest**, BUT ONLY when the original seed matches both files in one *older*, root-owned, verified **pristine archived clone**. The modified guest Data is never reused and is preserved as evidence. If no archived pristine baseline matches, it refuses and the operator must investigate the original source integrity; no `data.consumed` bypass is allowed.
+- **Only after** rearm prints `APFS_DATA_REARMED=YES`, `SM8850_MOUNT_NAMESPACE_PROBE=PASS_NO_FRAMEWORK_STOP`, and `FULL_TAKEOVER_STAGE=REARMED`, use the new pinned OneOS 90s probe host source; it will stage the latest guard and switch again. **Never invoke the old 600s `run` command**. This update is a source-level repair; fresh-phone rearm and real 90s probe have not yet been tested in this turn.
