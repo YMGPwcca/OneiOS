@@ -167,6 +167,17 @@ Next evidence (no device changes):
 bash scripts/phone/sm8850-watchdog-owners.sh R5GL64LZ9HA
 ```
 
+On 2026-11-20, the original all-shell FD inventory timed out with
+`EXIT=124` while entering `OPEN FILE DESCRIPTOR REFERENCES` and printed
+no owner summary. This is **incomplete evidence**, not an assertion
+that no watchdog owner exists. The scanner has been replaced with a
+single native AArch64 tool compiled locally with the pinned Android NDK.
+It reads `/proc/PID/fd/FD` links in-process, prints every matched
+`holder=...` and includes coverage/permission/race counts. Its wrapper
+only uploads a temporary executable to `/data/local/tmp` and attempts
+cleanup; it never opens a watchdog or stops Android Framework.
+The cross-compiled tool should be validated with local host regression
+before running it on the phone.
 This walks `/proc/*/fd` and reads names/metadata only. It never opens
 a watchdog. Its current-boot result cannot reveal with certainty who
 owned the device in the short interval after `system_server` stopped.
