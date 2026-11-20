@@ -211,6 +211,36 @@ printf 'system_server_pid='; pidof system_server || true
     return values, text
 
 
+def full_run_rootless_receipt(passive, *, guest_ready, display_first_frame, cpu_mask):
+    """Describe *observed* facts without claiming root-only return proof.
+
+    The device may have booted Android after OneOS's mandatory reboot,
+    while ephemeral DirtyFrag root is gone. Guest-ready and display markers
+    were observed BEFORE reboot; they must not be erased by status failure.
+    An Android boot reason alone never certifies the exact deadline caller,
+    an unassisted recovery path, or independent watchdog handback.
+    """
+    reason = passive.get("boot_reason", "UNKNOWN")
+    system_server = passive.get("system_server_pid", "")
+    return [
+        "FULL_TAKEOVER_POST_REBOOT=ROOT_STATUS_UNAVAILABLE",
+        "ANDROID_NEW_BOOT=BOOT_COMPLETED_OBSERVED_VIA_UNPRIVILEGED_ADB",
+        "BOOT_REASON=" + reason,
+        "IOS_GUEST_READY_PRE_REBOOT=" + ("OBSERVED" if guest_ready else "NOT_VERIFIED"),
+        "IOS_DISPLAY_FIRST_FRAME_PRE_REBOOT=" + ("OBSERVED" if display_first_frame else "NOT_VERIFIED"),
+        "IOS_HOST_CPU_MASK_PRE_REBOOT=" + ("0-7_OBSERVED" if cpu_mask else "NOT_VERIFIED"),
+        "IOS_GUEST_START_PRE_REBOOT=" + (
+            "OBSERVED" if guest_ready and display_first_frame else "NOT_VERIFIED"
+        ),
+        "ANDROID_SYSTEM_SERVER_AFTER_REBOOT=" + (
+            "PID_OBSERVED" if system_server.isdecimal() else "NOT_VERIFIED"
+        ),
+        "FULL_TAKEOVER_DEADLINE_RETURN=NOT_VERIFIED_NO_ROOT_OUTCOME",
+        "UNASSISTED_RETURN_TO_ONEUI=NOT_VERIFIED",
+        "WATCHDOG_QUALIFICATION=UNVERIFIED_REBOOT_ONLY",
+    ]
+
+
 def status(phone, token=None):
     script = STATUS
     if token:
@@ -474,6 +504,9 @@ mkdir launches/{token}
         if mode == "run":
             print("FULL_TAKEOVER=REQUESTED", flush=True)
             print("GUEST_VCPUS=8; GPU=auto/3D; TOUCH_EXCLUSIVE=YES; RAM=4GiB", flush=True)
+            print("GPU_3D_STATUS=BACKEND_MUST_BE_CONFIRMED_IN_XNUHOST_LOG", flush=True)
+            print("THERMAL_BRIDGE=NOT_ACTIVE_IN_BENCH_BRIDGES_0", flush=True)
+            print("THERMAL_KERNEL_FIRMWARE_GUARDS=STILL_PRESENT_NOT_INDEPENDENTLY_VERIFIED", flush=True)
             print("DEADLINE_RETURN=600_SECONDS_AFTER_FRAMEWORK_STOP", flush=True)
             print("RECOVERY=MANDATORY_REBOOT_NOT_INPLACE; WATCHDOG_LEGACY_UNQUALIFIED=YES", flush=True)
         else:
@@ -609,9 +642,12 @@ mkdir launches/{token}
                             (output / "post-reboot-no-root.txt").write_text(passive_text)
                             timeline.write("POST_REBOOT_UNPRIVILEGED\n" + passive_text + "\n")
                             timeline.flush()
-                            print("FULL_TAKEOVER_POST_REBOOT=ROOT_STATUS_UNAVAILABLE", flush=True)
-                            print("BOOT_REASON=" + passive.get("boot_reason", "UNKNOWN"), flush=True)
-                            print("UNASSISTED_RETURN_AND_GUEST_START=NOT_VERIFIED", flush=True)
+                            for line in full_run_rootless_receipt(
+                                passive, guest_ready=full_guest_seen,
+                                display_first_frame=full_display_seen,
+                                cpu_mask=full_cpu_seen,
+                            ):
+                                print(line, flush=True)
                             print("Root may have disappeared because DirtyFrag is ephemeral.", flush=True)
                             print("Device booted; preserving stage evidence without another takeover.", flush=True)
                             return 4
