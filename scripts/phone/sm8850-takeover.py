@@ -462,6 +462,7 @@ mkdir launches/{token}
     confirmed_announced = False
     full_guest_seen = False
     full_display_seen = False
+    full_cpu_seen = False
     with (output / "timeline.txt").open("w") as timeline:
         while time.monotonic() < end:
             try:
@@ -481,7 +482,8 @@ mkdir launches/{token}
                         if kv.get("display_first_frame") == "1" and not full_display_seen:
                             full_display_seen = True
                             print("IOS_DISPLAY_FIRST_FRAME=OBSERVED", flush=True)
-                        if kv.get("guest_host_cpus") == "8_verified_mask":
+                        if kv.get("guest_host_cpus") == "8_verified_mask" and not full_cpu_seen:
+                            full_cpu_seen = True
                             print("IOS_HOST_CPU_MASK=0-7", flush=True)
                 if mode == "run" and current_boot != boot:
                     if full_takeover_deadline_result(baseline, state, token):
@@ -489,6 +491,7 @@ mkdir launches/{token}
                         print("FULL_TAKEOVER_DEADLINE_RETURN=REQUESTED_AND_ONEUI_OBSERVED", flush=True)
                         print("IOS_GUEST_READY=" + ("OBSERVED" if full_guest_seen else "NOT_VERIFIED"), flush=True)
                         print("IOS_DISPLAY_FIRST_FRAME=" + ("OBSERVED" if full_display_seen else "NOT_VERIFIED"), flush=True)
+                        print("IOS_HOST_CPU_MASK=" + ("0-7" if full_cpu_seen else "NOT_VERIFIED"), flush=True)
                         print("UNASSISTED_RETURN_TO_ONEUI=NOT_VERIFIED", flush=True)
                         return 4
                     if reboot_seen is None:
