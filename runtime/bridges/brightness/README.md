@@ -1,5 +1,9 @@
 # runtime/bridges/brightness: the panel's backlight and the light sensor
 
+**OneiOS · SM8850 · Runtime engineering**
+
+[← Handbook](../../../docs/README.md) · [Physical status](../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: fable-brightness. The iOS side: `drivers/brightness/`. The phone's facts: `docs/hardware.md` section 7a.
 
 iOS's brightness (Control Center, Settings, the dim before the display sleeps, auto-brightness) arrives as one
@@ -15,7 +19,7 @@ adb shell su -c '/data/local/tmp/brightctl inspect'
 
 The inspect command reports named backlight devices (including zero-max nodes), `max_brightness`, `brightness`, `actual_brightness` and `bl_power` when readable. It uses only `O_RDONLY` on sysfs, never calls the bridge, and does not touch ALS or the touchscreen power interface. A zero brightness reading on a lit S26 Ultra is flagged as unverified and unsafe for active testing. The fake-sysfs regression test `test_inspect.sh` checks selection, warning and file checksums.
 
-**Session-mode brightness writes are not yet tested on the S26 Ultra.** The active tests below originally targeted the S24 Ultra.
+**Session-mode brightness writes are not yet tested on the S26 Ultra.** The active tests below originally targeted the earlier reference device.
 
 ```sh
 make test          # 81 checks: the curve, the fade, the sensor's events, a session and the touch IC on a fake sysfs
