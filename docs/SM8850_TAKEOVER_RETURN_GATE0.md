@@ -1,5 +1,16 @@
 # SM8850 takeover / Return-to-Android: Gate 0
 
+> **Historical gate memo, superseded for physical observation (2026-11-20).**
+> The root-only experiment has now stopped Framework and booted iOS 27.0.1
+> for ~600.6 s. This does **not** mean independent watchdog handback,
+> unassisted return or thermal safety is qualified. For current state
+> and action blockers see
+> [SM8850_LIVE_STATUS_2026-11-20.md](SM8850_LIVE_STATUS_2026-11-20.md).
+> Any older wording below that says no SM8850 guest was ever run describes
+> the pretrial point-in-time, not the current experimental result.
+>
+
+
 Target: Samsung SM-S948B (m3q/SM8850), firmware S948BXXS4BZIG.
 
 **This gate is read-only.** It never stops Android Framework, writes
