@@ -42,8 +42,10 @@ class FullTakeoverOfflineTest(unittest.TestCase):
             'OneOS must reject a previously consumed isolated APFS Data clone',
         )
         self.assertIn('APFS_DATA_CLONE=CONSUMED_ONE_SHOT_BEFORE_FRAMEWORK_STOP', source)
-        self.assertIn('host_allowed=$(awk', source)
-        self.assertIn('/proc/$/status)', source)
+        self.assertTrue(
+            "host_allowed=$(awk '/^Cpus_allowed_list:/ {print $2}' /proc/self/status)" in source,
+            '8-core guard must inspect the inherited CPU affinity of its own process',
+        )
         self.assertNotIn('/proc/$/status)', source)
 
     def test_reboot_return_is_still_native_oneos_without_inplace_handback(self):
