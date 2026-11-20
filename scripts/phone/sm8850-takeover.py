@@ -136,6 +136,30 @@ def upload(phone, operation, manifest=None):
             supervisor = Path(folder) / "oneios-watchdog"
             build_phone_tool(ASSETS.parent / "native/oneios_watchdog.c", supervisor)
             files["oneios-watchdog"] = supervisor
+        if operation == "prepare":
+            # Use the SAME locally built, GPU-3D/touch-capable artifacts as
+            # the successful no-takeover visual runner. No old 2D runtime
+            # is accepted in the full Framework mode.
+            gpu_files = {
+                "xnuhost": REPO / "runtime/xnuhost/build/android/xnuhost",
+                "oneios-display": REPO / "runtime/display/build/android/oneios-display",
+                "oneios-display.dex": REPO / "runtime/display/build/android/oneios-display.dex",
+                "liboneios-display.so": REPO / "runtime/display/build/android/liboneios-display.so",
+            }
+            native_hashes = []
+            for name, source in gpu_files.items():
+                if not source.is_file() or source.is_symlink() or source.stat().st_size < 256:
+                    raise ValueError(f"Build the current 3D guest/display locally first: {source}")
+                if name == "xnuhost":
+                    data = source.read_bytes()
+                    if b"vgpu-3d=1" not in data or b"touch-exclusive=1 requires" not in data:
+                        raise ValueError("xnuhost lacks validated GPU-3D/touch-exclusion markers")
+                files["native/" + name] = source
+                native_hashes.append((hashlib.sha256(source.read_bytes()).hexdigest(), name))
+            files["native.sha256"] = Path(folder) / "native.sha256"
+            files["native.sha256"].write_text(
+                "".join(f"{sha}  {name}\n" for sha, name in native_hashes)
+            )
         with tempfile.TemporaryFile() as packet:
             with tarfile.open(fileobj=packet, mode="w") as tar:
                 for name, path in files.items():
