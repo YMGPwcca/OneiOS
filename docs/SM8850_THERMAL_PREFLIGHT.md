@@ -7,7 +7,6 @@ This step does **not** implement, enable, or qualify a thermal guard. No guest s
 ```bash
 cd ~/projects/OneiOS
 git fetch origin feat/sm8850-p0-thermal-preflight
-git show origin/feat/sm8850-p0-thermal-preflight:scripts/phone/test-sm8850-thermal-preflight.py > /tmp/test-sm8850-thermal-preflight.py
 # Use a temporary worktree to keep the current checkout and its changes untouched:
 git worktree add --detach /tmp/oneios-p0-thermal-preflight origin/feat/sm8850-p0-thermal-preflight
 python3 /tmp/oneios-p0-thermal-preflight/scripts/phone/test-sm8850-thermal-preflight.py -v
