@@ -1,5 +1,13 @@
 # iOS 27 userland for OneiOS
 
+
+**OneiOS · Galaxy S26 Ultra / SM8850 · iOS userland integration**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This is a detailed implementation reference. Any old example or externally sourced configuration must be checked against the live SM8850 firmware; a passing host build or a historical source reference is not a new phone acceptance.
+
 Owner: userland. Code: `userland/`. Date: 2026-11-11.
 
 **State: run on the real root and booted on the PC; nothing has run on the phone.** `scripts/image/build.sh` with
@@ -12,7 +20,7 @@ the numbers and how to check a run). The guest helpers are not built (the iOS to
 
 What this part does: it takes Apple's iOS 27.0.1 system for iPhone18,2 (24A446) as it is and prepares
 everything around it so that launchd, backboardd and SpringBoard come up under OneiOS's kernel on the
-Galaxy S24 Ultra: which daemons run, the preferences of the first boot, the iPhone identity and display the
+earlier reference device: which daemons run, the preferences of the first boot, the iPhone identity and display the
 booter must present, where our own programs and the Metal plugin go, and how they are trusted.
 
 ## 1. How to run it
@@ -100,7 +108,7 @@ Not ported, with the reason: droidvm's `BKForceMirroredOrientation=portrait` (fo
 rotate its scanout); iOSPlus10's jetsam floors, Bold Text, InterfaceNamer timeout, status-bar provider,
 CA_HEARTBEAT_RATE, MediaToolbox recorder and activation data ark (each works around its own kernel's missing
 piece, or edits a file of the OS volume; the first boot's log decides which return); the Mi A3 shared-cache
-lowering and PAC stripping (the S24 Ultra has PAC: board note of 2026-11-10).
+lowering and PAC stripping (the earlier reference device has PAC: board note of 2026-11-10).
 
 ## 4. Daemons: keep, idle, replace, disable (`userland/config/daemons.toml`)
 
@@ -156,7 +164,7 @@ owner's IPSW (`out/kernel-inputs/24A446/devicetree.bin`, read locally, never com
 
 ### 5.1 The screen: native resolution, 120 Hz, UI scale 3 or 2
 
-The guest does not present the iPhone 17 Pro Max's own 1320x2868 frame. It renders the Galaxy S24 Ultra's panel at
+The guest does not present the iPhone 17 Pro Max's own 1320x2868 frame. It renders the earlier reference device's panel at
 its native mode, **1440x3120 at 120 Hz**, and the display helper shows that frame 1:1 (`runtime/display/README.md`).
 The UI scale is a setting, at full resolution either way:
 
@@ -311,7 +319,7 @@ differs from upstream and the sizes and CDHashes of each host's build), placed b
 the SDK used, the source pins, each binary's size and the CDHash the build signed it with. The hook picks the
 bundle up, reads each Mach-O's CDHash from its signature into `owner-trust.json`, and compares them with the build
 record: a bundle changed after its build stops the image build. The manifest's `tweaks.info` gets `metal_plugin` (placed,
-target, CDHashes, SDK). The same stack passes MetalCheck 41/41 on an SM8650 / Adreno 750 phone under iPadOS 27.0.1
+target, CDHashes, SDK). The same stack passes MetalCheck 41/41 on an earlier reference SoC / Adreno 750 phone under iPadOS 27.0.1
 [F, references]; here nothing has loaded it.
 
 **It must not be staged as upstream builds it.** Read in `external/NativeMetal/NativeAdrenoMetalPlugin.mm`:
