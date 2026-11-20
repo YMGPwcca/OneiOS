@@ -1,5 +1,31 @@
 # OneiOS to-do
 
+## SM8850 first full guest: current P0–P3 gate (2026-11-20)
+
+**Real iOS 27.0.1 guest boot and first frame observed for ~600.6 s**, but
+severe lag/heat, unresolved precise reboot-return provenance and an inactive
+OneiOS thermal bridge in the `bench/bridges=0` profile block long-session
+acceptance. Do not mark “full takeover PASS” or “60 FPS” based on boot markers.
+
+- [ ] **P0:** read-only thermal telemetry and independently scoped thermal
+  guard/fail-safe for the root-only touch-exclusive path; preserve kernel
+  and vendor protection, no broad `bridges=1` or thermal override.
+- [ ] **P0:** restore root only for **read-only** archived return/watcher
+  evidence and verify the exact deadline requester / unassisted boot path.
+- [ ] **P0:** truthful host receipts across ephemeral-root loss and durable
+  CPU/GPU/display/thermal logs with per-session provenance.
+- [ ] **P1:** isolate Spotlight cold-index load, task traps/futex/map/TLB
+  overhead and any isolated 8-vCPU affinity improvement.
+- [ ] **P2:** trace guest scanout/fences versus SurfaceFlinger post gaps,
+  GPU imports/resources and frame copy expense; do not equate posts with FPS.
+- [ ] **P3:** hugepage/page-table investigation and matched short-session
+  benchmarks with local-first CachyOS CI before new hardware tests.
+
+Full evidence, measured values and acceptance criteria:
+[SM8850_LIVE_STATUS_2026-11-20.md](SM8850_LIVE_STATUS_2026-11-20.md).
+
+
+
 Work that is known and wanted but not on the critical path to a first phone boot. The boot itself and its
 blockers live in the board, [agents.md](agents.md), and the status in [../README.md](../README.md). Keep this list
 short: an item here has a one-line what and why, and points at the file or doc that describes it.
