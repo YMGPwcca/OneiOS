@@ -189,6 +189,28 @@ tar -xf - -C "$incoming"
 """, stdin=packet, timeout=1200).returncode
 
 
+def post_reboot_without_root(phone):
+    """Passively read Android boot metadata when DirtyFrag su disappears.
+
+    No su, root helper, reboot, mount, or device state changes.
+    """
+    script = """printf 'boot='; cat /proc/sys/kernel/random/boot_id
+printf 'boot_completed='; getprop sys.boot_completed
+printf 'boot_reason='; getprop ro.boot.bootreason
+printf 'system_boot_reason='; getprop sys.boot.reason
+printf 'last_boot_reason='; getprop sys.boot.reason.last
+printf 'zygote='; getprop init.svc.zygote
+printf 'system_server_pid='; pidof system_server || true
+"""
+    result = phone.call(
+        ["shell", "-T", script], stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, timeout=8, check=True,
+    )
+    text = result.stdout.decode(errors="replace")
+    values = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    return values, text
+
+
 def status(phone, token=None):
     script = STATUS
     if token:
@@ -562,8 +584,29 @@ mkdir launches/{token}
                         print("See device-logs.tar / launches/*/switch.log for the earliest failure.")
                     return 4
             except (subprocess.SubprocessError, OSError) as error:
-                timeline.write(f"ADB unavailable: {error}\n")
+                timeline.write(f"Root/ADB status unavailable: {error}\n")
                 timeline.flush()
+                if mode == "run":
+                    # The device may have booted successfully but permanently
+                    # lost its *ephemeral* DirtyFrag root. The normal status()
+                    # uses su and would otherwise poll for 1000 seconds.
+                    # Only conclude this when a new, boot-complete Android
+                    # boot is visible to UNPRIVILEGED ADB.
+                    try:
+                        passive, passive_text = post_reboot_without_root(phone)
+                    except (subprocess.SubprocessError, OSError):
+                        pass  # USB disconnected or phone not boot-complete yet
+                    else:
+                        if passive.get("boot") not in {None, "", boot} and passive.get("boot_completed") == "1":
+                            (output / "post-reboot-no-root.txt").write_text(passive_text)
+                            timeline.write("POST_REBOOT_UNPRIVILEGED\n" + passive_text + "\n")
+                            timeline.flush()
+                            print("FULL_TAKEOVER_POST_REBOOT=ROOT_STATUS_UNAVAILABLE", flush=True)
+                            print("BOOT_REASON=" + passive.get("boot_reason", "UNKNOWN"), flush=True)
+                            print("UNASSISTED_RETURN_AND_GUEST_START=NOT_VERIFIED", flush=True)
+                            print("Root may have disappeared because DirtyFrag is ephemeral.", flush=True)
+                            print("Device booted; preserving stage evidence without another takeover.", flush=True)
+                            return 4
             time.sleep(2)
     print("Device observation timed out. Recheck --status and retain the device logs.", file=sys.stderr)
     return 4
