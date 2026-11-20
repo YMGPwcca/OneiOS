@@ -112,6 +112,25 @@ for mksh R59, where both commands are builtins and bypass PATH test
 doubles. A green fixture validates simulated scripts, not a physical
 watchdog transfer. This change does not alter any device-side code.
 
+## Physical evidence update: 2026-11-20
+
+On firmware `S948BXXS4BZIG`, the **separate reboot-only Framework
+smoke** has now reached `TAKEOVER_CONFIRMED=YES` with the original-OneOS
+legacy V feeder operational after a transient `/dev/watchdog` EBUSY.
+The root-side takeover marker exists, the 20-second
+`framework.deadline` generated a return request, and the subsequent
+Android boot reason was `reboot,oneios-sm8850-reboot-return`.
+See [the physical log summary](SM8850_REBOOT_SMOKE.md).
+
+**Do not conflate this with full Gate 1–5 approval.** The owner held
+Volume Up + Volume Down during the reboot with USB connected and
+encountered Samsung D2 Download Mode, then unplugged and used the
+force-restart gesture to return to One UI. Thus software-requested
+deadline reboot is evidenced, while **unassisted normal boot and
+software volume-chord recovery remain UNVERIFIED**. The normal iOS
+guest's independent watchdog qualification, staged image, graphical
+output and touch validation are still outstanding. Repeating the same
+reboot-only smoke will not resolve those separate blockers.
 ## Blocking conditions and required closure
 
 1. **Watchdog.** On S948BXXS4BZIG the prior passive evidence saw
