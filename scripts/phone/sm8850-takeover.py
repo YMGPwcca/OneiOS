@@ -584,7 +584,15 @@ mkdir launches/{token}
                         print("See device-logs.tar / launches/*/switch.log for the earliest failure.")
                     return 4
             except (subprocess.SubprocessError, OSError) as error:
-                timeline.write(f"Root/ADB status unavailable: {error}\n")
+                # A CalledProcessError contains the complete multi-line
+                # 'su -c' script in its repr. Repeating that every 2 s
+                # produced a 55 KiB "ADB unavailable" log with no new
+                # diagnostic information after ephemeral root was lost.
+                code = getattr(error, "returncode", None)
+                failure = type(error).__name__
+                if code is not None:
+                    failure += f" exit={code}"
+                timeline.write(f"Root/ADB status unavailable: {failure}\n")
                 timeline.flush()
                 if mode == "run":
                     # The device may have booted successfully but permanently
