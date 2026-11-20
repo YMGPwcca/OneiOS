@@ -25,6 +25,13 @@ if [ "$mode" = recovery ]; then
   bash -n scripts/phone/s26-watchdog-metadata.sh
   "$mksh_bin" -n scripts/phone/s26-watchdog-metadata.sh
   python3 scripts/phone/test-s26-watchdog-attribution.py
+  bash -n scripts/phone/sm8850-watchdog-owners.sh
+  awk '
+    /<<.*PHONE/ { phone=1; next }
+    phone && /^PHONE$/ { closed=1; exit }
+    phone { print }
+    END { if (!phone || !closed) exit 1 }
+  ' scripts/phone/sm8850-watchdog-owners.sh | "$mksh_bin" -n
   python3 scripts/phone/test-sm8850-takeover.py
   python3 scripts/phone/test-sm8850-smoke-evidence.py -v
   ONEOS_TEST_MKSH="$mksh_bin" python3 scripts/phone/test-sm8850-mksh-flock.py -v
