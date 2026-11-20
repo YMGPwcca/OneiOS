@@ -1,5 +1,12 @@
 # Thermal bridge
 
+**OneiOS · SM8850 · Runtime engineering**
+
+[← Handbook](../../../docs/README.md) · [Physical status](../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
+> [!CAUTION]
+> The observed SM8850 full Framework experiment used `bench/bridges=0`, so this OneiOS thermal bridge was **not** initialized; the device became very hot. A separate thermal guard for that session profile is a current P0 blocker.
+
 The phone's temperatures for iOS, a thermal pressure level on iOS's scale, and the step by which xnuhost holds itself
 back when the phone is hot. Host end: `thermal.c` (in xnuhost, linked from `libonebridges.a`). Guest end:
 `drivers/thermal/OneiOSThermal.cpp` (the registry) and `userland/helpers/oneios-thermal.c` (the notify state).
@@ -187,7 +194,7 @@ reset stops the reports; the reads go on.
 ## Tests
 
 `make -C runtime/bridges/thermal test` (Linux; on a Mac in the container: `runtime/host-tests.sh`, part `bridges`): the
-limits parser, each rule and its hysteresis, the steps' CPUs and pins on the S24 Ultra's topology and on a one-kind host, the
+limits parser, each rule and its hysteresis, the steps' CPUs and pins on the earlier reference device's topology and on a one-kind host, the
 sysfs reader on a fake tree (an off zone, no `lrp`), the worker's two listeners. 88 checks with the merge of hw-backend (79 on fix-ram-locked's own, 2026-11-15: the step at the case or the cell at 50 C only, none at "heavy" or for the SoC, its hysteresis, the worker's cap listener at 50 C).
 
 ## On the phone
