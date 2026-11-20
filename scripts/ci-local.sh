@@ -27,6 +27,20 @@ if [ "$mode" = recovery ]; then
   python3 scripts/phone/test-s26-watchdog-attribution.py
   bash -n scripts/phone/sm8850-watchdog-owners.sh
   python3 scripts/phone/test-sm8850-watchdog-owners.py -v
+  (
+    ndk_for_scan="${ANDROID_NDK_ROOT:-${NDK:-$HOME/Android/Sdk/ndk/28.2.13676358}}"
+    cc_for_scan="$ndk_for_scan/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
+    test -x "$cc_for_scan" || {
+      echo "ci-local: Android NDK clang missing for SM8850 watchdog scanner" >&2
+      exit 1
+    }
+    scan_build=$(mktemp -d)
+    trap 'rm -rf "$scan_build"' EXIT
+    "$cc_for_scan" -std=c11 -Wall -Wextra -Werror -O2 -fPIE -pie \
+      scripts/phone/sm8850-watchdog-owners.c -o "$scan_build/fdscan"
+    test -s "$scan_build/fdscan"
+    echo "ci-local: PASS - SM8850 AArch64 passive FD scanner crossbuild"
+  )
   awk '
     /<<.*PHONE/ { phone=1; next }
     phone && /^PHONE$/ { closed=1; exit }
