@@ -195,6 +195,42 @@ ONEIOS_MOUNT_PROBE
     [ -z "$extra" ] || fail "consumed Data has unexpected files; preserve and inspect manually"
     [ "$(df -Pk "$stage" | awk 'NR==2 {print $4}')" -ge "$((MIN_FREE + 8388608 + 65536))" ] ||
         fail "not enough free space for one fresh APFS Data clone plus reserve"
+    # A previous guest can legitimately MODIFY its private consumed clone.
+    # Never reset/delete it. To rearm after a real guest, first establish
+    # that the ORIGINAL source Data still matches a previously preserved,
+    # root-owned PRISTINE clone from the earlier verified rearm. This does
+    # not reuse the old snapshot: the guest-modified one is archived below.
+    find_pristine_seed_archive() {
+        [ -d "$stage/.retired-data" ] &&
+            root_dir "$stage/.retired-data" || return 1
+        for prior in "$stage"/.retired-data/consumed.*; do
+            [ -d "$prior" ] && root_dir "$prior" &&
+            [ -d "$prior/data" ] && root_dir "$prior/data" || continue
+            [ -f "$prior/data.consumed" ] && [ ! -L "$prior/data.consumed" ] &&
+            [ "$(stat -c '%u:%a:%h' "$prior/data.consumed")" = 0:600:1 ] || continue
+            valid=1
+            for member in data.img unique-chip-id; do
+                older="$prior/data/$member"
+                seed="$bench/data/$member"
+                size=8
+                [ "$member" != data.img ] || size=8589934592
+                [ -f "$older" ] && [ ! -L "$older" ] &&
+                [ "$(stat -c '%u:%a:%h:%s' "$older")" = "0:600:1:$size" ] &&
+                [ -f "$seed" ] && [ ! -L "$seed" ] &&
+                [ "$(stat -c %s "$seed")" = "$size" ] &&
+                [ "$(hash_of "$older")" = "$(hash_of "$seed")" ] || {
+                    valid=0
+                    break
+                }
+            done
+            if [ "$valid" = 1 ]; then
+                printf '%s\n' "$prior"
+                return 0
+            fi
+        done
+        return 1
+    }
+    pristine_seed_archive=
     mkdir -m 700 "$incoming/data" || fail "cannot prepare isolated replacement Data"
     for name in data.img unique-chip-id; do
         old="$stage/data/$name"
@@ -211,8 +247,17 @@ ONEIOS_MOUNT_PROBE
             fail "APFS Data size changed: $name"
         source_id=$(file_id "$source") || fail "cannot identify Data seed: $name"
         source_sha=$(hash_of "$source") || fail "cannot hash original Data seed: $name"
-        [ "$(hash_of "$old")" = "$source_sha" ] ||
-            fail "consumed APFS Data was modified; refusing to reset guest state"
+        if [ "$(hash_of "$old")" != "$source_sha" ]; then
+            # This can happen after an actual 8-vCPU iOS guest run. Accept
+            # ONLY if the untouched seed matches a separate older pristine
+            # archive; otherwise the source could have silently changed.
+            if [ -z "$pristine_seed_archive" ]; then
+                pristine_seed_archive=$(find_pristine_seed_archive) ||
+                    fail "consumed Data differs from seed, but NO root-owned archived pristine baseline matches the original source; preserve all snapshots"
+                echo "APFS_SOURCE_BASELINE=VERIFIED_AGAINST_PRIOR_ARCHIVE:$pristine_seed_archive"
+            fi
+            echo "CONSUMED_DATA_CHANGED_BY_GUEST=PRESERVE_OLD:$name"
+        fi
         dest="$incoming/data/$name"
         (set -C; true > "$dest") || fail "replacement Data output already exists: $name"
         "$incoming/image-copy" "$clone" "$source" "$dest" ||
