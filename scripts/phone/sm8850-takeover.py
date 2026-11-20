@@ -50,6 +50,15 @@ if [ -f "$stage/session/return.request" ]; then
     echo
 fi
 if [ -f "$stage/image.ready" ]; then echo image_ready=1; else echo image_ready=0; fi
+if [ -f "$stage/session/ready" ]; then echo guest_ready=1; else echo guest_ready=0; fi
+if grep -qm1 -F 'first frame posted' "$stage/control/display.log" 2>/dev/null; then
+    echo display_first_frame=1
+else
+    echo display_first_frame=0
+fi
+if grep -qm1 -F 'ONEIOS_TAKEOVER_CPU=8' "$stage/session/xnuhost.log" 2>/dev/null; then
+    echo guest_host_cpus=8_verified_mask
+fi
 for service in zygote zygote_next adbd surfaceflinger vendor.qti.hardware.display.composer; do
     printf '%s=%s pid=%s\n' "$service" "$(getprop init.svc.$service)" "$(getprop init.svc_debug_pid.$service)"
 done
@@ -382,6 +391,29 @@ def reboot_smoke_deadline_verified(baseline, after, token):
     )
 
 
+def full_takeover_deadline_result(baseline, after, token):
+    """Physical guest session ended by deadline; NOT unassisted normal-boot proof."""
+    before = dict(line.split("=", 1) for line in baseline.splitlines() if "=" in line)
+    now = dict(line.split("=", 1) for line in after.splitlines() if "=" in line)
+    return (
+        bool(before.get("boot")) and bool(now.get("boot"))
+        and now["boot"] != before["boot"]
+        and now.get("boot_completed") == "1"
+        and now.get("boot_reason") == "reboot,oneios-sm8850-reboot-return"
+        and now.get("control/framework.launch") == token
+        and now.get("control/framework.mode") == "run"
+        and now.get("control/framework.return") == "reboot"
+        and bool(now.get("control/framework.takeover-confirmed"))
+        and now.get("outcome", "").startswith("reboot-deadline-or-manual ")
+        and "who=framework-deadline" in now.get("outcome", "")
+        and now.get("return_request", "").startswith("framework deadline reached")
+        and now.get("zygote", "").startswith("running pid=")
+        and now.get("zygote_next", "").startswith("running pid=")
+        and now.get("system_server", "").isdecimal()
+        and now.get("SELinux") == "Enforcing"
+    )
+
+
 def launch(phone, mode, output, *, reboot_only=False):
     # SM8850 full-run deliberately uses the same legacy OneOS V watchdog
     # feeder and mandatory reboot-return path as the observed smoke.
@@ -428,6 +460,8 @@ mkdir launches/{token}
     end = time.monotonic() + 1000
     reboot_seen = None
     confirmed_announced = False
+    full_guest_seen = False
+    full_display_seen = False
     with (output / "timeline.txt").open("w") as timeline:
         while time.monotonic() < end:
             try:
@@ -435,6 +469,36 @@ mkdir launches/{token}
                 timeline.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n{state}\n")
                 timeline.flush()
                 current_boot = re.search(r"^boot=(.+)$", state, re.M).group(1)
+                if mode == "run" and current_boot == boot and f"control/framework.launch={token}" in state:
+                    kv = dict(line.split("=", 1) for line in state.splitlines() if "=" in line)
+                    if kv.get("control/state") == "running" and kv.get("control/framework.takeover-confirmed"):
+                        if not confirmed_announced:
+                            print("FRAMEWORK_TAKEOVER=CONFIRMED; DEADLINE=600_SECONDS; DO_NOT_PRESS_VOLUME_KEYS", flush=True)
+                            confirmed_announced = True
+                        if kv.get("guest_ready") == "1" and not full_guest_seen:
+                            full_guest_seen = True
+                            print("IOS_GUEST_READY=OBSERVED", flush=True)
+                        if kv.get("display_first_frame") == "1" and not full_display_seen:
+                            full_display_seen = True
+                            print("IOS_DISPLAY_FIRST_FRAME=OBSERVED", flush=True)
+                        if kv.get("guest_host_cpus") == "8_verified_mask":
+                            print("IOS_HOST_CPU_MASK=0-7", flush=True)
+                if mode == "run" and current_boot != boot:
+                    if full_takeover_deadline_result(baseline, state, token):
+                        collect(phone, output)
+                        print("FULL_TAKEOVER_DEADLINE_RETURN=REQUESTED_AND_ONEUI_OBSERVED", flush=True)
+                        print("IOS_GUEST_READY=" + ("OBSERVED" if full_guest_seen else "NOT_VERIFIED"), flush=True)
+                        print("IOS_DISPLAY_FIRST_FRAME=" + ("OBSERVED" if full_display_seen else "NOT_VERIFIED"), flush=True)
+                        print("UNASSISTED_RETURN_TO_ONEUI=NOT_VERIFIED", flush=True)
+                        return 4
+                    if reboot_seen is None:
+                        reboot_seen = time.monotonic()
+                    if time.monotonic() - reboot_seen > 120:
+                        collect(phone, output)
+                        print("FULL_TAKEOVER_REBOOT=INCOMPLETE_OR_UNEXPECTED", flush=True)
+                        return 4
+                    time.sleep(2)
+                    continue
                 if reboot_only and not confirmed_announced and reboot_smoke_ready(state, boot, token):
                     print("TAKEOVER_CONFIRMED=YES", flush=True)
                     print("PHYSICAL_KEYS=DO_NOT_PRESS_VOLUME_UP_PLUS_DOWN", flush=True)
