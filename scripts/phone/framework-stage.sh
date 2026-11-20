@@ -174,7 +174,7 @@ done
 if true 2>/dev/null > "$dst/.unexpected-write"; then exit 12; fi
 if true 2>/dev/null > "$dst/control/.unexpected-write"; then exit 13; fi
 for writable in "$dst/data" "$dst/session/tmp"; do
-    p="$writable/.probe-write.$"
+    p="$writable/.probe-write.$$"
     (set -C; true 2>/dev/null > "$p") || exit 14
     rm -f "$p" || exit 15
 done
