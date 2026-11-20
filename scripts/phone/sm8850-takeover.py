@@ -623,7 +623,7 @@ mkdir launches/{token}
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for mode in ("dry-run", "reboot-audit", "readiness", "recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "return", "status", "storage-probe", "prepare", "collect"):
+    for mode in ("dry-run", "reboot-audit", "readiness", "recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "return", "status", "storage-probe", "prepare", "rearm-data", "collect"):
         modes.add_argument(f"--{mode}", dest="mode", action="store_const", const=mode)
     parser.add_argument("--confirm", action="store_true", help="Explicitly opt in to the requested device changes")
     parser.add_argument("--accept-legacy-watchdog-risk", action="store_true",
@@ -635,7 +635,7 @@ def main():
     parser.add_argument("--bench-manifest", type=Path)
     parser.add_argument("--output", type=Path, help="New local evidence directory")
     args = parser.parse_args()
-    if args.mode in {"recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "storage-probe", "prepare"} and not args.confirm:
+    if args.mode in {"recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "storage-probe", "prepare", "rearm-data"} and not args.confirm:
         parser.error(f"--{args.mode} requires --confirm")
     if args.mode in {"reboot-smoke", "run"} and not args.accept_legacy_watchdog_risk:
         parser.error(f"--{args.mode} requires separate --accept-legacy-watchdog-risk consent")
@@ -658,8 +658,9 @@ def main():
         return phone.root(f"if [ -f {STAGE}/oneios_switch.sh ]; then "
                           f"/system/bin/sh {STAGE}/oneios_switch.sh --framework-return; "
                           "else echo 'No experimental stage'; fi", timeout=650).returncode
-    if args.mode in {"storage-probe", "prepare"}:
-        return upload(phone, "probe" if args.mode == "storage-probe" else "prepare", manifest)
+    if args.mode in {"storage-probe", "prepare", "rearm-data"}:
+        operation = "probe" if args.mode == "storage-probe" else args.mode
+        return upload(phone, operation, manifest)
 
     output = args.output
     if output is None:
