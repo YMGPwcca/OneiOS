@@ -1,5 +1,9 @@
 # SM8850 iOS 27: interactive GUI frame-pacing and cold/warm Settings test
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Performance capture and measurement guide**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
 This is **measurement only**. The 2026-11-19 S26 Ultra interactive run
 already demonstrated iOS lock screen, SpringBoard, touch and Settings > About,
 but not usable UI responsiveness. It also had SpringBoard/backboardd PID changes,
