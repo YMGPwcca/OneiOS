@@ -48,12 +48,13 @@ trap cleanup EXIT
     "$root/scripts/phone/sm8850-watchdog-owners.c" -o "$tmp/scan"
 
 echo "===== DEPLOY TEMPORARY SCANNER ====="
-remote=$("$adb" -s "$serial" shell -T \
+created=$("$adb" -s "$serial" shell -T \
     'mktemp -d /data/local/tmp/oneios-watchdog-owners.XXXXXXXX' | tr -d '\r\n')
-case "$remote" in
-    /data/local/tmp/oneios-watchdog-owners.[A-Za-z0-9]*) ;;
-    *) echo "UNSAFE_OR_MISSING_REMOTE_TEMP_DIR=$remote" >&2; exit 2 ;;
-esac
+if [[ ! "$created" =~ ^/data/local/tmp/oneios-watchdog-owners\.[A-Za-z0-9]{8}$ ]]; then
+    echo "UNSAFE_OR_MISSING_REMOTE_TEMP_DIR=$created" >&2
+    exit 2
+fi
+remote=$created
 "$adb" -s "$serial" push "$tmp/scan" "$remote/scan" >/dev/null
 "$adb" -s "$serial" shell -T "chmod 700 '$remote/scan'"
 
