@@ -86,6 +86,20 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('PHYSICAL_KEYS=DO_NOT_PRESS_BOTH_VOLUME_KEYS', script)
         self.assertIn('git -C app rev-parse HEAD', script)
 
+    def test_full_run_safety_warnings_do_not_claim_gpu_fps_or_return_certification(self):
+        wrapper = WRAPPER.read_text()
+        root_switch = ONEOS_SWITCH.read_text()
+        host = TAKEOVER_SOURCE.read_text()
+        self.assertIn('WARNING=SEPARATE_ONEIOS_THERMAL_BRIDGE_INACTIVE_WITH_BENCH_BRIDGES_0', wrapper)
+        self.assertIn('WARNING=HOST_CPU_MASK_0_7_IS_NOT_8_CORE_AFFINITY_PROOF', wrapper)
+        self.assertIn('WARNING=GPU_AUTO_MAY_FALL_BACK_TO_2D_ON_ANOTHER_RUN', wrapper)
+        self.assertIn('SM8850_FULL_RUN_THERMAL_BRIDGE=INACTIVE_BENCH_BRIDGES_0', root_switch)
+        self.assertIn('ONEIOS_BENCH_THERMAL_BRIDGE=INACTIVE', root_switch)
+        self.assertIn('ONEIOS_CPU_PLACEMENT_BRIDGE=INACTIVE', root_switch)
+        self.assertIn('SM8850_FULL_RUN_RECOVERY=DEADLINE_AND_UNASSISTED_RETURN_NOT_FULLY_VERIFIED', root_switch)
+        self.assertIn('GPU_3D_STATUS=BACKEND_MUST_BE_CONFIRMED_IN_XNUHOST_LOG', host)
+        self.assertNotIn('UNASSISTED_RETURN_AND_GUEST_START=NOT_VERIFIED', host)
+
     def test_inner_guest_mount_protects_scripts_without_busybox_file_remount(self):
         source = ONEOS_SWITCH.read_text()
         begin = source.index('    --inner)')
