@@ -90,3 +90,12 @@ No new S26 phone experiment was performed. The new driver only emits `WOULD_REQU
 [OneOS PR #6](https://github.com/YMGPwcca/OneOS/pull/6) now blocks the actual `--framework-session run` code path with `P0_FULL_600S_TAKEOVER=BLOCKED_UNQUALIFIED_THERMAL_GUARD` **before any APFS Data consumption or Framework stop**; check-only diagnostics remain available. It also adds a bounded read-only thermal shadow observer and **17 new offline test methods** (14 shadow observer cases locally exercised by the assistant with the real shell reader, plus 3 source-gate contract tests awaiting operator CachyOS verification).
 
 **Critical distinction:** this source gate is currently only in the draft GitHub branch, **not the old script already staged on the phone**, and the shadow observer is neither a live independently supervised guard nor a reboot-return implementation. The 600-second iOS run remains prohibited from a safety-acceptance standpoint regardless of old script functionality.
+
+
+## OneOS P0 next checkpoint: 50 local PASS, heartbeat supervision contract pending
+
+The operator subsequently executed **50/50 OneOS offline regression tests PASS** on CachyOS against the exact OneOS commit `5185a642ab7c7d29aa0f2d758fd04ac7b2f3af15` (14 reader/policy, 19 E2E, 17 shadow/source-gate tests; syntax PASS).
+
+[OneOS draft PR #6](https://github.com/YMGPwcca/OneOS/pull/6) now also contains a **fixture-only** independent heartbeat/PID-birth consistency check, with 17 new offline regression cases and an exact 67-test local runner. The new tests still require the operator's CachyOS run; this is NOT a sensor supervisor installed on the S26 Ultra and is NOT a substitute for an authenticated, bounded reboot return.
+
+The `--framework-session run` source-level refusal remains on the **GitHub draft branch only**; old code already staged on the phone remains unchanged. P0 is not accepted, long Framework takeover remains prohibited, and no new device experiment was performed by these changes.
