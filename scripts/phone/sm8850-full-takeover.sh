@@ -123,6 +123,10 @@ PY
     echo "===== FRESH APFS DATA CLONE ONLY; PRESERVE CONSUMED SNAPSHOT ====="
     python3 scripts/phone/sm8850-takeover.py \
       --rearm-data --confirm --serial "$serial"
+    echo "===== FULL-RUN ADMISSION PREFLIGHT (READ-ONLY, NO FRAMEWORK STOP) ====="
+    "$ADB" -s "$serial" shell -T \
+      "su -c '/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run'"
+    echo "FULL_TAKEOVER_ADMISSION=PASS_NO_FRAMEWORK_STOP"
     echo "FULL_TAKEOVER_STAGE=REARMED"
     echo "LIVE_FRAMEWORK_STOP=NO"
   else
