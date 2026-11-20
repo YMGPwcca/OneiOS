@@ -80,9 +80,10 @@ before Framework was stopped. In the next experiment, the host printed
 holding Volume Up + Volume Down while the USB cable was attached led to
 Samsung Download Mode (D2/reboot screen with passcode-related text).
 Disconnecting USB and using the hardware force restart brought One UI
-back. This is **not** a successful volume-chord recovery test, and the
-specific automatically-triggered reboot reason still requires an archive
-inspection.
+back. This is **not** a successful volume-chord recovery test. The
+subsequent archived evidence confirmed that OneOS's framework deadline
+requested the first reboot; this does not establish an unassisted normal
+boot because the owner encountered D2 and forced a restart.
 
 **Current SM8850 experiment is deadline-only.** Do not press the two
 volume keys when `TAKEOVER_CONFIRMED=YES` appears. The independent
@@ -93,13 +94,16 @@ The screen may be black with One UI's framework down; that alone is not
 evidence of a panic.
 
 After reconnecting, inspect the archived `return.outcome` and
-`session/return.request`. `REBOOT_SMOKE=PASS_AUTOMATIC_DEADLINE_AND_ONEUI`
-is reported only for a verified, healthy *new boot* with the exact
-launch token, takeover marker, framework-deadline return request **and**
-Android boot reason `reboot,oneios-sm8850-reboot-return`. A manual hard
-reset or Download Mode detour must not be mistaken for successful automatic
-recovery; if the boot reason is different or missing, report incomplete.
-`PHYSICAL_KEY_REBOOT=NOT_VERIFIED` is deliberately retained. A
+`session/return.request`. The host reports
+`REBOOT_SMOKE=DEADLINE_REQUEST_CONFIRMED_ONEUI_OBSERVED` only when the
+new boot is healthy, the launch token/takeover marker and deadline return
+request match, and boot reason is
+`reboot,oneios-sm8850-reboot-return`. Even these facts do not establish
+an unassisted normal boot: the phone may have entered Download Mode and
+required a manual restart. Therefore the host also prints
+`UNASSISTED_RETURN_TO_ONEUI=NOT_VERIFIED` and exits nonzero rather than
+claiming full automatic recovery. If the reason is different or missing,
+report incomplete. `PHYSICAL_KEY_REBOOT=NOT_VERIFIED` remains. A
 hardware force-restart or a software key request is not evidence that
 the Samsung bootloader followed the expected normal boot path.
 Do not flash firmware or experiment with Download Mode during this test.
@@ -108,6 +112,42 @@ Physical-key acceptance will require a **separate, Samsung-safe**
 boot-mode procedure and independent evidence. Do not re-enable the
 Volume Up + Volume Down instruction merely to obtain a green result.
 
+## Physical acceptance: 2026-11-20, 11:41 local
+
+**Reboot-only Framework Takeover confirmed; watchdog handoff and deadline
+request confirmed; independent unassisted return to One UI not yet proven.**
+
+Evidence archive: `out/sm8850/takeover/post-d2-20261120T045443Z`
+(this is an operator-local path, not committed evidence). The owner
+reported that after the CLI printed `TAKEOVER_CONFIRMED=YES` the screen
+went black and reboot began. Holding Volume Up + Volume Down while USB
+was connected led to the Samsung D2 Download Mode gate. Unplugging
+USB and using Samsung's forced restart returned the phone to normal One UI.
+
+Post-incident root-side artifacts:
+
+```text
+TAKEOVER_MARKER=PRESENT
+STOP_MARKER=PRESENT
+watchdog_feeder.log: initial /dev/watchdog V refused: EBUSY
+watchdog_feeder.log: Watchdog feeder ready (legacy, pid 12870)
+control/framework.takeover-confirmed=71545c10-23d6-459c-896f-73f0801f851e.5179.274837
+session/return.request=framework deadline reached at 2804 (deadline 2804)
+return.outcome=reboot-deadline-or-manual 1795149685 who=framework-deadline reason=framework deadline reached at 2804 (deadline 2804)
+ro.boot.bootreason=reboot,oneios-sm8850-reboot-return
+sys.boot.reason=reboot,oneios-sm8850-reboot-return
+PHYSICAL_KEY_REBOOT=NOT_VERIFIED
+```
+
+The results demonstrate that the revised original-OneOS `V` feeder
+recovered from a transient exclusive-open refusal, and the independent
+deadline invoked the OneiOS reboot path **after** verified Framework
+stop. They do not demonstrate bootloader-safe volume-key return,
+unassisted normal reboot, an in-place return on the same boot, or iOS
+guest startup. Do not run additional live reboot-only smokes just to
+repeat these proven steps. Keep the normal iOS `--run` acceptance gates
+separate; specifically do not bypass watchdog/sysfs qualification,
+image staging, or guest rendering requirements.
 ## Diagnosing a returned session without reboot
 
 If the host prints `REBOOT_SMOKE=SAME_BOOT_RETURNED_NO_KEY_REBOOT` or
