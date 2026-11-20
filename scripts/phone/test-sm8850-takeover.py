@@ -269,9 +269,9 @@ control/framework.result=smoke complete
         phone = unittest.mock.Mock()
         phone.call.return_value = subprocess.CompletedProcess(
             [], 0,
-            b"boot=new-boot\\nboot_completed=1\\n"
-            b"boot_reason=reboot,watchdog\\n"
-            b"system_boot_reason=reboot,watchdog\\nzygote=running\\n",
+            b"boot=new-boot\nboot_completed=1\n"
+            b"boot_reason=reboot,watchdog\n"
+            b"system_boot_reason=reboot,watchdog\nzygote=running\n",
         )
         values, raw = TAKEOVER.post_reboot_without_root(phone)
         self.assertEqual("new-boot", values["boot"])
