@@ -1,5 +1,17 @@
 # SM8850 host validation — Galaxy S26 Ultra
 
+> **2026-11-20 update:** hardware-only early port notes below are historical.
+> The separate root-only S26 Ultra Framework experiment now **has**
+> physically booted iOS 27.0.1, shown its first frame and executed for
+> ~600.6 s; there is real KGSL 3D activity, but serious lag/heat and no
+> fully verified unassisted return. **The OneOS app switch for SM8850
+> remains blocked.** See
+> [live status](SM8850_LIVE_STATUS_2026-11-20.md) and
+> [Framework takeover](SM8850_FRAMEWORK_TAKEOVER.md). This does not
+> retroactively qualify the 2026-11-16 diagnostics or watchdog.
+>
+
+
 Original S24 Ultra switch/return audit and upstream synchronization plan:
 [SM8850_ORIGINAL_AUDIT.md](SM8850_ORIGINAL_AUDIT.md). This passive
 probe must be reviewed before any phone session; an absent stage and an
