@@ -334,6 +334,27 @@ def reboot_smoke_verified(baseline, after):
     )
 
 
+def reboot_smoke_deadline_verified(baseline, after, token):
+    """Auto-deadline return is NOT evidence of a successful physical-key test."""
+    before = dict(line.split("=", 1) for line in baseline.splitlines() if "=" in line)
+    now = dict(line.split("=", 1) for line in after.splitlines() if "=" in line)
+    return (
+        bool(before.get("boot")) and bool(now.get("boot"))
+        and now["boot"] != before["boot"]
+        and now.get("boot_completed") == "1"
+        and now.get("control/framework.launch") == token
+        and now.get("control/framework.mode") == "smoke"
+        and now.get("control/framework.return") == "reboot"
+        and bool(now.get("control/framework.takeover-confirmed"))
+        and now.get("outcome", "").startswith("reboot-deadline-or-manual ")
+        and now.get("return_request", "").startswith("framework deadline reached")
+        and now.get("zygote", "").startswith("running pid=")
+        and now.get("zygote_next", "").startswith("running pid=")
+        and now.get("system_server", "").isdecimal()
+        and now.get("SELinux") == "Enforcing"
+    )
+
+
 def launch(phone, mode, output, *, reboot_only=False):
     # A reboot-only smoke must have a real OneOS legacy-holder read-only
     # audit. Normal in-place paths keep all existing watchdog gates.
@@ -364,9 +385,10 @@ mkdir launches/{token}
         return 2
     print(f"Framework {session_mode} requested. Recovery runs on the device.", flush=True)
     if reboot_only:
-        print("PHYSICAL_KEYS=DO_NOT_PRESS_YET", flush=True)
-        print("Wait for the explicit two-line readiness signal before pressing the keys.", flush=True)
-        print("Pressing Volume Up + Down before the confirmation CANCELS the takeover.", flush=True)
+        print("PHYSICAL_KEYS=DO_NOT_PRESS_VOLUME_UP_PLUS_DOWN", flush=True)
+        print("On USB-connected Samsung, both volume keys can enter Download Mode during boot.", flush=True)
+        print("This smoke has a 20-second automatic reboot deadline AFTER Framework takeover.", flush=True)
+        print("Observe the deadline; do not press keys for the acceptance test.", flush=True)
     end = time.monotonic() + 1000
     reboot_seen = None
     confirmed_announced = False
@@ -379,16 +401,23 @@ mkdir launches/{token}
                 current_boot = re.search(r"^boot=(.+)$", state, re.M).group(1)
                 if reboot_only and not confirmed_announced and reboot_smoke_ready(state, boot, token):
                     print("TAKEOVER_CONFIRMED=YES", flush=True)
-                    print("PHYSICAL_KEYS=PRESS_NOW", flush=True)
-                    print("Hold Volume Up + Volume Down together for at least 3 seconds.", flush=True)
+                    print("PHYSICAL_KEYS=DO_NOT_PRESS_VOLUME_UP_PLUS_DOWN", flush=True)
+                    print("AUTO_REBOOT=EXPECTED_AFTER_20_SECOND_FRAMEWORK_DEADLINE", flush=True)
+                    print("This is Framework-only smoke, not iOS boot or physical-key PASS.", flush=True)
                     confirmed_announced = True
                 if reboot_only and current_boot != boot:
                     # Do not fail early when the phone has rebooted but
                     # boot_completed/zygote_next/system_server are still starting.
+                    if reboot_smoke_deadline_verified(baseline, state, token):
+                        collect(phone, output)
+                        print("REBOOT_SMOKE=PASS_AUTOMATIC_DEADLINE_AND_ONEUI")
+                        print("PHYSICAL_KEY_REBOOT=NOT_VERIFIED")
+                        return 0
                     if reboot_smoke_verified(baseline, state):
                         collect(phone, output)
-                        print("REBOOT_SMOKE=PASS_PHYSICAL_KEY_AND_ONEUI")
-                        return 0
+                        print("REBOOT_SMOKE=KEY_RETURN_REQUEST_RECORDED_BOOT_MODE_UNVERIFIED")
+                        print("PHYSICAL_KEY_REBOOT=NOT_VERIFIED")
+                        return 4
                     if reboot_seen is None:
                         reboot_seen = time.monotonic()
                     if time.monotonic() - reboot_seen >= 120:
