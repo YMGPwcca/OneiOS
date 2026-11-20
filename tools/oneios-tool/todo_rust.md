@@ -1,5 +1,9 @@
 # oneios-tool: state and what is left (2026-11-12, after the third Linux round)
 
+**OneiOS · SM8850 · Runtime engineering**
+
+[← Handbook](../../docs/README.md) · [Physical status](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Branch: `rustport`. Commands, crates and every comparison with its result: [README.md](README.md). This file is
 the hand-over: what is done, what is open, and the notes behind the decisions.
 
