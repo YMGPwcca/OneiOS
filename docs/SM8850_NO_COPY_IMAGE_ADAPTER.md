@@ -1,5 +1,12 @@
 # Design for a no-copy SM8850 bench image adapter
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Historical no-copy design exploration**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> **Historical source or earlier experimental procedure.** The latest S26 Ultra full guest ran ~600.6 s with a displayed frame, but serious heat and unverified recovery remain open. Use the [physical ledger](SM8850_LIVE_STATUS_2026-11-20.md) for current decisions.
+
 This design is separate from watchdog qualification and from the
 implemented sparse/reflink staging path. It has no live enable flag.
 Its goal is to reuse the existing verified iOS 27 benchmark files
