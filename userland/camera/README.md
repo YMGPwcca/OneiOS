@@ -1,5 +1,9 @@
 # userland/camera: the capture plug-in (iOS side of the camera)
 
+**OneiOS · SM8850 · iOS userland integration**
+
+[← Handbook](../../docs/README.md) · [Current status](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: camera (was fable-camera). The host side: `runtime/bridges/camera`. The kernel side: `drivers/camera`. The
 whole path: `docs/hardware.md` section 7.
 
