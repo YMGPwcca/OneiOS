@@ -232,6 +232,11 @@ kernel/SELinux constraints rather than bypassing them.
 
 ## Reuse of the working OneOS Android watchdog sequence
 
+The earlier `pidfd_getfd` experiment on a benign `/dev/null` FD returned
+`SUPPORTED_BENIGN_FD_ONLY`, but that was a **capability check, not a
+watchdog solution**. The current reboot-smoke implementation does not use
+`pidfd_getfd` and requires no further pidfd probes.
+
 The reboot-only SM8850 adapter now ports the **actual host-watchdog
 sequence** from the OneOS Android guest path (OneOS
 `oneos_switch.sh` around `SOFTDOG_V=0`, plus
