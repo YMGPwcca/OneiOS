@@ -2,6 +2,7 @@
 """Run the explicit SM-S948B Framework takeover profile through USB ADB."""
 
 import argparse
+import hashlib
 import io
 import json
 import os
