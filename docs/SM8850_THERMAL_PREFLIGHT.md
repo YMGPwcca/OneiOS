@@ -130,3 +130,11 @@ The existing OneiOS Samsung thermal backend (`runtime/bridges/thermal/thermal.c`
 Companion OneOS draft PR #6 now contains `scripts/phone/sm8850-soc-candidate-map.py` that, when explicitly run on intact One UI, does a **bounded unprivileged one-level read of only thermal-zone `type`**, matches exactly `cpu-0-5-1` and samples only the validated matching `/temp` node. It never reads the pseudo-zone temperatures or recursively traverses sysfs. Root fallback is restricted to the exact matched temperature file after permission denial. It remains a **candidate mapping**, not thermal protection or certified thresholds.
 
 Nine additional offline tests are pending user's CachyOS, bringing OneOS P0 test count from the verified 72 to 81. No additional physical iOS/Framework takeover is authorized.
+
+## 2026-11-21 verified CPU candidate mapping checkpoint
+
+- Operator's CachyOS: exact OneOS revision `289b306a0315d448a3d6be7cb4da96882a47bf32`, **81/81 offline tests PASS** (previous 72 plus 9 exact SoC type mapping tests); shell syntax and audit modes passed.
+- Physical One UI read-only candidate: `CPU_TYPE=cpu-0-5-1` matched **`/sys/class/thermal/thermal_zone16/temp`** on the current boot, three **unprivileged** reads of **30.0 C / 30.0 C / 29.6 C**, output `SOC_MAP=COLLECTED_NOT_QUALIFIED`.
+- Local operator JSON: `out/sm8850/soc-candidate/cpu-candidate-20261120T181955Z.json` (its raw JSON was not uploaded here). This is source-supported output only, not a review of JSON internals.
+- Thermal-zone number 16 is **not stable across boots**; future thermal reads must validate exact `type=cpu-0-5-1`, unchanged boot identity and plausible millidegree values rather than trusting the index alone.
+- The candidate is a **genuine changing CPU temperature read** in this short sample, not certified as the hottest SoC junction or the only needed CPU/GPU thermal input. No safety thresholds or post-Framework availability are accepted. Full 600s takeover remains blocked.
