@@ -138,3 +138,11 @@ Nine additional offline tests are pending user's CachyOS, bringing OneOS P0 test
 - Local operator JSON: `out/sm8850/soc-candidate/cpu-candidate-20261120T181955Z.json` (its raw JSON was not uploaded here). This is source-supported output only, not a review of JSON internals.
 - Thermal-zone number 16 is **not stable across boots**; future thermal reads must validate exact `type=cpu-0-5-1`, unchanged boot identity and plausible millidegree values rather than trusting the index alone.
 - The candidate is a **genuine changing CPU temperature read** in this short sample, not certified as the hottest SoC junction or the only needed CPU/GPU thermal input. No safety thresholds or post-Framework availability are accepted. Full 600s takeover remains blocked.
+
+## Read-only 4-sensor prototype added in OneOS (follow-up)
+
+The operator's last physical `cpu-0-5-1` readings were **30.0/30.0/29.6 C**, mapped to `thermal_zone16` on that specific boot; the exact OneOS commit `289b306a0315d448a3d6be7cb4da96882a47bf32` passed **81/81 CachyOS tests**.
+
+OneOS draft PR #6 now contains a **boot-pinned four-sensor reader prototype**: `oneios_sm8850_thermal_pinned_reader.sh`. It extends the three known Samsung BAT/LRP/board AP nodes with **one genuine CPU candidate**. It requires explicit expected boot UUID and zone index, validates `type=cpu-0-5-1` before and after sampling (so zone 16 is not assumed permanent), verifies the boot ID after reading, and refuses missing/invalid readings. Root-only live mode is locked to stock One UI with exact firmware; no Framework-stopped mode exists.
+
+13 additional offline tests passed in assistant-side Linux, bringing the proposed OneOS suite to **94 tests**, but these 13 have **not yet been verified on the operator's CachyOS**. This is not a production thermal guard and does not prove the CPU candidate is the hottest SoC sensor. P0 remains unqualified; do not rerun a 600-second Framework takeover.
