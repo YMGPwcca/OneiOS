@@ -1,5 +1,9 @@
 # CPU: P and E cores for XNU
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Implementation reference**
+
+[← Handbook](../../docs/README.md) · [Current evidence](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 No source here: the kernel side is UniXNU-droidvm's, unchanged (pin f9121cd, `external/UniXNU-droidvm`).
 
 - `ipados27/patches/xnu-12377/droidvm-amp.patch`: `__ARM_AMP__` for the machine configuration, so XNU builds
@@ -18,10 +22,10 @@ Device tree, from the host's plan (`runtime/bridges/cpu`, `br_cpu_plan_make`):
 | | `l2-cache-size`, `l3-cache-size` | `plan.v[N].l2_bytes`, `l3_bytes` when not 0 |
 | `/arm-io/cpufreq` | `reg` | base, `plan.nvcpu * 0x1000`; the region's reads and writes go to `br_cpufreq_read/write` |
 
-On the S24 Ultra with 8 vCPUs: cpu0-1 E (the two Cortex-A520), cpu2-7 P (five Cortex-A720 and the Cortex-X4).
+**SM8850 current reality:** the host exposes 8 CPUs (0–5 capacity 741, 6–7 capacity 1024). The observed full-run uses `--mode bench --set bridges=0`, so the general CPU topology/placement bridge described below is **not active in that run**. Its host-allowed mask 0–7 is not distinct per-vCPU affinity evidence.
 
 Since 2026-11-15 (fix-host-overhead) each vCPU's window of `/arm-io/cpufreq` (its frequency table, and the capacity its
-request is sized against) is the core cpu-pin puts it on (vCPU *i* on host CPU *i* on the S24 Ultra: vCPU 7 is the X4,
+request is sized against) is the core cpu-pin puts it on (vCPU *i* on host CPU *i* on the historical reference device: vCPU 7 is the X4,
 vCPU 2-4 the 3.15 GHz A720s, 5-6 the 2.96 GHz A720s), with the boost frequencies of `scaling_boost_frequencies` in its
 table; before, every P vCPU was given the fastest P core's table. The kernel (BCM2837 config, no `HAS_CLUSTER` or
 `HAS_MCORE`) makes exactly two clusters, E and P, from `cluster-type`: `docs/booter.md` 2.6b says what it reads and why
