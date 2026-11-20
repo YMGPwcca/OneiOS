@@ -1,5 +1,9 @@
 # drivers: the kernel side of OneiOS's hardware
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Implementation reference**
+
+[← Handbook](../docs/README.md) · [Current evidence](../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: the bridges agent. What each device is, on the phone and for iOS: `docs/hardware.md`.
 
 These sources are built into the kernel (not loaded later). Each talks to its host bridge in xnuhost
