@@ -1,5 +1,12 @@
 # SM8850 GPU hardware acceptance (no guest boot)
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · KGSL hardware acceptance evidence**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This page is earlier device evidence or an experimental design record. Compare with the [latest physical status](SM8850_LIVE_STATUS_2026-11-20.md); do not infer current safety or performance from a historical PASS.
+
 > **Historical hardware-only GPU gate (2026-11-16), updated 2026-11-20:**
 > the separate SM8850 root-only Framework experiment subsequently did boot
 > hosted iOS 27.0.1 with a displayed first frame, live KGSL GPU traffic
