@@ -146,3 +146,11 @@ The operator's last physical `cpu-0-5-1` readings were **30.0/30.0/29.6 C**, map
 OneOS draft PR #6 now contains a **boot-pinned four-sensor reader prototype**: `oneios_sm8850_thermal_pinned_reader.sh`. It extends the three known Samsung BAT/LRP/board AP nodes with **one genuine CPU candidate**. It requires explicit expected boot UUID and zone index, validates `type=cpu-0-5-1` before and after sampling (so zone 16 is not assumed permanent), verifies the boot ID after reading, and refuses missing/invalid readings. Root-only live mode is locked to stock One UI with exact firmware; no Framework-stopped mode exists.
 
 13 additional offline tests passed in assistant-side Linux, bringing the proposed OneOS suite to **94 tests**, but these 13 have **not yet been verified on the operator's CachyOS**. This is not a production thermal guard and does not prove the CPU candidate is the hottest SoC sensor. P0 remains unqualified; do not rerun a 600-second Framework takeover.
+
+
+## 2026-11-21 operator confirmation: 94/94 local offline PASS
+
+- At exact OneOS commit `934988c9b493cf37d18dd72a1e4f09e1cd6928de`, CachyOS fetched and unpacked the branch, ran the strict local CI runner and reported **`Ran 94 tests ... OK`**, `ONEOS_P0_OFFLINE_94=PASS`, and `ONEOS_FOUR_SENSOR_CI=PASS`.
+- The new 13 `test_sm8850_thermal_pinned_reader.py` cases ALL PASS on the operator's own host, in addition to previous 81. This validates the fixture-mode four-sensor prototype and source syntax on Linux, NOT an actual four-sensor run on the phone.
+- No live four-sensor sample was collected in that command. The last physical CPU mapping remains `cpu-0-5-1` -> `thermal_zone16/temp` on a prior verified boot, with 30.0/30.0/29.6 C. A numeric zone index must be freshly rediscovered and checked per boot.
+- The physical 3-node BAT/LRP/board sampler and offline policy are evidenced separately. Independent post-Framework sensor access, full SoC hottest-junction coverage, vendor-calibrated thresholds, root monitor/supervisor lifecycle, recovery and unassisted reboot are still **NOT QUALIFIED**; full 600-second takeover remains BLOCKED.
