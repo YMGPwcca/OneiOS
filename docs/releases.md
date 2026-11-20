@@ -1,5 +1,9 @@
 # Releases
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Runtime packages and release verification**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
 Owner: release-kernel. Scripts: `runtime/package.sh`, `runtime/package/`, `.github/workflows/release.yml`,
 `.github/scripts/`, `kernel/publish.sh`.
 
