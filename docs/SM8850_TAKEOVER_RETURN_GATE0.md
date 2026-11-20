@@ -57,6 +57,49 @@ At Gate 0, **do not run** `--storage-probe`, `--prepare`,
 `--recovery-smoke --confirm` or `--run --confirm`: all are
 separate, state-changing operations.
 
+## Existing OneOS Android-guest experience: relevant but separate
+
+On this SM-S948B the owner has previously switched to ColorOS/PixelOS using
+the original OneOS Android-guest path. That path is implemented by
+`app/switcher/assets/oneos_switch.sh`, `guest_prepare.sh`, and
+`return_to_oneui.sh`. It is not the iOS-specific
+`oneios_switch.sh`/`oneios_return.sh` path tested by this gate.
+
+The Android-guest path attempts a magic-close `V` on the legacy watchdog
+node after stopping One UI and uses a separate periodic watchdog feeder.
+Its default return mode is reboot (an explicitly selected in-place path
+has additional preconditions). It does not require the iOS lab's
+native watchdog supervisor, `GETTIMELEFT` ioctl, or signed
+`watchdog.qualification` admission. Successful Android-guest switching
+therefore supports the device's general feasibility, but it neither
+establishes an iOS same-boot watchdog handback nor qualifies the native
+supervisor.
+
+Current physical SM8850 evidence: `system_server` has an FD pointing to
+`/dev/watchdog` (`10:130`); `/dev/watchdog0` is `242:0`. No exposed
+`identity`, `state`, `timeout`, `nowayout`, `pretimeout`, or `timeleft`
+attribute identifies their effective driver and timing. On Linux watchdog
+core, the legacy misc node may alias the numbered watchdog despite a
+different character-device number; do not infer separate drivers from
+different major/minor pairs. `CONFIG_WATCHDOG_SYSFS` is unset and the
+presence of `softdog` does not identify the actual FD's callback. An
+upstream v6.12 softdog has no `.get_timeleft` callback; verify any Samsung
+differences against this exact firmware before choosing a handback
+contract.
+
+Do not require the user to reinstall an older OneOS app or search for
+deleted `/data/local/tmp/oneos` logs. Work from the pinned current OneOS
+scripts and the independent passive S26 attribution report. Investigate
+whether the Android-guest implementation can provide a separately
+qualified recovery adapter; do not copy its unbounded writes or bypass
+the iOS gate merely because an Android guest returned successfully.
+
+The Bash/mksh fake-phone fixture now injects fixture-only `cat`/`sleep`
+wrappers into *copies* of the pinned production scripts. This is needed
+for mksh R59, where both commands are builtins and bypass PATH test
+doubles. A green fixture validates simulated scripts, not a physical
+watchdog transfer. This change does not alter any device-side code.
+
 ## Blocking conditions and required closure
 
 1. **Watchdog.** On S948BXXS4BZIG the prior passive evidence saw
