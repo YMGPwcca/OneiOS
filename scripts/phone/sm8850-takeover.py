@@ -576,7 +576,7 @@ def main():
         modes.add_argument(f"--{mode}", dest="mode", action="store_const", const=mode)
     parser.add_argument("--confirm", action="store_true", help="Explicitly opt in to the requested device changes")
     parser.add_argument("--accept-legacy-watchdog-risk", action="store_true",
-                        help="Required separately for the unqualified reboot-only SM8850 watchdog path")
+                        help="Separate risk consent for SM8850 legacy a:82 mandatory-reboot smoke OR 600-second full iOS takeover")
     parser.add_argument("--serial", help="ADB USB serial. Defaults to the sole authorized USB device.")
     parser.add_argument("--adb", type=Path, default=ADB_DEFAULT)
     parser.add_argument("--duration", type=int, choices=[600])
