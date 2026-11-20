@@ -133,6 +133,8 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('"rearm-data"', host)
         self.assertIn('if [ "$mode" = rearm ]; then', wrapper.replace('elif', 'if'))
         self.assertIn('--rearm-data --confirm --serial "$serial"', wrapper)
+        self.assertIn('--framework-check run', wrapper)
+        self.assertIn('FULL_TAKEOVER_ADMISSION=PASS_NO_FRAMEWORK_STOP', wrapper)
         self.assertIn('FULL_TAKEOVER_STAGE=REARMED', wrapper)
 
     def test_original_reboot_smoke_can_be_read_from_root_owned_archive(self):
