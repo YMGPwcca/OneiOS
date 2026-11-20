@@ -38,6 +38,7 @@ REQUIRED = {
 STATUS = f"""stage={STAGE}
 echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
 echo "boot_completed=$(getprop sys.boot_completed)"
+echo "boot_reason=$(getprop ro.boot.bootreason)"
 for name in boot state framework.mode framework.return framework.takeover-confirmed framework.launch framework.deadline framework.result watchdog.phase; do
     if [ -f "$stage/control/$name" ]; then printf 'control/%s=' "$name"; cat "$stage/control/$name"; fi
 done
@@ -342,6 +343,7 @@ def reboot_smoke_deadline_verified(baseline, after, token):
         bool(before.get("boot")) and bool(now.get("boot"))
         and now["boot"] != before["boot"]
         and now.get("boot_completed") == "1"
+        and now.get("boot_reason") == "reboot,oneios-sm8850-reboot-return"
         and now.get("control/framework.launch") == token
         and now.get("control/framework.mode") == "smoke"
         and now.get("control/framework.return") == "reboot"
