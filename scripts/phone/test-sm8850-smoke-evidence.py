@@ -42,10 +42,31 @@ class EvidenceTest(unittest.TestCase):
             self.assertEqual(0, rc)
             self.assertIn("TAKEOVER_MARKER=ABSENT", out.getvalue())
             self.assertIn("STOP_MARKER=PRESENT", out.getvalue())
+            self.assertIn("LEGACY_WATCHDOG_HANDOFF=NOT_PROVEN", out.getvalue())
             self.assertIn("EARLY PREFLIGHT REFUSAL", out.getvalue())
             self.assertIn("PHYSICAL_KEY_REBOOT=NOT_VERIFIED", out.getvalue())
             self.assertFalse((folder / "launches").exists(), "must not extract tar contents")
 
+    def test_failed_legacy_watchdog_open_classified_as_ebusy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            with tarfile.open(folder / "device-logs.tar", "w") as archive:
+                entries = {
+                    "control/feeder.failed": "OneOS legacy watchdog feeder stopped making progress\n",
+                    "control/watchdog_feeder.log": "can't create /dev/watchdog: Device or resource busy\n",
+                    "return.outcome": "reboot-deadline-or-manual 123 who=watcher\n",
+                }
+                for name, content in entries.items():
+                    encoded = content.encode()
+                    info = tarfile.TarInfo(name)
+                    info.size = len(encoded)
+                    archive.addfile(info, io.BytesIO(encoded))
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(0, INSPECTOR.inspect(folder))
+            self.assertIn("LEGACY_WATCHDOG_HANDOFF=FAILED_EBUSY", output.getvalue())
+            self.assertIn("EBUSY_OWNER=UNKNOWN_FROM_ARCHIVE", output.getvalue())
+            self.assertIn("TAKEOVER_MARKER=ABSENT", output.getvalue())
     def test_missing_archive_fails_without_phone(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = io.StringIO()
