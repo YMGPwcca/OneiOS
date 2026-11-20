@@ -127,7 +127,7 @@ def upload(phone, operation, manifest=None):
     files = {name: ASSETS / name for name in ("oneios_switch.sh", "oneios_return.sh")}
     files["stage.sh"] = HERE / "framework-stage.sh"
     with tempfile.TemporaryDirectory(prefix="oneios-framework-") as folder:
-        if operation != "install":
+        if operation not in {"install", "upgrade"}:
             clone = Path(folder) / "image-copy"
             build_phone_tool(HERE / "framework-image-copy.c", clone)
             files["image-copy"] = clone
@@ -288,7 +288,7 @@ def reboot_stage_check(phone, output):
     """Install recovery scripts and verify reboot-smoke preflight; never stop Framework."""
     if audit(phone, output / "preflight.txt", reboot_only=True):
         return 2
-    if upload(phone, "install"):
+    if upload(phone, "upgrade"):
         return 2
     check = phone.root(
         f"/system/bin/sh {STAGE}/oneios_switch.sh --framework-check reboot-smoke",
