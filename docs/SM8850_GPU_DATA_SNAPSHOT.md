@@ -1,5 +1,12 @@
 # SM8850 GPU bench: isolated Data snapshot (no guest run)
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · One-shot APFS Data and snapshot policy**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This page is earlier device evidence or an experimental design record. Compare with the [latest physical status](SM8850_LIVE_STATUS_2026-11-20.md); do not infer current safety or performance from a historical PASS.
+
 The standalone physical Adreno acceptance is `HOST_ADRENO=PASS`. The remaining iOS
 Turnip and QuartzCore results are unverified. The phone's benchmark
 `xnuhost-gui-bench` binary does **not** match the current source-built
