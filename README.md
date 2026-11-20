@@ -1,55 +1,59 @@
 # OneiOS
 
-**Current development target: Samsung Galaxy S26 Ultra (SM-S948B / m3q / SM8850).** OneiOS
-is an experimental effort to run iOS 27 alongside One UI on a rooted Samsung phone, using
-[OneOS](https://github.com/akshaynexus/OneOS)'s Android-side session model: the image lives in a
-folder and One UI's Linux kernel keeps running. **An iOS switch on the S26 Ultra is not yet
-supported or approved:** device-specific return/recovery gates have not been validated.
+**Current hardware target: Samsung Galaxy S26 Ultra (SM-S948B / m3q / SM8850).**
+OneiOS runs source-built XNU and iOS 27 userland inside Linux processes on the
+phone's Android kernel, with a device-side experimental Framework switch from
+the companion [OneOS fork](https://github.com/YMGPwcca/OneOS/tree/feat/sm8850-reboot-smoke).
+No iOS system partition is flashed. The regular OneOS Android app **does not**
+offer an SM8850 OneiOS switch; the separately risk-acknowledged root-only
+experiment is not a production feature.
 
-The **Galaxy S24 Ultra (SM-S928 / e3q / SM8650)** is the historical guest-boot and
-switch/return baseline. Its results are not proof that the S26 Ultra can boot iOS or safely
-return to One UI.
+**Physical status, 2026-11-20:** an explicitly authorized SM8850 full
+Framework takeover **did** stop One UI's Framework, boot the hosted iOS 27.0.1
+(24A446) guest, reach `session/ready`, post the guest's first frame and keep
+`xnuhost` running for approximately **600.6 seconds**. The saved runtime
+excerpt has live Adreno/KGSL 3D activity and 0 MiB of guest RAM swapped.
+The user reported **severe lag and heat**. After reboot the host observed a
+new Android boot with OneOS's reboot reason, but ephemeral DirtyFrag root was
+lost and the exact deadline request, unassisted return and watchdog handback
+remain **unverified**. This is a research milestone, **not a successful
+performance, thermal or production/recovery acceptance**.
 
-OneOS's guests are Android systems that run unchanged on One UI's Linux kernel. iOS's userland needs
-Apple's kernel (XNU), so OneiOS runs a source-built XNU **as a process on One UI's kernel**
-(`runtime/xnuhost`): iOS's processes are Linux processes whose system calls and faults go to it. The
-image, the switch and the return stay OneOS-shaped. How it fits together: [docs/architecture.md](docs/architecture.md).
-How to build and test it: [docs/building.md](docs/building.md).
+See the [dated physical evidence and P0–P3 backlog](docs/SM8850_LIVE_STATUS_2026-11-20.md)
+and the [full-run procedure/historical failures](docs/SM8850_FULL_IOS_10MIN.md)
+before interpreting any PASS marker. **Do not repeat a 600-second takeover
+while the phone is hot or until the separate thermal and recovery gates are
+qualified.**
+
+OneOS's Android guest systems use a container on One UI's Linux kernel. iOS
+needs XNU, so OneiOS runs a source-built XNU as the hosted `runtime/xnuhost`
+process. iOS tasks use Linux task processes whose faults and syscalls are
+handled by the XNU host. The image, switch and reboot-return retain the OneOS
+shape; see [architecture](docs/architecture.md) and [building](docs/building.md).
 
 ## Status
 
-### Galaxy S26 Ultra — current target (2026-11-18)
+### Galaxy S26 Ultra — experimental root-only full-run (2026-11-20)
 
-- **Local build:** `scripts/ci-local.sh all 0.0.0-ci` passed at commit
-  `015b065b8899ed93197e095c984f11ee09f7152a`; host encoder regression passed
-  69/69 checks and the ARM64 runtime package passed ELF and SHA-256 checks. This is not a
-  guest boot test.
-- **On-device diagnostics under One UI:** SM-S948B/m3q/SM8850 identity was confirmed;
-  HEVC and H.264 MediaCodec keyframe/EOS tests passed through the production encoder
-  helper; a standalone HEAVY_CLICK was physically felt. Host GPU probes, input
-  inventory and display diagnostic results are documented in
-  [the SM8850 validation report](docs/SM8850_PORT.md).
-- **Passive safety audits (2026-11-18):** preflight reported 71 PASS, 1 WARN, 0 FAIL,
-  24 BLOCKED; follow-up reported 3 PASS, 1 WARN, 0 FAIL, 5 BLOCKED. The stage was
-  not initialized and no `kernel.kc` was found in the checked local output.
-  Recovery/USB continuity/volume-chord and physical switch/return remain unverified.
-  The stopped `hwservicemanager` is a warning to investigate, not a reason to start it
-  automatically.
-- **Fail-closed:** the companion [OneOS SM8850 branch](https://github.com/YMGPwcca/OneOS/tree/feat/oneios-sm8850-m3q)
-  offers S26 Ultra diagnostics but does not permit its OneiOS switch. Do not bypass the
-  phone/model gate or interpret a passing host CI as switch approval. No firmware is
-  flashed by the intended model, but a failed recovery could still require a reboot.
+| Requirement | Current evidence |
+| --- | --- |
+| OneUI Framework stop | **Observed**, marker `FRAMEWORK_TAKEOVER=CONFIRMED` |
+| iOS 27.0.1 guest boot and display | **Observed**, `IOS_GUEST_READY` and `IOS_DISPLAY_FIRST_FRAME` |
+| 8 host CPUs available | Allowed mask **0–7**; distinct per-vCPU placement **not proven** |
+| GPU acceleration | KGSL/drm2kgsl context, imported memory and fence observed; Vulkan conformance **not proven** |
+| Locked 4 GiB guest memory | **4096 MiB mlocked**, no guest swap in captured sample |
+| User-facing performance | **Not accepted**: lag, repeated no-post windows, high Spotlight/guest trap load |
+| Thermal | **Not accepted**: hot device; full bench path uses `bridges=0` so OneiOS thermal bridge is inactive; kernel protection remains |
+| Return/recovery | New Android boot observed with `reboot,oneios-sm8850-reboot-return`; exact 600s return caller, unassisted recovery and watchdog driver **not verified** |
+| Normal OneOS app switching | **Blocked** for SM8850; experimental root-only script is separate |
+| Next gate | Thermal guard and verifiable return evidence **before** long-run retest; CPU/GPU optimization offline first |
 
-The OneOS fork's upstream changes through `akshaynexus/OneOS` `oneios`
-`bdf3db05` have been integrated into
-[the SM8850 OneOS branch](https://github.com/YMGPwcca/OneOS/pull/3)
-at `270230df`. The `app/` submodule now pins `590b4a6`, which fixes
-Tribalfs Maven registry routing and excludes these dependencies from JitPack. A classic GitHub
-PAT with `read:packages` is required to download the pinned SESL9 dependencies.
-The S26 Ultra switch remains fail-closed at the model, UI/job and root-script
-boundaries. **The integrated APK has not yet passed a fresh local CachyOS
-Gradle build/test run and must not be installed for an S26U switch**; host
-CI PASS from before the sync does not validate the newly merged app code.
+Companion branch: [OneOS `feat/sm8850-reboot-smoke`](https://github.com/YMGPwcca/OneOS/tree/feat/sm8850-reboot-smoke).
+At the last physically tested state, OneiOS was `21b88f7` and the pinned
+OneOS commit `349c029`; later commits documenting this outcome **have not
+been rerun on the phone**. Use local CachyOS regression/tests first. Earlier
+2026-11-18 readiness audits and app-model blockers remain historical context,
+not proof that the new root-only guest did not boot.
 
 ### Galaxy S24 Ultra — historical guest-boot record (2026-11-11 to 2026-11-12)
 
