@@ -1,5 +1,12 @@
 # SM8850 takeover / Return-to-Android: Gate 0
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Earlier safety-gate decision memo**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> **Historical source or earlier experimental procedure.** The latest S26 Ultra full guest ran ~600.6 s with a displayed frame, but serious heat and unverified recovery remain open. Use the [physical ledger](SM8850_LIVE_STATUS_2026-11-20.md) for current decisions.
+
 > **Historical gate memo, superseded for physical observation (2026-11-20).**
 > The root-only experiment has now stopped Framework and booted iOS 27.0.1
 > for ~600.6 s. This does **not** mean independent watchdog handback,
