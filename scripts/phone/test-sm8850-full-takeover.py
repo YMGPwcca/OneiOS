@@ -106,7 +106,7 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         )
         self.assertLess(
             inner.index('mount -o remount,bind,ro /data'),
-            inner.index('echo $ > /data/session/xnuhost.pid'),
+            inner.index('echo ' + chr(36) * 2 + ' > /data/session/xnuhost.pid'),
             'Fail-safe read-only guard must finish before guest pid is published',
         )
 
