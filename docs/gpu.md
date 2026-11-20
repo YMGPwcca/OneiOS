@@ -1,5 +1,13 @@
 # GPU: virtio-gpu 3D on the phone's Adreno
 
+
+**OneiOS · Galaxy S26 Ultra / SM8850 · Graphics and KGSL reference**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This is a detailed implementation reference. Any old example or externally sourced configuration must be checked against the live SM8850 firmware; a passing host build or a historical source reference is not a new phone acceptance.
+
 Owner: fable-gpu. Date: 2026-11-10. The Metal path of OneiOS, as Droid-VM runs it on the same SoC: the guest's
 Metal plug-in runs Turnip, Turnip speaks the drm/msm protocol over virtio-gpu's DRM native context, and the host
 serves that protocol on `/dev/kgsl-3d0` with Droid-VM's `drm2kgsl`.
@@ -56,7 +64,7 @@ Without `external/virglrenderer` xnuhost still builds, with the 2D device, and s
   the renderer makes udmabufs of them, hands them to the context and KGSL imports each and binds them at the GPU
   address the guest chose. Nothing is copied.
 - **udmabuf's limits.** The kernel caps one udmabuf at `size_limit_mb` MiB and `list_limit` runs of adjacent pages:
-  64 and 1024 on the S24 Ultra (the kernel's defaults). A guest blob can be 256 MiB of single pages
+  64 and 1024 on the earlier reference device (the kernel's defaults). A guest blob can be 256 MiB of single pages
   (`MaxBlobEntries` in `DroidVMVirtioGpu3D.cpp`), and an 18 MiB framebuffer of scattered 16 KiB pages is already 1152
   runs. So `xh_gpu3d_udmabufs` cuts a blob into chunks, in the blob's order: adjacent segments are joined, and a chunk
   ends where the next page would pass either limit (a run is cut in the middle when the chunk is full). Each chunk is
@@ -472,7 +480,7 @@ Not tested on the PC: anything the GPU does (submits, fences), and KGSL itself. 
 
 ## 4. `gpuctl`: the check on the phone
 
-Built by `runtime/build.sh STAGE` as `STAGE/bin/gpuctl` (static). As root on the S24 Ultra:
+Built by `runtime/build.sh STAGE` as `STAGE/bin/gpuctl` (static). As root on the earlier reference device:
 
 ```sh
 adb push STAGE/bin/gpuctl /data/local/tmp/gpuctl
@@ -523,7 +531,7 @@ What a failure means:
 
 ### 4.1 The first run on the phone, and its cause
 
-2026-11-11, SM-S928B, kernel `6.1.162-android14-11`, runtime 0.1.3, as root (KernelSU) from the fork's app:
+2026-11-11, original non-SM8850 model, kernel `6.1.162-android14-11`, runtime 0.1.3, as root (KernelSU) from the fork's app:
 
 ```
 /dev/kgsl-3d0 opens, /dev/udmabuf opens, /dev/dma_heap/system opens
