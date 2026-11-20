@@ -1,5 +1,8 @@
 # kernel/patches/oneios-hosted/net: the Wi-Fi, en0 on the phone's radio
 
+> [!NOTE]
+> Earlier “not booted yet” language below records a **prior net-driver implementation checkpoint**. The full physical SM8850 iOS guest later reached first frame; that result does **not** independently prove that this network bridge operated.
+
 **OneiOS · SM8850 · Kernel / session interface**
 
 [← Handbook](../../../../docs/README.md) · [Current evidence](../../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)

@@ -1,5 +1,8 @@
 # kernel/prelink: `kernel.kc`
 
+> [!NOTE]
+> Statements below that a particular prelinked build “has not booted” are **historical artifact-specific results**. A later hosted iOS guest on the S26 Ultra did reach first frame, without retroactively testing each older kernel artifact.
+
 **OneiOS · SM8850 · Kernel / session interface**
 
 [← Handbook](../../docs/README.md) · [Current evidence](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)

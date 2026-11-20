@@ -1,5 +1,8 @@
 # oneios-tool: state and what is left (2026-11-12, after the third Linux round)
 
+> [!NOTE]
+> **Historical `rustport` handover (2026-11-12), not the current S26 Ultra release or CI checklist.** Start with [the SM8850 roadmap](../../docs/TODO.md), [current build policy](../../docs/building.md) and the exact pinned OneOS gitlink. This document's older branch-specific assignments are preserved as research history.
+
 **OneiOS · SM8850 · Runtime engineering**
 
 [← Handbook](../../docs/README.md) · [Physical status](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
