@@ -95,7 +95,10 @@ evidence of a panic.
 After reconnecting, inspect the archived `return.outcome` and
 `session/return.request`. `REBOOT_SMOKE=PASS_AUTOMATIC_DEADLINE_AND_ONEUI`
 is reported only for a verified, healthy *new boot* with the exact
-launch token, takeover marker, and framework-deadline return request.
+launch token, takeover marker, framework-deadline return request **and**
+Android boot reason `reboot,oneios-sm8850-reboot-return`. A manual hard
+reset or Download Mode detour must not be mistaken for successful automatic
+recovery; if the boot reason is different or missing, report incomplete.
 `PHYSICAL_KEY_REBOOT=NOT_VERIFIED` is deliberately retained. A
 hardware force-restart or a software key request is not evidence that
 the Samsung bootloader followed the expected normal boot path.
