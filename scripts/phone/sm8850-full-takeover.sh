@@ -52,7 +52,11 @@ manifest="$OUT/full-image-$stamp-$$.sha256"
 cleanup() {
     rc=$?
     trap - EXIT
-    if command -v wl-copy >/dev/null 2>&1; then
+    # A remote SSH/zsh session can have wl-copy installed but no Wayland
+    # compositor/socket; never emit irrelevant clipboard connection errors.
+    if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ] &&
+       [ -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ] &&
+       command -v wl-copy >/dev/null 2>&1; then
         wl-copy --type text/plain < "$LOG" || :
         if command -v wl-paste >/dev/null 2>&1 &&
            wl-paste --type text/plain | cmp -s "$LOG" -; then
