@@ -1,5 +1,9 @@
 # Network: en0, the phone's Wi-Fi
 
+**OneiOS · SM8850 · Kernel / driver implementation**
+
+[← Handbook](../../docs/README.md) · [Latest evidence](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 `oneios_wifi_proto.h`: the station's messages between the guest's Wi-Fi driver and xnuhost's Wi-Fi bridge (scan,
 join, leave; state, networks, results). They travel on the virtio-net queues as Ethernet frames of type 0x88b5 to
 and from the address `02:4f:57:49:46:49`; neither end lets such a frame out (to the radio, or to iOS's network
