@@ -59,8 +59,11 @@ separate, state-changing operations.
 
 A separate, explicitly risky **reboot-only hardware smoke** now exists for
 SM8850. It uses the older OneOS Android-guest watchdog write/close strategy,
-never claims in-place return, and has independent Volume Up+Down and deadline
-reboot paths. The non-mutating check is `--reboot-audit`; the actual
+never claims in-place return, and keeps a device-independent deadline
+reboot path. The Volume Up+Down key watcher exists but its use is **not
+approved as a USB-connected Samsung boot-mode test**: an observed S26
+session entered the `Reboot Device - D2` gate while both keys were held
+during restart. The non-mutating check is `--reboot-audit`; the actual
 `--reboot-smoke` stops Android Framework. Read
 [the full experimental protocol](SM8850_REBOOT_SMOKE.md) and complete the
 required backups and local validation first. Its result cannot unlock the
@@ -126,10 +129,14 @@ watchdog transfer. This change does not alter any device-side code.
    an independent, hash-checked snapshot. Prior free-space evidence
    did not meet this once an additional snapshot was accounted for.
    Never reuse a mutable original Data inode or bypass trust hashes.
-4. **Return independence.** The physical Volume Up + Volume Down 3s
-   return chord, root-cgroup watcher and deadline, watchdog handback,
-   same-boot return guards and a separately verified out-of-band
-   stock recovery must all work independently of USB ADB.
+4. **Return independence.** Root-cgroup watcher and independent
+   deadline, watchdog handback, same-boot return guards and a separately
+   verified **Samsung-safe** physical recovery gesture must work
+   independently of USB ADB. Do not certify the current Volume Up+Down
+   software-reader chord: it conflicts with the bootloader's Download
+   Mode/D2 entry while connected to USB. Samsung documents Side/Power
+   + Volume Down as the hard-restart gesture; this is not equivalent to
+   a successful scripted key watcher.
 5. **Guest/runtime alignment.** Verify the signed GPU 3D image,
    framebuffer/input handling, Data clone, expected hardware backend
    and staged ELF before upgrading the existing 2D takeover profile.
