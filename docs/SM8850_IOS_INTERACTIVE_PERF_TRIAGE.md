@@ -1,5 +1,45 @@
 # SM8850 iOS 27 interactive performance: 2026-11-19 evidence and next acceptance
 
+## 2026-11-20: first real 8-vCPU full Framework takeover and 600-second workload
+
+**Different experimental profile from the older 4-vCPU/120s Android-on
+touch preview.** User's physically observed full session (OneiOS `21b88f7`,
+OneOS `349c029`) confirmed Framework stop, iOS guest ready, first frame
+and host allowed mask 0–7. Host process reported 600.6 s; Android subsequently
+booted with OneOS's named reboot reason, but root loss prevents authenticating
+the root-owned return requester from the host receipt (`EXIT=4`).
+
+The supplied **filtered** `oneios-perf.txt` excerpt covers the final 40
+display reporting windows / 200.758 s: 2,135 posts, weighted 10.63
+posts/s, peak 40.33, eleven zero-post windows. This is buffer submission
+rate, NOT continuous interactive FPS; static UI frames legitimately produce
+few or zero posts. Full-frame copies cost mainly 1–2 ms p95; they do not
+explain multi-second gaps by themselves.
+
+KGSL was **really active** (imports, blobs, retired backboardd fence),
+but the single reported 52s fence sample with one fence cannot certify
+60 Hz GPU performance or Vulkan conformance. The 600.6s counters had
+21,536,983 task traps (~35,862/s), 10,981,111 syscalls and 10,171,366
+faults, with host handoff up/down mean 21.68/20.84 us and p99
+114.69/114.69 us. Extreme syscall/interrupt maxima were ~3.03/11.88s;
+their direct relation to an input event was not measured. Spotlight
+repeatedly used ~98–102% of one guest core. Guest RAM stayed 4 GiB locked,
+0 MiB guest swapped; ShmemPmdMapped was zero in the sampled meminfo.
+
+Crucial safety boundary: the full root-only runner uses
+`--mode bench --set bridges=0`. This also disables the full OneiOS
+thermal bridge and default CPU topology/placement functions; existing
+Android kernel/vendor thermal protection is **not** turned off. The
+phone felt extremely hot; no thermal time series exists here.
+A CPU allowed mask of 0–7 does not prove that each vCPU got a distinct
+core. Do not import the 4-vCPU CPU-affinity benchmark's 68% handoff
+improvement as an 8-vCPU full-run result. See the
+[dated acceptance/backlog ledger](SM8850_LIVE_STATUS_2026-11-20.md).
+P0 is thermal protection and verified recovery; next CPU/GPU/Spotlight
+work is offline/local-first. No additional takeover is indicated.
+
+
+
 ## Scope and facts
 
 The **first physical touch-enabled, non-takeover** visual session on S26 Ultra
