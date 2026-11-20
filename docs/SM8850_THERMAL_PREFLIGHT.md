@@ -226,3 +226,15 @@ The user's latest exact OneOS revision `efe371475b92f5d7e27abfbb8f1b2983bfb16ca6
 Companion [OneOS PR #6](https://github.com/YMGPwcca/OneOS/pull/6) now adds a separate finite real root observer/supervisor diagnostic. A root worker reads all genuine type-mapped CPU/GPU/DDR sensors and known BAT/LRP/board AP nodes with atomic heartbeat; a sibling process checks boot/generation/launch/worker PID-birth/heartbeat and detects an intentionally short-lived worker. It runs **only on intact One UI** with a fresh exact-boot manifest in a temporary private stage and **does not reboot or issue a return request**.
 
 Nine shell-fixture and six host mock-ADB regression tests passed on assistant Linux, bringing the proposed suite to **154**. New 15 are **pending user's CachyOS CI and live S26 physical smoke**. Even if passed, P0 is NOT complete until thermal limits, independent survival after Framework stop, supervisor last-resort, and reboot-only return with verified boot outcome are proven. Full 600-second takeover remains blocked.
+
+
+## Operator-proven 154/154 CI and physical root monitor/supervisor (2026-11-21)
+
+On exact OneOS commit `906309940e7fcd4b75a634c1feca5eecfa475768`, the operator's CachyOS ran **154/154 offline tests PASS** (`ONEOS_P0_OFFLINE_154=PASS`). They then performed an explicit physical stock-OneUI root trial on SM-S948B/m3q/S948BXXS4BZIG with **28 type-verified genuine junction zones**.
+
+- Normal: monitor emitted three snapshots; CPU group maxima **34.2, 32.7, 32.3 C**; GPU **31.2, 31.2, 31.2 C**; DDR **31.2, 30.8, 30.8 C**. Monitor reported `MONITOR=FINITE_SMOKE_DONE`, separate-PID supervisor reported `SUPERVISOR=MONITOR_COMPLETED_SEPARATE_PID`, host reported `THERMAL_TRIAL=PASS_OBSERVER_SUPERVISOR_ONLY_NO_PHYSICAL_RETURN`.
+- Safe fault injection: monitor exited after two readings; CPU maxima **35.0, 32.3 C**, GPU and DDR **30.8 C** each tick. Supervisor independently detected monitor death and emitted `SUPERVISOR=WOULD_REQUEST_RETURN_NOT_EXECUTED reason=monitor_dead`; host reported `THERMAL_TRIAL=EXPECTED_MONITOR_DEATH_DETECTED_NO_PHYSICAL_RETURN`.
+- Host final result: `LIVE_THERMAL=ROOT_OBSERVER_AND_SUPERVISOR_TESTED_NO_PHYSICAL_RETURN`; local evidence file `out/sm8850/live-thermal-trial/root-thermal-smoke-20261120T193146Z-da448d.json` (JSON not uploaded here).
+- **This proves actual root process liveness and worker-death detection only while One UI is running.** The finite sibling processes still share the trial launcher and are **not** shown to survive launcher/ADB/Framework/xnuhost loss. No actual `return.request`, physical reboot, root permanent service, vendor-qualified critical limits, or unassisted normal-OneUI recovery was demonstrated.
+- **P0 remains incomplete.** The unconditional source-level `--framework-session run` admission block must stay intact; old on-phone staged script is not retroactively updated.
+
