@@ -20,32 +20,101 @@ hash_of() { sha256sum "$1" | cut -d' ' -f1; }
     fail "One UI must be running and SELinux enforcing"
 [ "$(getprop init.svc.zygote)" = running ] && pidof system_server >/dev/null || fail "Framework unavailable"
 
+root_file() {
+    [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c '%u:%a' "$1")" = 0:700 ]
+}
 install_stage() {
     if [ ! -d "$stage" ]; then
         mkdir -m 700 "$stage" || fail "cannot create the experimental stage"
     fi
     root_dir "$stage" || fail "untrusted experimental stage"
     [ ! -L "$stage/start.lock" ] || fail "untrusted start lock"
-    # mksh keeps FD 8 inside the shell, but does not pass it to external
-    # commands. Duplicate that same open file description to fd 0 for flock;
-    # the parent shell retains fd 8 and hence retains the lock.
+    # Android mksh does not inherit exec-opened FD 8 into external commands.
+    # Duplicate the same open file description into flock's FD 0.
     exec 8>>"$stage/start.lock"
-flock -n 0 0<&8 || fail "a switch or stage operation is starting"
-    case "$(cat "$stage/control/state" 2>/dev/null || :)" in
-        starting|running|returning) fail "experimental session still open" ;;
+    flock -n 0 0<&8 || fail "a switch or stage operation is starting"
+    state=$(cat "$stage/control/state" 2>/dev/null || :)
+    case "$state" in
+        starting|running|returning)
+            [ "$operation" = upgrade ] &&
+                [ -s "$stage/control/boot" ] &&
+                [ "$(cat "$stage/control/boot")" != "$(cat /proc/sys/kernel/random/boot_id)" ] ||
+                fail "experimental session still open or not proven stale from a previous boot" ;;
     esac
+    # Never stage over a live XNU or iOS helper, even with stale control files.
+    if pidof xnuhost xnuhost-gui-bench xnuhost-tasks OneiOSDisplay oneios-display >/dev/null 2>&1; then
+        fail "guest or display helper active during stage installation"
+    fi
+    [ "$(getprop init.svc.zygote)" = running ] &&
+        pidof system_server >/dev/null 2>&1 ||
+        fail "Android Framework not healthy before staging"
+    for name in oneios_switch.sh oneios_return.sh oneios-watchdog; do
+        [ -f "$incoming/$name" ] && [ ! -L "$incoming/$name" ] ||
+            fail "untrusted incoming $name"
+        if [ -e "$stage/$name" ] || [ -L "$stage/$name" ]; then
+            root_file "$stage/$name" || fail "untrusted installed $name"
+        fi
+    done
+    # The native watchdog supervisor is not being changed by this
+    # OneOS compatibility patch. Do not silently swap its binary.
+    if [ -e "$stage/oneios-watchdog" ] &&
+        ! cmp -s "$incoming/oneios-watchdog" "$stage/oneios-watchdog"; then
+        fail "native watchdog supervisor changed; require separate qualification"
+    fi
+    if [ "$operation" = upgrade ]; then
+        for name in oneios_switch.sh oneios_return.sh oneios-watchdog; do
+            [ -f "$stage/$name" ] || fail "cannot upgrade incomplete stage $name"
+        done
+        if cmp -s "$incoming/oneios_switch.sh" "$stage/oneios_switch.sh" &&
+           cmp -s "$incoming/oneios_return.sh" "$stage/oneios_return.sh"; then
+            echo "Experimental recovery scripts are already identical"
+            return 0
+        fi
+        [ ! -L "$stage/.rollback" ] || fail "untrusted rollback directory"
+        [ -d "$stage/.rollback" ] || mkdir -m 700 "$stage/.rollback" ||
+            fail "cannot create rollback archive directory"
+        root_dir "$stage/.rollback" || fail "untrusted rollback archive directory"
+        backup=$(mktemp -d "$stage/.rollback/oneos-compat.XXXXXXXX") ||
+            fail "cannot allocate rollback archive"
+        root_dir "$backup" || fail "untrusted rollback archive"
+        for name in oneios_switch.sh oneios_return.sh oneios-watchdog; do
+            cp -p "$stage/$name" "$backup/$name" || fail "backup failed for $name"
+            cmp -s "$stage/$name" "$backup/$name" || fail "backup verification failed for $name"
+            sha256sum "$backup/$name" >> "$backup/old.sha256" ||
+                fail "cannot record previous file hash"
+        done
+        # Prepare files before replacing anything. The old scripts remain
+        # in .rollback with original hashes and the live logs stay untouched.
+        for name in oneios_switch.sh oneios_return.sh; do
+            [ ! -e "$stage/$name.oneios-new" ] && [ ! -L "$stage/$name.oneios-new" ] ||
+                fail "unexpected pending stage upgrade for $name"
+            install -m 700 "$incoming/$name" "$stage/$name.oneios-new" ||
+                fail "cannot stage replacement $name"
+            cmp -s "$incoming/$name" "$stage/$name.oneios-new" ||
+                fail "replacement verification failed for $name"
+        done
+        for name in oneios_switch.sh oneios_return.sh; do
+            mv -f "$stage/$name.oneios-new" "$stage/$name" ||
+                fail "cannot atomically install $name"
+            sha256sum "$stage/$name" >> "$backup/new.sha256" ||
+                fail "cannot record installed file hash"
+        done
+        echo "ONEOS_STAGE_UPGRADE=PASS_BACKUP_PRESERVED:$backup"
+        return 0
+    fi
     for name in oneios_switch.sh oneios_return.sh oneios-watchdog; do
         if [ -e "$stage/$name" ]; then
             [ ! -L "$stage/$name" ] && cmp -s "$incoming/$name" "$stage/$name" ||
-                fail "existing $name differs. Keep the old stage for rollback and evidence."
+                fail "existing $name differs; run the separately confirmed reboot stage-check upgrade"
         else
-            install -m 700 "$incoming/$name" "$stage/$name"
+            install -m 700 "$incoming/$name" "$stage/$name" ||
+                fail "cannot install missing stage artifact $name"
         fi
     done
 }
 
 case "$operation" in
-    install) install_stage; exit ;;
+    install|upgrade) install_stage; exit ;;
     probe|prepare) ;;
     *) fail "unknown staging operation" ;;
 esac
