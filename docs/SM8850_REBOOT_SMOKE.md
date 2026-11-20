@@ -72,9 +72,22 @@ python3 scripts/phone/sm8850-takeover.py --reboot-smoke \
   --confirm --accept-legacy-watchdog-risk --serial R5GL64LZ9HA
 ```
 
-After the screen becomes unresponsive from the Framework stop, hold both
-volume keys together for three seconds; the detached watcher should
-initiate a reboot. The phase timer requests a reboot automatically after
+**Do not press Volume Up + Volume Down when the session starts or merely
+because the script prints `[3/5] Stopping the One UI framework`.** On
+2026-11-20, a key chord triggered at 10:42:32 while the switch was still
+preparing the stop, resulting in a safe same-boot abort: `STOP_MARKER=ABSENT`,
+`TAKEOVER_MARKER=ABSENT`, `One UI was never stopped`.
+
+Wait for the host CLI to print **both**
+`TAKEOVER_CONFIRMED=YES` and `PHYSICAL_KEYS=PRESS_NOW`. These lines are
+issued only when the root-side takeover marker is present, session state
+is `running`, zygote is stopped and `system_server` is absent on the
+original boot. Then hold Volume Up + Volume Down together for at least
+three seconds; the detached watcher should initiate reboot. If the
+confirmation never appears, do not improvise a timing guess or call the
+test successful. Inspect the failure evidence before retrying.
+
+The phase timer requests a reboot automatically after
 the short smoke interval. If both paths fail, try Samsung Side +
 Volume Down forced restart; this is not evidence of the scripted key
 reader working. The deadline and reboot paths do not rely on SSH/ADB.
