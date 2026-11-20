@@ -141,10 +141,11 @@ if pidof xnuhost xnuhost-gui-bench xnuhost-tasks OneiOSDisplay oneios-display >/
     fail "benchmark or display process active"
 fi
 
-# A failed first full takeover consumed the APFS Data clone BEFORE the
-# Framework stop, then xnuhost never executed (BusyBox self-file remount
-# failure). Rearm only that clone; never copy the 24 iOS image files again.
-# Refuse rearming if the consumed Data differs from the original seed.
+# Every attempted guest takeover consumes the APFS clone before Framework
+# stop. The earlier real guest subsequently WROTE to that private clone.
+# Rearm only from the ORIGINAL benchmark Data seed, never from consumed
+# guest Data. Keep the previous Data and data.consumed as an archived pair;
+# preserve evidence even when guest Data was modified. No image rebuild.
 if [ "$operation" = rearm-data ]; then
     install_stage
     # One physical failure was specifically Android BusyBox refusing a
@@ -195,42 +196,13 @@ ONEIOS_MOUNT_PROBE
     [ -z "$extra" ] || fail "consumed Data has unexpected files; preserve and inspect manually"
     [ "$(df -Pk "$stage" | awk 'NR==2 {print $4}')" -ge "$((MIN_FREE + 8388608 + 65536))" ] ||
         fail "not enough free space for one fresh APFS Data clone plus reserve"
-    # A previous guest can legitimately MODIFY its private consumed clone.
-    # Never reset/delete it. To rearm after a real guest, first establish
-    # that the ORIGINAL source Data still matches a previously preserved,
-    # root-owned PRISTINE clone from the earlier verified rearm. This does
-    # not reuse the old snapshot: the guest-modified one is archived below.
-    find_pristine_seed_archive() {
-        [ -d "$stage/.retired-data" ] &&
-            root_dir "$stage/.retired-data" || return 1
-        for prior in "$stage"/.retired-data/consumed.*; do
-            [ -d "$prior" ] && root_dir "$prior" &&
-            [ -d "$prior/data" ] && root_dir "$prior/data" || continue
-            [ -f "$prior/data.consumed" ] && [ ! -L "$prior/data.consumed" ] &&
-            [ "$(stat -c '%u:%a:%h' "$prior/data.consumed")" = 0:600:1 ] || continue
-            valid=1
-            for member in data.img unique-chip-id; do
-                older="$prior/data/$member"
-                seed="$bench/data/$member"
-                size=8
-                [ "$member" != data.img ] || size=8589934592
-                [ -f "$older" ] && [ ! -L "$older" ] &&
-                [ "$(stat -c '%u:%a:%h:%s' "$older")" = "0:600:1:$size" ] &&
-                [ -f "$seed" ] && [ ! -L "$seed" ] &&
-                [ "$(stat -c %s "$seed")" = "$size" ] &&
-                [ "$(hash_of "$older")" = "$(hash_of "$seed")" ] || {
-                    valid=0
-                    break
-                }
-            done
-            if [ "$valid" = 1 ]; then
-                printf '%s\n' "$prior"
-                return 0
-            fi
-        done
-        return 1
-    }
-    pristine_seed_archive=
+    # The original benchmark Data is a DIFFERENT file from the guest's
+    # private, already-consumed clone. The guest is allowed to modify its
+    # clone, so equality with the original is NOT a valid rearm predicate.
+    # Still verify each original file's fixed path, size, regular inode,
+    # single link, SHA-256 and stable identity throughout cloning.
+    # Historical source authenticity cannot be inferred from a newly
+    # computed hash; this is the operator-selected existing benchmark seed.
     mkdir -m 700 "$incoming/data" || fail "cannot prepare isolated replacement Data"
     for name in data.img unique-chip-id; do
         old="$stage/data/$name"
@@ -245,19 +217,27 @@ ONEIOS_MOUNT_PROBE
         [ "$(stat -c %s "$old")" = "$expected_size" ] &&
             [ "$(stat -c %s "$source")" = "$expected_size" ] ||
             fail "APFS Data size changed: $name"
+        [ "$(stat -c %h "$source")" = 1 ] &&
+            [ "$(stat -c '%d:%i' "$source")" != "$(stat -c '%d:%i' "$old")" ] ||
+            fail "APFS original seed aliases the already-consumed guest Data: $name"
         source_id=$(file_id "$source") || fail "cannot identify Data seed: $name"
         source_sha=$(hash_of "$source") || fail "cannot hash original Data seed: $name"
-        if [ "$(hash_of "$old")" != "$source_sha" ]; then
-            # This can happen after an actual 8-vCPU iOS guest run. Accept
-            # ONLY if the untouched seed matches a separate older pristine
-            # archive; otherwise the source could have silently changed.
-            if [ -z "$pristine_seed_archive" ]; then
-                pristine_seed_archive=$(find_pristine_seed_archive) ||
-                    fail "consumed Data differs from seed, but NO root-owned archived pristine baseline matches the original source; preserve all snapshots"
-                echo "APFS_SOURCE_BASELINE=VERIFIED_AGAINST_PRIOR_ARCHIVE:$pristine_seed_archive"
-            fi
-            echo "CONSUMED_DATA_CHANGED_BY_GUEST=PRESERVE_OLD:$name"
+        old_id=$(file_id "$old") || fail "cannot identify guest Data: $name"
+        old_sha=$(hash_of "$old") || fail "cannot hash consumed guest Data: $name"
+        [ "$(file_id "$old")" = "$old_id" ] ||
+            fail "consumed guest Data changed during rearm inspection: $name"
+        if [ "$old_sha" != "$source_sha" ]; then
+            # Expected after a REAL iOS guest ran. The consumed guest's
+            # writable state will be MOVED TO AN ARCHIVE, never overwritten.
+            echo "APFS_CONSUMED_GUEST_DATA=MODIFIED_PRESERVE_OLD:$name"
+            echo "APFS_REARM_ORIGINAL_SOURCE=EXISTING_BENCHMARK_SEED_NOT_HISTORICALLY_ATTESTED"
+        else
+            echo "APFS_CONSUMED_GUEST_DATA=MATCHES_SOURCE_STILL_PRESERVE_OLD:$name"
         fi
+        printf '%s  %s\n' "$old_sha" "$name" >> "$incoming/consumed-data.sha256" ||
+            fail "cannot record consumed guest Data digest"
+        printf '%s  %s\n' "$source_sha" "$name" >> "$incoming/rearm-source.sha256" ||
+            fail "cannot record benchmark seed digest"
         dest="$incoming/data/$name"
         (set -C; true > "$dest") || fail "replacement Data output already exists: $name"
         "$incoming/image-copy" "$clone" "$source" "$dest" ||
@@ -287,6 +267,12 @@ ONEIOS_MOUNT_PROBE
         fail "could not archive consumed APFS Data"
     mv "$stage/data.consumed" "$archive/data.consumed" ||
         fail "could not archive consumed Data record"
+    # Archive both hashes for later comparison without modifying the
+    # 8 GiB guest snapshot or its historical consumption marker.
+    mv "$incoming/consumed-data.sha256" "$archive/consumed-data.sha256" ||
+        fail "could not archive consumed guest Data digests"
+    mv "$incoming/rearm-source.sha256" "$archive/rearm-source.sha256" ||
+        fail "could not archive benchmark seed digests"
     mv "$incoming/data" "$stage/data" ||
         fail "could not publish new isolated APFS Data"
     sync
