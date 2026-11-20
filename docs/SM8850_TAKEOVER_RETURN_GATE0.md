@@ -57,6 +57,15 @@ At Gate 0, **do not run** `--storage-probe`, `--prepare`,
 `--recovery-smoke --confirm` or `--run --confirm`: all are
 separate, state-changing operations.
 
+A separate, explicitly risky **reboot-only hardware smoke** now exists for
+SM8850. It uses the older OneOS Android-guest watchdog write/close strategy,
+never claims in-place return, and has independent Volume Up+Down and deadline
+reboot paths. The non-mutating check is `--reboot-audit`; the actual
+`--reboot-smoke` stops Android Framework. Read
+[the full experimental protocol](SM8850_REBOOT_SMOKE.md) and complete the
+required backups and local validation first. Its result cannot unlock the
+normal `--run` path or certify a hardware watchdog handback.
+
 ## Existing OneOS Android-guest experience: relevant but separate
 
 On this SM-S948B the owner has previously switched to ColorOS/PixelOS using
