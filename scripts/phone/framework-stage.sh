@@ -26,8 +26,11 @@ install_stage() {
     fi
     root_dir "$stage" || fail "untrusted experimental stage"
     [ ! -L "$stage/start.lock" ] || fail "untrusted start lock"
-    exec 8>"$stage/start.lock"
-    flock -n 8 || fail "a switch or stage operation is starting"
+    # mksh keeps FD 8 inside the shell, but does not pass it to external
+    # commands. Duplicate that same open file description to fd 0 for flock;
+    # the parent shell retains fd 8 and hence retains the lock.
+    exec 8>>"$stage/start.lock"
+flock -n 0 0<&8 || fail "a switch or stage operation is starting"
     case "$(cat "$stage/control/state" 2>/dev/null || :)" in
         starting|running|returning) fail "experimental session still open" ;;
     esac
