@@ -102,7 +102,20 @@ class Fixture:
                           "clock", "sys/power", CGROUP, "proc/sys/kernel/random"):
             (root / directory).mkdir(parents=True)
         for kind in ("switch", "return"):
-            self.write(f"{SESSION}/oneios_{kind}.sh", Path(f"/phone/source/{kind}").read_text())
+            original = Path(f"/phone/source/{kind}").read_text()
+            shebang, separator, body = original.partition("\n")
+            if not separator or not shebang.startswith("#!"):
+                raise RuntimeError("Unexpected pinned OneOS script header")
+            # Fixture-only instrumentation: mksh R59 has cat/sleep
+            # builtins that bypass the PATH-based test doubles.
+            instrumentation = (
+                'cat() { "$ONEIOS_TEST_ROOT/bin/cat" "$@"; }\n'
+                'sleep() { "$ONEIOS_TEST_ROOT/bin/sleep" "$@"; }\n'
+            )
+            self.write(
+                f"{SESSION}/oneios_{kind}.sh",
+                shebang + "\n" + instrumentation + body,
+            )
         stub = Path("/phone/source/phone-tools").read_text().replace("@SLEEP@", "/usr/bin/sleep")
         for name in ("getprop", "setprop", "pidof", "service", "getenforce", "am", "vdc", "sync",
                      "renice", "lshal", "now", "kill", "getevent", "watchdog-stat", "watchdog-io"):
