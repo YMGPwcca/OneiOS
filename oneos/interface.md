@@ -1,5 +1,9 @@
 # What the OneOS fork expects (session ABI 1)
 
+**OneiOS · SM8850 · Kernel / session interface**
+
+[← Handbook](../docs/README.md) · [Current evidence](../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`), and the
 submodule `app/` of this repository (`.gitmodules`: `branch = oneios`; CI builds the head of that branch, not the
 recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases").
@@ -277,7 +281,7 @@ missing USB was not caused by the switch; the cable, the Mac's port, or a gadget
 ## 6b. The hardware backend (for the fork's later device profiles)
 
 xnuhost has two forms of the phone's hardware (`docs/hardware.md` 7e, `docs/booter.md` 1): `samsung` (today's
-Galaxy S24 Ultra paths, the default) and `treble` (vendor-neutral: the AIDL HALs through servicemanager, evdev by
+earlier reference device paths, the default) and `treble` (vendor-neutral: the AIDL HALs through servicemanager, evdev by
 capabilities, standard sysfs classes by named paths). Nothing changes for the fork while it passes nothing: every
 bridge is `samsung`, exactly as before.
 
