@@ -366,6 +366,8 @@ def main():
     for mode in ("dry-run", "reboot-audit", "readiness", "recovery-smoke", "reboot-smoke", "run", "return", "status", "storage-probe", "prepare", "collect"):
         modes.add_argument(f"--{mode}", dest="mode", action="store_const", const=mode)
     parser.add_argument("--confirm", action="store_true", help="Explicitly opt in to the requested device changes")
+    parser.add_argument("--accept-legacy-watchdog-risk", action="store_true",
+                        help="Required separately for the unqualified reboot-only SM8850 watchdog path")
     parser.add_argument("--serial", help="ADB USB serial. Defaults to the sole authorized USB device.")
     parser.add_argument("--adb", type=Path, default=ADB_DEFAULT)
     parser.add_argument("--duration", type=int, choices=[240])
@@ -375,6 +377,8 @@ def main():
     args = parser.parse_args()
     if args.mode in {"recovery-smoke", "reboot-smoke", "run", "storage-probe", "prepare"} and not args.confirm:
         parser.error(f"--{args.mode} requires --confirm")
+    if args.mode == "reboot-smoke" and not args.accept_legacy_watchdog_risk:
+        parser.error("--reboot-smoke requires --accept-legacy-watchdog-risk")
     if args.mode != "run" and (args.duration or args.gpu):
         parser.error("--duration and --gpu apply to --run")
     if (args.mode == "prepare") != bool(args.bench_manifest):
