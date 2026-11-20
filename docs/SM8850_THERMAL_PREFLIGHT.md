@@ -99,3 +99,12 @@ The operator subsequently executed **50/50 OneOS offline regression tests PASS**
 [OneOS draft PR #6](https://github.com/YMGPwcca/OneOS/pull/6) now also contains a **fixture-only** independent heartbeat/PID-birth consistency check, with 17 new offline regression cases and an exact 67-test local runner. The new tests still require the operator's CachyOS run; this is NOT a sensor supervisor installed on the S26 Ultra and is NOT a substitute for an authenticated, bounded reboot return.
 
 The `--framework-session run` source-level refusal remains on the **GitHub draft branch only**; old code already staged on the phone remains unchanged. P0 is not accepted, long Framework takeover remains prohibited, and no new device experiment was performed by these changes.
+
+
+## P0 current local baseline and safe passive sampling plan
+
+The operator's CachyOS completed **67/67 OneOS P0 offline tests PASS** at exact commit `d8759313e90da0f2af849b7150bc9aede36dcbf2`: 14 reader/policy, 19 E2E, 17 shadow/safety-gate, 17 heartbeat. No actual iOS or Android Framework stop was part of those tests.
+
+The companion [OneOS draft PR #6](https://github.com/YMGPwcca/OneOS/pull/6) subsequently added `scripts/phone/run-sm8850-thermal-shadow-oneui.sh`: a disposable, **three-sample read-only One UI thermal collector** using the two previously audited thermal scripts and exact model/firmware/SELinux/boot preflight, SHA-256 verified temporary staging, strict output checks, 30-second host-side timeout, and cleanup. It touches only a dedicated temporary `/data/local/tmp` directory on phone; never OneOS takeover stage, watchdog, kernel governors, thermal trip settings or reboot. `--audit-only` makes zero ADB calls; `--run-readonly` requires explicit invocation and existing root access.
+
+The new host fake-ADB test module adds 5 tests, bringing the strict combined runner to 72. The new 5 cases and physical 3-sample observation are **pending operator verification**. Any successful read-only shadow log will be **evidence only**, not P0 safety acceptance. Full 600-second takeover remains blocked, and the source-level block is not retroactively deployed to the old phone script.
