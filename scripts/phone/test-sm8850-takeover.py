@@ -282,6 +282,41 @@ control/framework.result=smoke complete
         self.assertNotIn("reboot ", phone.call.call_args.args[0][2])
         phone.root.assert_not_called()
 
+    def test_rootless_receipt_preserves_earlier_guest_proof_without_certifying_return(self):
+        props = {
+            "boot": "another-boot",
+            "boot_completed": "1",
+            "boot_reason": "reboot,oneios-sm8850-reboot-return",
+            "zygote": "running",
+            "system_server_pid": "29431",
+        }
+        values = TAKEOVER.full_run_rootless_receipt(
+            props, guest_ready=True, display_first_frame=True, cpu_mask=True
+        )
+        self.assertIn("IOS_GUEST_START_PRE_REBOOT=OBSERVED", values)
+        self.assertIn("IOS_GUEST_READY_PRE_REBOOT=OBSERVED", values)
+        self.assertIn("IOS_DISPLAY_FIRST_FRAME_PRE_REBOOT=OBSERVED", values)
+        self.assertIn("IOS_HOST_CPU_MASK_PRE_REBOOT=0-7_OBSERVED", values)
+        self.assertIn("ANDROID_NEW_BOOT=BOOT_COMPLETED_OBSERVED_VIA_UNPRIVILEGED_ADB", values)
+        self.assertIn("ANDROID_SYSTEM_SERVER_AFTER_REBOOT=PID_OBSERVED", values)
+        self.assertIn("BOOT_REASON=reboot,oneios-sm8850-reboot-return", values)
+        self.assertIn("FULL_TAKEOVER_DEADLINE_RETURN=NOT_VERIFIED_NO_ROOT_OUTCOME", values)
+        self.assertIn("UNASSISTED_RETURN_TO_ONEUI=NOT_VERIFIED", values)
+        self.assertIn("WATCHDOG_QUALIFICATION=UNVERIFIED_REBOOT_ONLY", values)
+        self.assertFalse(any("GUEST_START=NOT_VERIFIED" in v for v in values))
+        self.assertFalse(any("DEADLINE_RETURN=PASS" in v for v in values))
+
+    def test_rootless_receipt_does_not_invent_unseen_guest_or_boot_processes(self):
+        props = {"boot_reason": "reboot,other", "system_server_pid": ""}
+        values = TAKEOVER.full_run_rootless_receipt(
+            props, guest_ready=True, display_first_frame=False, cpu_mask=False
+        )
+        self.assertIn("IOS_GUEST_START_PRE_REBOOT=NOT_VERIFIED", values)
+        self.assertIn("IOS_DISPLAY_FIRST_FRAME_PRE_REBOOT=NOT_VERIFIED", values)
+        self.assertIn("IOS_HOST_CPU_MASK_PRE_REBOOT=NOT_VERIFIED", values)
+        self.assertIn("ANDROID_SYSTEM_SERVER_AFTER_REBOOT=NOT_VERIFIED", values)
+        self.assertIn("FULL_TAKEOVER_DEADLINE_RETURN=NOT_VERIFIED_NO_ROOT_OUTCOME", values)
+
     def test_full_takeover_deadline_receipt_not_unassisted_boot_proof(self):
         baseline = "boot=old\n"
         after = (
