@@ -1,5 +1,9 @@
 # drivers/battery: iOS's power source
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Implementation reference**
+
+[← Handbook](../../docs/README.md) · [Current evidence](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 The host side: `runtime/bridges/battery/`. The mapping: `docs/hardware.md` section 7c. No kernel patch: the service
 is made by hand from `oneios_drivers_start()`, like the backlight.
 
