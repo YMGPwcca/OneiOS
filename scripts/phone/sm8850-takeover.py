@@ -336,7 +336,7 @@ def reboot_smoke_verified(baseline, after):
 
 
 def reboot_smoke_deadline_verified(baseline, after, token):
-    """Auto-deadline return is NOT evidence of a successful physical-key test."""
+    """Verify deadline request and a later healthy boot, not an unassisted boot path."""
     before = dict(line.split("=", 1) for line in baseline.splitlines() if "=" in line)
     now = dict(line.split("=", 1) for line in after.splitlines() if "=" in line)
     return (
@@ -412,9 +412,11 @@ mkdir launches/{token}
                     # boot_completed/zygote_next/system_server are still starting.
                     if reboot_smoke_deadline_verified(baseline, state, token):
                         collect(phone, output)
-                        print("REBOOT_SMOKE=PASS_AUTOMATIC_DEADLINE_AND_ONEUI")
+                        print("REBOOT_SMOKE=DEADLINE_REQUEST_CONFIRMED_ONEUI_OBSERVED")
+                        print("UNASSISTED_RETURN_TO_ONEUI=NOT_VERIFIED")
                         print("PHYSICAL_KEY_REBOOT=NOT_VERIFIED")
-                        return 0
+                        print("This evidence cannot exclude a Download Mode detour or manual force restart.")
+                        return 4
                     if reboot_smoke_verified(baseline, state):
                         collect(phone, output)
                         print("REBOOT_SMOKE=KEY_RETURN_REQUEST_RECORDED_BOOT_MODE_UNVERIFIED")
