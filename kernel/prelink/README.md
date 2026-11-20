@@ -1,5 +1,12 @@
 # kernel/prelink: `kernel.kc`
 
+**OneiOS · SM8850 · Kernel / session interface**
+
+[← Handbook](../../docs/README.md) · [Current evidence](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
+> [!NOTE]
+> Historical kernel/profile measurements in this reference are not the current SM8850 acceptance. The new physical full-run has observed guest-ready and first frame, while thermal and recovery remain unresolved.
+
 Owner: fable-prelink. The hosted XNU (`kernel/build-hosted.sh`) prelinked with the kexts of the iPhone18,2
 iOS 27.0.1 (24A446) kernelcache, as one `MH_FILESET` that xnuhost loads.
 
@@ -222,7 +229,7 @@ before `vfs_context_iopolicy_unassigned_0x8000` (the settled record), `random_cp
 
 ### On the phone (2026-11-12, bringup): two panics (both resolved: 1 by XnuPrelink `9b950f2`, 2 by the known-good pairs below)
 
-Both Mac collections were booted on the S24 Ultra with the Mac runtime 0.1.7-dev (logs in
+Both Mac collections were booted on the earlier reference device with the Mac runtime 0.1.7-dev (logs in
 `out/phone-baseline/2026-11-12/session1-xnuhost.log` and `session2-xnuhost.log`, git-ignored).
 
 1. `d01f7674...` (XnuPrelink `b74ed7c`): 1.1 s into the kernel, right after `droidvm-gpu: published for the virtio
