@@ -26,6 +26,7 @@ if [ "$mode" = recovery ]; then
   "$mksh_bin" -n scripts/phone/s26-watchdog-metadata.sh
   python3 scripts/phone/test-s26-watchdog-attribution.py
   bash -n scripts/phone/sm8850-watchdog-owners.sh
+  python3 scripts/phone/test-sm8850-watchdog-owners.py -v
   awk '
     /<<.*PHONE/ { phone=1; next }
     phone && /^PHONE$/ { closed=1; exit }
