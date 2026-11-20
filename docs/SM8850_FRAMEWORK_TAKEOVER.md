@@ -1,184 +1,61 @@
-# SM8850 Framework takeover test
+# SM8850 Framework takeover — physical status (2026-11-20)
 
-> **Gate 0 status (2026-11-20): NOT CLEARED.** Use the
-> [read-only takeover/return readiness gate](SM8850_TAKEOVER_RETURN_GATE0.md)
-> before any disruptive experiment. The watchdog device-to-driver mapping,
-> timeout and first-framework-ping handback are not yet qualified, and
-> the prior S26 app-cgroup drain and independent snapshot storage gates
-> remain unresolved. The examples below describe a future, separately
-> authorized procedure; do **not** invoke `--recovery-smoke --confirm`
-> or `--run --confirm` as a shortcut. The current legacy full-run path
-> still uses GPU 2D, not the validated interactive GPU 3D benchmark.
+> **Status: guest boot/first frame observed; performance and independent recovery NOT accepted.** This page supersedes the pretrial 240-second/2D/in-place-return proposal that previously occupied this file. The live SM8850 path has changed substantially: it is a **600-second, GPU-auto/3D, 8-vCPU, 4-GiB RAM** root-only experiment with **mandatory reboot**, not an ordinary OneOS app switch.
 
+See the authoritative [2026-11-20 evidence ledger](SM8850_LIVE_STATUS_2026-11-20.md),
+the [full-run/staging procedure](SM8850_FULL_IOS_10MIN.md), and OneOS's
+[separate SM8850 port](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-reboot-smoke/docs/SM8850_PORT.md).
 
-The lab profile is scoped to the Samsung SM-S948B, m3q, SM8850, fingerprint
-`samsung/m3qxxx/m3q:17/CP2A.260605.016/S948BXXS4BZIG_OXM4BZIG:user/release-keys`,
-and kernel `6.12.69-android16-6-pb4d3caf-abogkiS948BXXS4BZIG-4k`. It runs over
-authorized USB ADB from CachyOS. The device-side assets live in the OneOS
-submodule. The CLI installs a root-owned copy under
-`/data/adb/oneios-m3q-framework` after a successful audit. The OneOS app
-continues to use its S24-only product profile and
-`/data/local/tmp/oneios`.
+## Scope and trust boundary
 
-## Commands
+- **Exact device only:** SM-S948B / m3q / SM8850, build `S948BXXS4BZIG`, Android 17 / One UI 9, Linux `6.12.69-android16-6-pb4d3caf-abogkiS948BXXS4BZIG-4k`, SELinux Enforcing, ephemeral DirtyFrag/KernelSU root.
+- **Root-only experiment:** `scripts/phone/sm8850-full-takeover.sh` uses `scripts/phone/sm8850-takeover.py` and a root-owned stage under `/data/adb/oneios-m3q-framework` with explicit risk consent. **The OneOS app/model/job switch remains disabled for SM8850.**
+- **Watchdog:** legacy `/dev/watchdog` `a:82` path, `WATCHDOG_QUALIFICATION=UNVERIFIED_REBOOT_ONLY`. Driver, hardware timeout and independent first-ping handback are not qualified. The protective device-side deadline and watcher are distinct from confirmed watchdog-core behavior.
+- **Return:** after this Framework-only switch, OneOS requests `reboot,oneios-sm8850-reboot-return`. **No in-place One UI handback is promised for SM8850.** Volume Up + Volume Down with Samsung USB connected can enter Download Mode; do not use that chord during a run.
 
-Run from the repository root. With multiple attached USB devices, give
-each command `--serial YOUR_SM_S948B_USB_SERIAL`.
+The original [Gate 0 readiness plan](SM8850_TAKEOVER_RETURN_GATE0.md)
+records an earlier, intentionally more conservative pretrial gate; it must
+not be read as a current assertion that Framework Takeover has never happened.
 
-```sh
-scripts/phone/sm8850-takeover.py --dry-run
-scripts/phone/sm8850-takeover.py --status
-scripts/phone/sm8850-takeover.py --recovery-smoke --confirm
-scripts/phone/sm8850-takeover.py --run --duration 240 --gpu 2d --confirm
-scripts/phone/sm8850-takeover.py --return
-scripts/phone/sm8850-takeover.py --collect
-```
+## Executed physical sequence
 
-The smoke uses a 10-second deadline anchored after zygote and
-`zygote_next` stop, `system_server` exits, Android's application groups
-drain, and both input services disappear. The smoke can run without a
-staged guest. The full test requires a successful smoke on the current
-boot. It uses the bench binary and settings with four vCPUs, 2 GiB
-prefaulted and locked RAM, software 2D GPU, shared-memory display, input,
-and 1080×2340 at 60 Hz. It uses one SurfaceControl display helper with the
-bench's socket mode and leaves optional hardware bridges disabled.
-Guest boot time is included in the device-side 240-second window.
+1. **Framework smoke (historical):** verified Framework stop and a device-side deadline *reboot request*; subsequent Android boot reason contained `oneios-sm8850-reboot-return`. The 20-second smoke did not independently qualify the watchdog or an entirely unassisted boot.
+2. **First full-run attempt:** reached Framework stop, then failed early at BusyBox single-operand self-file bind remount (`/data/oneios_switch.sh`), before `xnuhost` started. `switch-failed` reboot was intentional recovery; not a GPU failure.
+3. **Corrective stage + rearm:** bind-mount **directory** Data/session writable islands, remount staged `/data` read-only using explicit BusyBox SOURCE and TARGET operands. The **on-phone isolated mount namespace probe passed**. A fresh one-shot APFS Data clone was hash-verified; the consumed clone preserved under `.retired-data/`. Archive-based original smoke proof and passive full-run admission passed with no Framework stop.
+4. **Second full run:** the host observed `FRAMEWORK_TAKEOVER=CONFIRMED`, `IOS_GUEST_READY=OBSERVED`, `IOS_DISPLAY_FIRST_FRAME=OBSERVED` and `IOS_HOST_CPU_MASK=0-7`. Saved `xnuhost` telemetry reports **600.6 s since start**; real KGSL 3D traffic and the first guest frame were present.
+5. **Post-run Android:** after reboot, ADB reported `sys.boot_completed=1` and reason `reboot,oneios-sm8850-reboot-return`; ephemeral root disappeared and the host reported `EXIT=4`. **This is not failure to boot the guest.** The exact 600s deadline requester, root-owned `return.outcome` and uninterrupted unassisted return have not been independently verified.
 
-Both tests verify the watcher, two physical event readers, key-state poll,
-wakelock and a separate monotonic deadline supervisor before stopping
-Android. The deadline and watcher run in init's mount namespace and the
-root cgroup, independent of ADB. The existing OneOS stop lock, stop loop,
-watchdog feeder, return guard and reboot failsafe handle lifecycle and
-cleanup. The guards check the liveness of the session and the recovery
-helpers. In-place return keeps the original protected daemon PIDs,
-restores the saved map limit, starts zygote, and checks an unlocked stable
-`system_server`, service ownership, touchscreen enumeration and synthetic
-input dispatch. Verify an actual tap and swipe in One UI and USB ADB
-reconnection before recording a physical result.
+The last physically executed revisions were OneiOS `21b88f7372cf5a03bd94f9d2a29056f55997655c` and OneOS `349c0293b0083449067f6e849c172277b0c8aabf`. New commits describing that result are **not new live acceptance**.
 
-The smoke and full run refuse if the independently qualified watchdog
-plan or any recovery helper is missing. The native supervisor uses one
-exclusive FD, reads capabilities and timeout, and keeps it open through
-the session. The return verifies release and the new framework's
-first observed keepalive under a separate bounded deadline. See the
-[watchdog protocol and live blockers](SM8850_WATCHDOG_SUPERVISOR.md).
+## Current performance and safety blockers
 
-The passive audit found the legacy FD at `10:130` and a numbered node
-at `242:0`. The exact mapping, actual timeout, nowayout, and recovery
-timing remain unresolved. The implementation and local test phase
-performed no watchdog opens, Framework shutdowns, or kernel changes
-on the handset.
+- The filtered saved excerpt covers ~200.758 s of display telemetry, **2,135 SurfaceFlinger posts** in 40 windows, **11 zero-post windows**, about **10.63 posted buffers/s weighted**. This is **not iOS animation FPS**, and an idle static screen can have zero posts.
+- The 600.6-second `xnuhost` report shows 21.54 million guest/host traps (**35.86k/s**), long tail syscall/interrupt stalls, repeated Spotlight ~one guest vCPU, about 1.4 GiB GPU blob memory in one sampled interval, **4 GiB prefaulted/locked** and **0 MiB guest swapped**.
+- Real `drm2kgsl`/KGSL traffic was seen; `gpu=auto` still allows 2D fallback in a *different* run. Do not claim Vulkan conformance or stable 60 Hz from readiness markers.
+- `--mode bench --set bridges=0` is the exclusive-touch safety configuration. It **does not start the OneiOS thermal bridge or normal CPU topology/affinity bridge**. Linux kernel, Qualcomm and Samsung firmware thermal limits still apply, but **temperature and throttling were not measured during this full-run excerpt**. The phone became extremely hot, and the owner reported severe UI lag.
+- An 8-CPU accessible mask is **not** eight independently pinned vCPUs. Do not boost/disable thermals or change global governor/sysctl to obtain a prettier FPS number.
 
-## Isolated image and APFS Data
+## Safe investigations next — do not launch another long takeover yet
 
-The validated benchmark is at
-`/data/local/tmp/oneios-m3q-ios27-bench`. Build the approved SHA-256 list
-from the bench's recorded image and runtime manifests and the verified
-additions for `bench/xnuhost-gui-bench`, `image/kernel.kc.trustcache`,
-and `image/kernel.kc.gpuaddon`. The 44-entry list used in this checkout
-is in [bench.sha256](../out/sm8850/takeover/bench.sha256). The device
-agreed with all listed hashes. Keep the bench stopped while staging.
+Use read-only archived logs and local CI before new guest runs. Once root is available again, root-owned `launches/<token>/switch.log`, `session/xnuhost.log`, `control/display.log`, `return.log`, `return.outcome` and previous `logs/session.*` archives may be inspected. **Do not collect by rerunning takeover**. Unprivileged ADB boot metadata is a separate lower-trust source.
+
+1. **P0:** stand-alone, read-only thermal monitor/guard and evidence-preserving recovery, without enabling `bridges=1` in the touch-exclusive runtime.
+2. **P0:** verify actual return cause/elapsed time and independent watchdog behavior by root-owned logs plus physically observed no-intervention return; continue to distinguish partial observed boot from certified recovery.
+3. **P1:** profile host handoff, page faults/syscalls and Spotlight/cold-start load; test distinct-host-core placement only with controlled local A/B and no system-wide frequency writes.
+4. **P2:** correlate UI interaction, guest GPU fence, guest scanout and SurfaceFlinger post; optimize frame copying only when a measured bottleneck is present.
+5. **P3:** retain one-shot APFS snapshots and local-first regression + complete benchmark capture before any longer qualification.
+
+### Current non-disruptive commands (CachyOS)
 
 ```sh
-scripts/phone/sm8850-takeover.py --storage-probe --confirm
-scripts/phone/sm8850-takeover.py --prepare --confirm \
-  --bench-manifest out/sm8850/takeover/bench.sha256
+cd ~/projects/OneiOS
+python3 scripts/phone/test-sm8850-takeover.py -v
+python3 scripts/phone/test-sm8850-full-takeover.py -v
+make -C runtime/xnuhost test
+# Optional read-only post-boot state, no root:
+adb -s R5GL64LZ9HA shell -T 'getprop ro.boot.bootreason; getprop sys.boot_completed'
 ```
 
-Preparation tries FICLONE on two temporary files. The phone's F2FS
-rejected it. The sparse-copy probe retained the content and logical
-length of a 2 MiB file and used 128 allocated 512-byte blocks. The
-production path uses the same helper on the root-owned snapshot. It
-checks source stability, hashes, file sizes and distinct inodes, and
-retains the original Data store and unique chip ID. An interruption
-before the completion marker cannot admit a full run. Data and app
-changes made in a full run persist in the isolated Data snapshot,
-which is retained for analysis and retry.
-
-Large benchmark files are writable through their original directory.
-A read-only bind would still expose those mutable source inodes. The
-profile uses a verified snapshot of the runtime, image and sidecars and
-mounts them read-only inside the session. It reserves the bench's 30 GiB
-free-space margin on the phone after staging. The measured free space
-was only about 30.3 GiB and could not cover the independent snapshot.
-The official OneOS image directory was absent.
-
-The [no-copy design](SM8850_NO_COPY_IMAGE_ADAPTER.md) specifies
-exclusive Data-store access and a verified off-device backup. It has no
-live mode. The tested staging path continues to use separate inodes
-and the existing reserve.
-
-## Rollback
-
-1. If USB ADB is available and the software return path is valid,
-   `scripts/phone/sm8850-takeover.py --return` may request recovery.
-   **Do not hold Volume Up + Volume Down on a USB-connected SM8850**:
-   during the 2026-11-20 reboot-only experiment, that combination
-   entered Samsung's `Reboot Device - D2` Download Mode gate.
-   The reboot-only Framework smoke instead has a 20-second automatic
-   deadline that reboots to One UI, with no in-place handback.
-2. If the phone stays unresponsive and automatic recovery cannot
-   complete, hold Side/Power and Volume Down for more than seven
-   seconds to force restart. Release when the Samsung logo appears.
-   This is an independent hardware fallback, **not evidence the
-   OneiOS software key watcher succeeded**. Use **Reboot system now**
-   if Android Recovery appears.
-   [Samsung official forced restart instructions](https://www.samsung.com/us/support/answer/ANS10001374/)
-3. Unlock One UI. Run `--status` and verify that zygote,
-   `system_server`, SurfaceFlinger, the composer and adbd are running.
-   Test a tap and a swipe. For an in-place return, compare daemon PIDs
-   and the boot ID to `baseline.txt`. Compare `vm.max_map_count` against
-   the recorded baseline. The latest passive baseline was `65530`.
-   If recovery reported a map-limit mismatch, read the saved values
-   before changing anything.
-
-   ```sh
-   adb="$HOME/Android/Sdk/platform-tools/adb"
-   "$adb" shell -T "su -c 'cat /data/adb/oneios-m3q-framework/control/base/max_map_count; cat /proc/sys/vm/max_map_count'"
-   ```
-
-   When no guest process remains and the current value still equals
-   the session's recorded temporary value, restore the first number
-   from that file and read it back. For the observed baseline and
-   this profile's temporary value, use this conditional command.
-
-   ```sh
-   "$adb" shell -T "su -c 'test \"\$(cat /proc/sys/vm/max_map_count)\" = 1048576 &&
-     test \"\$(cat /data/adb/oneios-m3q-framework/control/base/max_map_count)\" = \"65530 1048576\" &&
-     printf \"65530\\n\" > /proc/sys/vm/max_map_count && cat /proc/sys/vm/max_map_count'"
-   ```
-
-4. Export evidence with `--collect`. Once verified idle, preserve the
-   experimental stage by renaming it. This retains its logs and APFS
-   snapshot and removes it from the active command path.
-
-   ```sh
-   "$adb" shell -T "su -c 'mv -n /data/adb/oneios-m3q-framework /data/adb/oneios-m3q-framework-retired-\$(date +%s)'"
-   ```
-
-## Evidence and remaining risks
-
-Start with [the local evidence folder](../out/sm8850/takeover/). A live
-session would add its launch log, return log, watchdog heartbeat
-records, guest log and crash output, screenshots, process evidence,
-and the host's boot and recovery timeline. Confirm the 240-second timing,
-the guest's usable UI and touch on the phone, and the restored One UI
-before calling a full test a pass. A first contentful frame can be
-the Apple logo.
-
-The observed USB device had physical recovery inputs on event0
-(`gpio-keys`, Volume Up) and event3 (`pmic_resin`, Volume Down).
-The parser matched capabilities and device names. The Huawei Band
-consumer-control device advertised both keys and was excluded.
-During the audit, Android's two input services belonged to
-`system_server`, and the protected service inventory was readable.
-The device later disappeared from USB. No Framework shutdown, iOS
-takeover boot or live recovery was performed. The previous bench
-run supplies boot, display and touch evidence for the existing
-benchmark, with Android's Framework present.
-
-Remaining risks include the unqualified watchdog and handback timing,
-locked-memory pressure under Framework takeover, storage capacity,
-loss of unsaved Android app work, and actual panel/touch behavior
-while the Framework is down. The prior bench and the local simulated
-reboot path do not establish physical recovery.
+The separately risk-acknowledged destructive `run` command remains documented in
+[SM8850_FULL_IOS_10MIN.md](SM8850_FULL_IOS_10MIN.md) **for reference, not as a current recommendation**.
+Do not reuse a consumed APFS Data clone, loosen the OneOS app gate, alter watchdog nodes or boot partitions, or force another 600-second trial until P0 is addressed.
