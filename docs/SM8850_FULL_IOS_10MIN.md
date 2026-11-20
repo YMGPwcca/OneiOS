@@ -187,14 +187,16 @@ the exact Samsung BusyBox and F2FS namespace still require live evidence.
 **The APFS Data clone was already marked consumed BEFORE Framework
 stop. Never use it again.** The new `rearm` operation does not
 re-copy the 24 image files, rebuild the image, rerun takeover, or
-repeat the reboot-only smoke. When a real guest has changed the
-consumed Data, rearm first requires the original seed to match **both
-files in the same earlier, root-owned pristine archive**; otherwise
-it refuses without replacement. It archives the entire consumed guest
-Data and its `data.consumed` record under root-owned `.retired-data/`,
-then publishes a fresh one-shot clone. Do not unlink the marker manually. The existing image
-and runtime hashes, GPU sidecars, and watchdog configuration remain
-unchanged.
+repeat the reboot-only smoke. When a real guest has modified the
+consumed Data, rearm verifies the separate original benchmark Data seed
+(two expected files, sizes, distinct single-link inode identities and
+SHA-256), creates a fresh independent clone, and archives the entire
+consumed guest Data and `data.consumed` record under root-owned
+`.retired-data/`, together with both hashes. A separate historical
+pristine archive is **not** a mandatory prerequisite; however, a hash
+computed today cannot independently attest the seed's historical state.
+Do not unlink the marker manually. Existing image and runtime hashes,
+GPU sidecars, and watchdog configuration remain unchanged.
 
 On CachyOS, after temporary DirtyFrag root is available again:
 
