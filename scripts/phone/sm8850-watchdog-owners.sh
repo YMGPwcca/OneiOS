@@ -1,61 +1,72 @@
 #!/usr/bin/env bash
-# Passive SM8850 watchdog descriptor ownership inventory.
-# Runs on CachyOS, reads proc/sysfs through USB ADB root; never opens watchdog.
+# Passive SM8850 watchdog descriptor inventory. No Framework stop or watchdog open.
+# Build a small native read-only /proc scanner instead of forking readlink
+# separately for every FD (the old implementation timed out after 70 seconds).
 set -euo pipefail
 
 serial="${1:?Usage: bash scripts/phone/sm8850-watchdog-owners.sh USB_SERIAL}"
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 adb="${ONEIOS_ADB:-$HOME/Android/Sdk/platform-tools/adb}"
+ndk="${ANDROID_NDK_ROOT:-${NDK:-$HOME/Android/Sdk/ndk/28.2.13676358}}"
+clang="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
 [ -x "$adb" ] || { echo "ADB_NOT_FOUND=$adb" >&2; exit 2; }
+[ -x "$clang" ] || { echo "ANDROID_NDK_CLANG_NOT_FOUND=$clang" >&2; exit 2; }
 
-timeout --foreground 70s "$adb" -s "$serial" shell -T "su -c '/system/bin/sh -s'" <<'PHONE'
-set -u
-[ "$(id -u)" = 0 ] || { echo "WATCHDOG_OWNERS=BLOCKED_NOT_ROOT"; exit 2; }
-[ "$(getprop ro.product.model)" = "SM-S948B" ] || { echo "WATCHDOG_OWNERS=BLOCKED_WRONG_MODEL"; exit 2; }
-[ "$(getprop ro.build.version.incremental)" = "S948BXXS4BZIG" ] || { echo "WATCHDOG_OWNERS=BLOCKED_WRONG_FIRMWARE"; exit 2; }
-
-echo "=== DEVICE AND BOOT (READ ONLY) ==="
-echo "boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+echo "===== EXACT DEVICE IDENTITY (READ ONLY) ====="
+"$adb" -s "$serial" shell -T "su -c '/system/bin/sh -s'" <<'PHONE'
+set -eu
+[ "$(id -u)" = 0 ] || { echo "SCAN_REFUSED_NOT_ROOT"; exit 2; }
+[ "$(getprop ro.product.model)" = "SM-S948B" ] &&
+[ "$(getprop ro.product.device)" = m3q ] &&
+[ "$(getprop ro.soc.model)" = SM8850 ] ||
+  { echo "SCAN_REFUSED_DEVICE_MISMATCH"; exit 2; }
+[ "$(getprop ro.build.version.incremental)" = S948BXXS4BZIG ] ||
+  { echo "SCAN_REFUSED_FIRMWARE_MISMATCH"; exit 2; }
+echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
 echo "boot_completed=$(getprop sys.boot_completed)"
 echo "zygote=$(getprop init.svc.zygote)"
 echo "system_server=$(pidof system_server 2>/dev/null)"
-echo "=== WATCHDOG NODES (NO OPEN) ==="
+echo "===== WATCHDOG NODES (STAT ONLY; NO OPEN) ====="
 for path in /dev/watchdog /dev/watchdog0 /dev/watchdog1 /dev/softdog; do
     [ -e "$path" ] || [ -L "$path" ] || continue
-    echo "node=$path link=$(readlink "$path" 2>/dev/null) mode=$(stat -c %a "$path" 2>/dev/null) owner=$(stat -c %u:%g "$path" 2>/dev/null) rdev=$(stat -Lc %t:%T "$path" 2>/dev/null)"
+    echo "node=$path mode=$(stat -c %a "$path" 2>/dev/null) owner=$(stat -c %u:%g "$path" 2>/dev/null) rdev=$(stat -Lc %t:%T "$path" 2>/dev/null)"
 done
-for path in /sys/class/misc/watchdog/dev /sys/class/watchdog/watchdog0/dev /sys/class/watchdog/watchdog1/dev; do
-    [ -r "$path" ] || continue
-    echo "sysfs=$path value=$(cat "$path" 2>/dev/null)"
-done
-echo "=== OPEN FILE DESCRIPTOR REFERENCES ==="
-count=0
-pids=0
-errors=0
-for proc in /proc/[0-9]*; do
-    [ -d "$proc/fd" ] || continue
-    pids=$((pids + 1))
-    pid=${proc##*/}
-    for fd in "$proc"/fd/*; do
-        [ -L "$fd" ] || continue
-        target=$(readlink "$fd" 2>/dev/null) || { errors=$((errors + 1)); continue; }
-        case "$target" in
-            /dev/watchdog*|/dev/softdog*|/dev/char/10:130*|/dev/char/242:0*)
-                count=$((count + 1))
-                comm=$(cat "$proc/comm" 2>/dev/null || echo unknown)
-                rdev=$(stat -Lc %t:%T "$fd" 2>/dev/null || echo unknown)
-                echo "holder=$pid comm=$comm fd=${fd##*/} target=$target rdev=$rdev"
-                if [ -r "$proc/fdinfo/${fd##*/}" ]; then
-                    grep -E "^(flags|mnt_id|ino):" "$proc/fdinfo/${fd##*/}" 2>/dev/null | sed "s/^/  /"
-                fi
-                ;;
-        esac
-    done
-done
-echo "=== INVENTORY SUMMARY ==="
-echo "WATCHDOG_FDS=$count"
-echo "PROCESSES_SCANNED=$pids"
-echo "FD_READLINK_ERRORS=$errors"
-echo "PROBE_SCOPE=CURRENT_BOOT_WHILE_ONEUI_IS_RUNNING"
-echo "WATCHDOG_DEVICE_OPEN_ATTEMPTED=NO"
-echo "FRAMEWORK_STOP_ATTEMPTED=NO"
 PHONE
+
+echo "===== COMPILE PASSIVE FD SCANNER LOCALLY ====="
+tmp=$(mktemp -d)
+remote=""
+cleanup() {
+    if [ -n "$remote" ]; then
+        "$adb" -s "$serial" shell "rm -f '$remote/scan'; rmdir '$remote'" >/dev/null 2>&1 ||
+            echo "NOTE: temporary remote scanner may remain at $remote" >&2
+    fi
+    rm -rf "$tmp"
+}
+trap cleanup EXIT
+"$clang" -std=c11 -Wall -Wextra -Werror -O2 -fPIE -pie \
+    "$root/scripts/phone/sm8850-watchdog-owners.c" -o "$tmp/scan"
+
+echo "===== DEPLOY TEMPORARY SCANNER ====="
+remote=$("$adb" -s "$serial" shell -T \
+    'mktemp -d /data/local/tmp/oneios-watchdog-owners.XXXXXXXX' | tr -d '\r\n')
+case "$remote" in
+    /data/local/tmp/oneios-watchdog-owners.[A-Za-z0-9]*) ;;
+    *) echo "UNSAFE_OR_MISSING_REMOTE_TEMP_DIR=$remote" >&2; exit 2 ;;
+esac
+"$adb" -s "$serial" push "$tmp/scan" "$remote/scan" >/dev/null
+"$adb" -s "$serial" shell -T "chmod 700 '$remote/scan'"
+
+echo "===== FAST NATIVE /PROC WATCHDOG FD INVENTORY ====="
+# Bound the whole scan. The native scanner makes no external readlink/stat
+# subprocess per FD, and prints explicit coverage/incompleteness counters.
+set +e
+timeout --foreground 45s "$adb" -s "$serial" shell -T \
+    "su -c '$remote/scan'"
+scan_rc=$?
+set -e
+if [ "$scan_rc" -ne 0 ]; then
+    echo "WATCHDOG_OWNERS_SCAN_EXIT=$scan_rc"
+    exit "$scan_rc"
+fi
+echo "WATCHDOG_OWNERS_SCAN=PASS"
