@@ -10,6 +10,7 @@ usage() {
     cat >&2 <<'HELP'
 Usage:
   bash scripts/phone/sm8850-full-takeover.sh prepare [SERIAL]
+  bash scripts/phone/sm8850-full-takeover.sh rearm [SERIAL]
   bash scripts/phone/sm8850-full-takeover.sh run [SERIAL] --i-accept-10-minute-legacy-watchdog-risk
 The live run WILL stop Android Framework. Samsung USB + Volume Up+Down can
 enter Download Mode. DO NOT press both volume keys during this experiment.
@@ -22,9 +23,9 @@ HELP
 mode="${1:-}"
 serial="${2:-R5GL64LZ9HA}"
 risk="${3:-}"
-case "$mode" in prepare|run) ;; *) usage ;; esac
+case "$mode" in prepare|rearm|run) ;; *) usage ;; esac
 [ "$mode" != run ] || [ "$risk" = --i-accept-10-minute-legacy-watchdog-risk ] || usage
-[ "$mode" != prepare ] || [ -z "$risk" ] || usage
+[ "$mode" = run ] || [ -z "$risk" ] || usage
 case "$serial" in
     ''|*[!a-zA-Z0-9_-]*) echo "Invalid ADB serial" >&2; exit 2 ;;
 esac
@@ -113,6 +114,17 @@ PY
     echo "FULL_TAKEOVER_STAGE=PREPARED"
     echo "LIVE_FRAMEWORK_STOP=NO"
     echo "MANIFEST=$manifest"
+  elif [ "$mode" = rearm ]; then
+    echo "===== VERIFY PATCHED GUEST MOUNT SAFETY (LOCAL ONLY) ====="
+    python3 scripts/phone/test-sm8850-full-takeover.py -v
+    echo "===== UPGRADE ON-DEVICE ONEOS SCRIPTS (NO FRAMEWORK STOP) ====="
+    python3 scripts/phone/sm8850-takeover.py \
+      --reboot-stage-check --confirm --serial "$serial"
+    echo "===== FRESH APFS DATA CLONE ONLY; PRESERVE CONSUMED SNAPSHOT ====="
+    python3 scripts/phone/sm8850-takeover.py \
+      --rearm-data --confirm --serial "$serial"
+    echo "FULL_TAKEOVER_STAGE=REARMED"
+    echo "LIVE_FRAMEWORK_STOP=NO"
   else
     echo "===== LIVE FULL FRAMEWORK TAKEOVER 8 VCPU + GPU3D 600S ====="
     echo "WARNING=LEGACY_WATCHDOG_NOT_INDEPENDENTLY_QUALIFIED"
