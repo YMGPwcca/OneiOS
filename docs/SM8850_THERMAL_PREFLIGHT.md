@@ -217,3 +217,12 @@ python3 scripts/phone/sm8850-thermal-manifest.py --build \
 ```
 
 This is the sensor manifest **foundation** for a future independently supervised root monitor, not that monitor itself. P0.2 recovery, watchdog and the 600-second takeover remain BLOCKED.
+
+
+## 2026-11-21 P0.2 root observer/supervisor test status
+
+The user's latest exact OneOS revision `efe371475b92f5d7e27abfbb8f1b2983bfb16ca6` completed **139/139 CachyOS offline tests PASS** and created the boot-bound 28-zone non-authorizing manifest SHA256 `6d327fd8aedf33101317cbb8b6cb19b00fd175f322f59a3acd8ff0a073910ee8` from a prior real One UI inventory. That manifest is not a safety license or current-boot attestation.
+
+Companion [OneOS PR #6](https://github.com/YMGPwcca/OneOS/pull/6) now adds a separate finite real root observer/supervisor diagnostic. A root worker reads all genuine type-mapped CPU/GPU/DDR sensors and known BAT/LRP/board AP nodes with atomic heartbeat; a sibling process checks boot/generation/launch/worker PID-birth/heartbeat and detects an intentionally short-lived worker. It runs **only on intact One UI** with a fresh exact-boot manifest in a temporary private stage and **does not reboot or issue a return request**.
+
+Nine shell-fixture and six host mock-ADB regression tests passed on assistant Linux, bringing the proposed suite to **154**. New 15 are **pending user's CachyOS CI and live S26 physical smoke**. Even if passed, P0 is NOT complete until thermal limits, independent survival after Framework stop, supervisor last-resort, and reboot-only return with verified boot outcome are proven. Full 600-second takeover remains blocked.
