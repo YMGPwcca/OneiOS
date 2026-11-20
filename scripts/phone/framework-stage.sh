@@ -114,7 +114,7 @@ install_stage() {
 
 case "$operation" in
     install|upgrade) install_stage; exit ;;
-    probe|prepare) ;;
+    probe|prepare|rearm-data) ;;
     *) fail "unknown staging operation" ;;
 esac
 chmod 700 "$incoming/image-copy"
@@ -139,6 +139,82 @@ printf 'Filesystem %s, selected clone method %s\n' "$(stat -f -c %T "$incoming")
 [ "$operation" != probe ] || exit 0
 if pidof xnuhost xnuhost-gui-bench xnuhost-tasks OneiOSDisplay oneios-display >/dev/null; then
     fail "benchmark or display process active"
+fi
+
+# A failed first full takeover consumed the APFS Data clone BEFORE the
+# Framework stop, then xnuhost never executed (BusyBox self-file remount
+# failure). Rearm only that clone; never copy the 24 iOS image files again.
+# Refuse rearming if the consumed Data differs from the original seed.
+if [ "$operation" = rearm-data ]; then
+    install_stage
+    [ "$(cat "$stage/image.ready" 2>/dev/null)" = sm8850-ios27-3d-8cpu-600s ] &&
+        [ "$(sed -n 's/^xnuhost=//p' "$stage/runtime.conf" 2>/dev/null)" = bin/xnuhost ] ||
+        fail "prepared 3D image/runtime stage was not verified"
+    [ -f "$stage/data.consumed" ] && [ ! -L "$stage/data.consumed" ] &&
+        [ "$(stat -c '%u:%a:%h' "$stage/data.consumed")" = 0:600:1 ] ||
+        fail "the one-shot APFS Data consumption record is missing or untrusted"
+    [ -d "$stage/data" ] && root_dir "$stage/data" ||
+        fail "consumed Data directory missing or untrusted"
+    extra=$(find "$stage/data" -mindepth 1 -maxdepth 1 ! -name data.img ! -name unique-chip-id -print -quit)
+    [ -z "$extra" ] || fail "consumed Data has unexpected files; preserve and inspect manually"
+    [ "$(df -Pk "$stage" | awk 'NR==2 {print $4}')" -ge "$((MIN_FREE + 8388608 + 65536))" ] ||
+        fail "not enough free space for one fresh APFS Data clone plus reserve"
+    mkdir -m 700 "$incoming/data" || fail "cannot prepare isolated replacement Data"
+    for name in data.img unique-chip-id; do
+        old="$stage/data/$name"
+        source="$bench/data/$name"
+        [ -f "$old" ] && [ ! -L "$old" ] &&
+            [ "$(stat -c '%u:%a:%h' "$old")" = 0:600:1 ] ||
+            fail "consumed Data input is not private: $name"
+        [ "$(realpath "$source")" = "$source" ] && [ -f "$source" ] &&
+            [ ! -L "$source" ] || fail "original Data seed is unsafe: $name"
+        expected_size=8
+        [ "$name" != data.img ] || expected_size=8589934592
+        [ "$(stat -c %s "$old")" = "$expected_size" ] &&
+            [ "$(stat -c %s "$source")" = "$expected_size" ] ||
+            fail "APFS Data size changed: $name"
+        source_id=$(file_id "$source") || fail "cannot identify Data seed: $name"
+        source_sha=$(hash_of "$source") || fail "cannot hash original Data seed: $name"
+        [ "$(hash_of "$old")" = "$source_sha" ] ||
+            fail "consumed APFS Data was modified; refusing to reset guest state"
+        dest="$incoming/data/$name"
+        (set -C; true > "$dest") || fail "replacement Data output already exists: $name"
+        "$incoming/image-copy" "$clone" "$source" "$dest" ||
+            fail "failed to clone untouched APFS source: $name"
+        [ "$(stat -c '%s:%h' "$dest")" = "$expected_size:1" ] &&
+            [ "$(stat -c '%d:%i' "$dest")" != "$(stat -c '%d:%i' "$source")" ] &&
+            [ "$(hash_of "$dest")" = "$source_sha" ] &&
+            [ "$(file_id "$source")" = "$source_id" ] ||
+            fail "replacement Data clone hash or source identity changed: $name"
+        echo "APFS_DATA_FRESH_CLONE_VERIFIED=$name"
+    done
+    [ ! -e "$stage/image.ready.rearm-pending" ] &&
+        [ ! -L "$stage/image.ready.rearm-pending" ] ||
+        fail "previous incomplete Data rearm; manual recovery required"
+    [ ! -L "$stage/.retired-data" ] || fail "untrusted consumed Data archive"
+    [ -d "$stage/.retired-data" ] ||
+        mkdir -m 700 "$stage/.retired-data" || fail "cannot create consumed Data archive"
+    root_dir "$stage/.retired-data" || fail "untrusted consumed Data archive"
+    archive=$(mktemp -d "$stage/.retired-data/consumed.XXXXXXXX") ||
+        fail "cannot allocate consumed Data archive"
+    root_dir "$archive" || fail "untrusted consumed Data archive entry"
+    # Fail-closed: revoke guest admission FIRST. No crash or concurrent
+    # observer may see a ready marker while Data is being replaced.
+    mv "$stage/image.ready" "$stage/image.ready.rearm-pending" ||
+        fail "could not disarm staged image for Data rearm"
+    mv "$stage/data" "$archive/data" ||
+        fail "could not archive consumed APFS Data"
+    mv "$stage/data.consumed" "$archive/data.consumed" ||
+        fail "could not archive consumed Data record"
+    mv "$incoming/data" "$stage/data" ||
+        fail "could not publish new isolated APFS Data"
+    sync
+    mv "$stage/image.ready.rearm-pending" "$stage/image.ready" ||
+        fail "could not re-arm verified image after fresh Data publish"
+    echo "APFS_DATA_REARMED=YES"
+    echo "PREVIOUS_DATA_ARCHIVED=$archive"
+    echo "LIVE_FRAMEWORK_STOP=NO"
+    exit 0
 fi
 
 # The host validates the allowlist and supplies expected hashes from the
