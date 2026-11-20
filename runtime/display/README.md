@@ -1,5 +1,9 @@
 # The display helper
 
+**OneiOS · SM8850 · Runtime engineering**
+
+[← Handbook](../../docs/README.md) · [Physical status](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Puts iOS's frames on the phone's panel during a OneiOS session. xnuhost keeps the guest's frame in a memfd and
 serves it on `session/display.sock` (`docs/booter.md` 2.8); One UI's surfaceflinger and composer keep running and
 hold the panel. `oneios-display` runs on One UI's side, as root, outside xnuhost's mount namespace: it takes the
