@@ -118,6 +118,10 @@ class OneOSLegacyFeederTest(unittest.TestCase):
         self.assertLess(magic, feeder)
         self.assertIn('if [ "$FRAMEWORK_REBOOT" = 1 ]; then', self.content[after_stop:feeder])
         self.assertIn("WD_FIRST=10", self.content)
+        for child in ("--feed:*", "--watch:*", "--framework-deadline:*", "--keys:*",
+                      "--keys-poll:*", "--watchdog-health:*"):
+            with self.subTest(child=child):
+                self.assertIn(child, self.content)
 
     def test_two_initial_ebusy_events_are_not_counted_as_keepalives(self):
         for shell in self.shells:
