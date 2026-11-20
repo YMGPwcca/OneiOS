@@ -383,11 +383,13 @@ def reboot_smoke_deadline_verified(baseline, after, token):
 
 
 def launch(phone, mode, output, *, reboot_only=False):
-    # A reboot-only smoke must have a real OneOS legacy-holder read-only
-    # audit. Normal in-place paths keep all existing watchdog gates.
-    if audit(phone, output / "preflight.txt", reboot_only=reboot_only):
+    # SM8850 full-run deliberately uses the same legacy OneOS V watchdog
+    # feeder and mandatory reboot-return path as the observed smoke.
+    # It is separately risk-acknowledged, NEVER an in-place handback.
+    legacy_reboot = reboot_only or mode == "run"
+    if audit(phone, output / "preflight.txt", reboot_only=legacy_reboot):
         return 2
-    if upload(phone, "install"):
+    if upload(phone, "upgrade" if legacy_reboot else "install"):
         return 2
     shell = f"/system/bin/sh {STAGE}/oneios_switch.sh"
     session_mode = "reboot-smoke" if reboot_only else mode
@@ -398,24 +400,31 @@ def launch(phone, mode, output, *, reboot_only=False):
     (output / "baseline.txt").write_text(baseline)
     boot = re.search(r"^boot=(.+)$", baseline, re.M).group(1)
     token = uuid.uuid4().hex
+    risk_token = " I_ACCEPT_LEGACY_WATCHDOG_FULL_600S_RISK" if mode == "run" else ""
     if phone.root(f"""set -eu
 umask 077
 cd {STAGE}
 mkdir -p launches
 mkdir launches/{token}
 /data/adb/ksu/bin/busybox setsid /system/bin/sh -c '
-    {shell} --framework-session {session_mode} {ACK} {token}
+    {shell} --framework-session {session_mode} {ACK} {token}{risk_token}
     rc=$?
     printf "%s\n" "$rc" > launches/{token}/exit
 ' </dev/null > launches/{token}/switch.log 2>&1 &
 """, timeout=10).returncode:
         return 2
     print(f"Framework {session_mode} requested. Recovery runs on the device.", flush=True)
-    if reboot_only:
+    if legacy_reboot:
         print("PHYSICAL_KEYS=DO_NOT_PRESS_VOLUME_UP_PLUS_DOWN", flush=True)
-        print("On USB-connected Samsung, both volume keys can enter Download Mode during boot.", flush=True)
-        print("This smoke has a 20-second automatic reboot deadline AFTER Framework takeover.", flush=True)
-        print("Observe the deadline; do not press keys for the acceptance test.", flush=True)
+        print("USB + both Samsung volume keys can enter Download Mode during reboot.", flush=True)
+        if mode == "run":
+            print("FULL_TAKEOVER=REQUESTED", flush=True)
+            print("GUEST_VCPUS=8; GPU=auto/3D; TOUCH_EXCLUSIVE=YES; RAM=4GiB", flush=True)
+            print("DEADLINE_RETURN=600_SECONDS_AFTER_FRAMEWORK_STOP", flush=True)
+            print("RECOVERY=MANDATORY_REBOOT_NOT_INPLACE; WATCHDOG_LEGACY_UNQUALIFIED=YES", flush=True)
+        else:
+            print("This smoke has a 20-second automatic reboot deadline AFTER Framework takeover.", flush=True)
+        print("Do NOT press Volume Up + Down during this session.", flush=True)
     end = time.monotonic() + 1000
     reboot_seen = None
     confirmed_announced = False
@@ -503,15 +512,17 @@ def main():
                         help="Required separately for the unqualified reboot-only SM8850 watchdog path")
     parser.add_argument("--serial", help="ADB USB serial. Defaults to the sole authorized USB device.")
     parser.add_argument("--adb", type=Path, default=ADB_DEFAULT)
-    parser.add_argument("--duration", type=int, choices=[240])
-    parser.add_argument("--gpu", choices=["2d"])
+    parser.add_argument("--duration", type=int, choices=[600])
+    parser.add_argument("--gpu", choices=["auto"])
     parser.add_argument("--bench-manifest", type=Path)
     parser.add_argument("--output", type=Path, help="New local evidence directory")
     args = parser.parse_args()
     if args.mode in {"recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "storage-probe", "prepare"} and not args.confirm:
         parser.error(f"--{args.mode} requires --confirm")
-    if args.mode == "reboot-smoke" and not args.accept_legacy_watchdog_risk:
-        parser.error("--reboot-smoke requires --accept-legacy-watchdog-risk")
+    if args.mode in {"reboot-smoke", "run"} and not args.accept_legacy_watchdog_risk:
+        parser.error(f"--{args.mode} requires separate --accept-legacy-watchdog-risk consent")
+    if args.mode == "run" and (args.duration != 600 or args.gpu != "auto"):
+        parser.error("--run must specify --duration 600 --gpu auto; full-run is bounded by independent reboot deadline")
     if args.mode != "run" and (args.duration or args.gpu):
         parser.error("--duration and --gpu apply to --run")
     if (args.mode == "prepare") != bool(args.bench_manifest):
