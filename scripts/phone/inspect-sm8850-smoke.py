@@ -73,6 +73,14 @@ def inspect(folder):
             found[name] = entry.read().decode("utf-8", errors="replace")
     print("TAKEOVER_MARKER=" + ("PRESENT" if "control/framework.takeover-confirmed" in found else "ABSENT"))
     print("STOP_MARKER=" + ("PRESENT" if "control/stopped" in found else "ABSENT"))
+    feeder = found.get("control/watchdog_feeder.log", "")
+    if "Device or resource busy" in feeder and "OneOS legacy watchdog feeder" in found.get("control/feeder.failed", ""):
+        print("LEGACY_WATCHDOG_HANDOFF=FAILED_EBUSY")
+        print("EBUSY_OWNER=UNKNOWN_FROM_ARCHIVE")
+    elif found.get("control/feeder.failed", "").strip():
+        print("LEGACY_WATCHDOG_HANDOFF=FAILED_OTHER")
+    else:
+        print("LEGACY_WATCHDOG_HANDOFF=NOT_PROVEN")
     outcome = found.get("return.outcome", "").strip()
     print("RETURN_OUTCOME=" + (outcome or "UNAVAILABLE"))
     print("PHYSICAL_KEY_REBOOT=" + ("CANDIDATE_REQUIRES_NEW_BOOT_VERIFICATION"
