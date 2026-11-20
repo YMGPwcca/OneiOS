@@ -252,3 +252,11 @@ The operator physically confirmed **154/154 offline P0 tests PASS** on exact One
 - A successful detached trial would prove independence from **the initiating ADB shell command/session only**. `setsid` does **NOT** establish independent cgroup/namespace ownership, survival after `adbd` or Android Framework stop, or safety if the supervisor itself dies.
 
 **P0 remains OPEN.** Before lifting the unconditional 600-second source lock, we still need a real independent deadline that survives Framework and supervisor failure, vendor-grounded critical temperatures, authenticated reboot-only return generation binding, and a recorded physical **unassisted reboot into healthy One UI**. No passing test or new stage manifest authorizes a full takeover.
+
+
+## P0 detached trial regression found by operator (2026-11-21)
+
+- User's CachyOS fetched exact OneOS source revision `77761d26f774b3e63d6c084de2ce5f7c8ac8a6e0` and started strict 159-case local CI. **154 tests succeeded; five fixture live-trial tests FAILED** before any phone trial, with `THERMAL_TRIAL=BLOCKED reason=parent_identity_unavailable`.
+- Root cause in the newly added PID/SID receipt source: POSIX shell `$$` was accidentally collapsed to a single `$` in five places in the parent/supervisor identity code. As a result the attempted parent path was `/proc/$/stat`, not `/proc/<actual-pid>/stat`. Those five observed failures stemmed from this source defect; there is no evidence of a physical sensor/reboot failure.
+- **Fixed source**: restore `$$` in both `birth_ticks` calls, both identity records and the parent `/proc/$$/stat` SID path. Strengthened existing `test_syntax` to assert all exact required PID tokens, without increasing the 159-case count. Verified updated GitHub blob contains the intended five `$$` sites and test assertions; **combined 159/159 and detached physical run must still be confirmed on operator CachyOS**.
+- Important: prior physical root worker + supervisor test **154/154 local PASS** and actual One UI 28-zone read with safe monitor death injection remain valid. No 600-second Framework takeover, thermal return/reboot or watchdog action was initiated by this failed CI; source P0 admission lock stays unconditional.
