@@ -1,5 +1,12 @@
 # SM8850 OneOS-legacy reboot-only Framework smoke (EXPERIMENTAL)
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Recovery smoke chronology**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> **Historical source or earlier experimental procedure.** The latest S26 Ultra full guest ran ~600.6 s with a displayed frame, but serious heat and unverified recovery remain open. Use the [physical ledger](SM8850_LIVE_STATUS_2026-11-20.md) for current decisions.
+
 ## Scope and irreversible boundary
 
 Target only SM-S948B/m3q/SM8850, fingerprint S948BXXS4BZIG and the pinned 6.12.69 kernel.
