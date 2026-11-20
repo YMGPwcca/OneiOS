@@ -230,6 +230,48 @@ descriptor at this moment*. It does not authorize using a watchdog
 descriptor or running another live smoke. If blocked, investigate
 kernel/SELinux constraints rather than bypassing them.
 
+## Reuse of the working OneOS Android watchdog sequence
+
+The reboot-only SM8850 adapter now ports the **actual host-watchdog
+sequence** from the OneOS Android guest path (OneOS
+`oneos_switch.sh` around `SOFTDOG_V=0`, plus
+`guest_prepare.sh`'s repeating `V` feeder):
+
+- Once `stop_android_framework` returns, perform the same single
+  `printf V > /dev/watchdog` magic-close attempt as OneOS Android
+- Keep OneOS's `V` open/write/close cadence; if open is temporarily
+  exclusive (`EBUSY`), log `refused` and retry instead of immediately
+  aborting at the first call
+- In the **reboot-only** smoke, cap initial retries at 10 seconds;
+  unlike the Android guest's best-effort feeder, never issue a
+  `feeder.ready` or successful keepalive heartbeat until a real `V`
+  write succeeded; repeated EBUSY still invokes recovery and reboot
+- Keep the existing Volume Up + Down watcher and independent reboot
+  deadline. The normal iOS `--run` remains gated
+
+The original OneOS script also has a **device-specific persistent-property
+fallback**, `persist.vendor.softdog=off`, backed by the Android guest's
+property store/restore pipeline. OneiOS currently does not have an
+equivalent verified post-reboot rollback, so this fallback has
+**not** been copied. `/dev/watchdog0` is not touched by this profile.
+
+The OneiOS experimental stage refuses changed scripts by design.
+To use this update, run the **confirmed, non-takeover**
+`--reboot-stage-check --confirm`. It now explicitly requests an
+`upgrade` rather than a fresh `install`, backs up the existing root
+scripts and hashes under `/data/adb/oneios-m3q-framework/.rollback`,
+and only replaces the scripts when the device is back in healthy One UI
+and the previous session is not active on the current boot.
+The `oneios-watchdog` native binary must remain identical.
+Logs/control artifacts are not deleted.
+
+Local CI now executes the exact production feeder function from the
+pinned OneOS gitlink in Bash and mksh, testing initial EBUSY followed
+by successful `V`, permanently busy watchdog with no false readiness,
+and a failure after the first successful tick. The stage upgrade
+function is also tested against a synthetic previous-boot root stage.
+These are offline tests, not physical takeover acceptance.
+
 ## Not yet enabled
 
 Do not infer full iOS boot approval from a reboot-only smoke. The normal
