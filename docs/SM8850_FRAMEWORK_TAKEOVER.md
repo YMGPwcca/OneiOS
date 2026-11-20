@@ -110,14 +110,20 @@ and the existing reserve.
 
 ## Rollback
 
-1. With USB connected, run `scripts/phone/sm8850-takeover.py --return`.
-   With only the phone, hold the physical Volume Up and Volume Down
-   keys together for three seconds. OneOS logs the request and attempts
-   in-place return.
+1. If USB ADB is available and the software return path is valid,
+   `scripts/phone/sm8850-takeover.py --return` may request recovery.
+   **Do not hold Volume Up + Volume Down on a USB-connected SM8850**:
+   during the 2026-11-20 reboot-only experiment, that combination
+   entered Samsung's `Reboot Device - D2` Download Mode gate.
+   The reboot-only Framework smoke instead has a 20-second automatic
+   deadline that reboots to One UI, with no in-place handback.
 2. If the phone stays unresponsive and automatic recovery cannot
-   complete, hold Side and Volume Down together for at least seven
-   seconds. Release when the Samsung logo appears. Use **Reboot system
-   now** if Android Recovery appears. [Samsung forced restart instructions](https://www.samsung.com/us/support/troubleshoot/TSG10001468/)
+   complete, hold Side/Power and Volume Down for more than seven
+   seconds to force restart. Release when the Samsung logo appears.
+   This is an independent hardware fallback, **not evidence the
+   OneiOS software key watcher succeeded**. Use **Reboot system now**
+   if Android Recovery appears.
+   [Samsung official forced restart instructions](https://www.samsung.com/us/support/answer/ANS10001374/)
 3. Unlock One UI. Run `--status` and verify that zygote,
    `system_server`, SurfaceFlinger, the composer and adbd are running.
    Test a tap and a swipe. For an in-place return, compare daemon PIDs
