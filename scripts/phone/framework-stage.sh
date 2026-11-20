@@ -145,8 +145,9 @@ fi
 # validated bench. Runtime and image trees are assembled from listed files.
 [ -s "$incoming/bench.sha256" ] || fail "empty benchmark manifest"
 mkdir "$incoming/image" "$incoming/runtime" "$incoming/data"
+mkdir -m 700 "$incoming/runtime/bin"
 while read -r sha path; do
-    case "$path" in image/*|runtime/*|bench/xnuhost-gui-bench) ;; *) fail "unexpected artifact path" ;; esac
+    case "$path" in image/*) ;; *) fail "unexpected non-image artifact path" ;; esac
     canonical=$(realpath "$bench/$path") || fail "source missing: $path"
     [ "$canonical" = "$bench/$path" ] && [ -f "$canonical" ] || fail "source is not a regular benchmark file: $path"
 done < "$incoming/bench.sha256"
@@ -195,10 +196,7 @@ copy_one() {
 : > "$incoming/image.sha256"
 : > "$incoming/image.ids"
 while read -r sha path; do
-    case "$path" in
-        bench/xnuhost-gui-bench) dest=runtime/bin/xnuhost-gui-bench ;;
-        *) dest=$path ;;
-    esac
+    dest=$path
     copy_one "$bench/$path" "$incoming/$dest" "$sha"
     printf '%s  %s\n' "$sha" "${dest#*/}" >> "$incoming/${dest%%/*}.sha256"
     if [ "${dest%%/*}" = image ]; then
