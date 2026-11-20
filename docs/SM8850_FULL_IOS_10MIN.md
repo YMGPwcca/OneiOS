@@ -1,5 +1,12 @@
 # SM8850 full iOS 27 takeover: 8 vCPU, GPU 3D, 10-minute reboot deadline
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Full takeover · tested procedure**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!CAUTION]
+> **Historical test procedure, not a new-run recommendation.** Guest boot and first frame have been observed, but severe heat, CPU lag and incomplete unattended recovery require P0 safety work before another long takeover.
+
 ## Recorded result: 2026-11-20 physical full run (not a rerun authorization)
 
 **Observed:** the repaired on-device namespace probe and APFS Data-only rearm passed;
