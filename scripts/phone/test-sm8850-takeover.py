@@ -85,6 +85,29 @@ class TakeoverTest(unittest.TestCase):
             upload.assert_not_called()
             self.assertIn("--framework-audit-reboot", device.root.call_args.args[0])
 
+    def test_operator_key_prompt_only_after_verified_framework_stop(self):
+        token = "a" * 32
+        base = ("boot=boot1\ncontrol/framework.launch=" + token
+                + "\ncontrol/framework.mode=smoke\ncontrol/framework.return=reboot\n"
+                + "control/state=starting\nzygote=running pid=101\nsystem_server=202\n")
+        self.assertFalse(TAKEOVER.reboot_smoke_ready(base, "boot1", token))
+        live = (base.replace("control/state=starting", "control/state=running")
+                .replace("zygote=running pid=101", "zygote=stopped pid=")
+                .replace("system_server=202", "system_server=")
+                + "control/framework.takeover-confirmed=generation\n")
+        self.assertTrue(TAKEOVER.reboot_smoke_ready(live, "boot1", token))
+        for original, changed in (
+            ("boot=boot1", "boot=boot2"),
+            ("control/state=running", "control/state=returning"),
+            ("control/framework.return=reboot", "control/framework.return=inplace"),
+            ("zygote=stopped pid=", "zygote=running pid=101"),
+            ("system_server=", "system_server=202"),
+            ("control/framework.takeover-confirmed=generation", ""),
+        ):
+            with self.subTest(original=original):
+                self.assertFalse(TAKEOVER.reboot_smoke_ready(live.replace(original, changed), "boot1", token))
+        self.assertFalse(TAKEOVER.reboot_smoke_ready(live + "return_request=keys: early\n", "boot1", token))
+        self.assertFalse(TAKEOVER.reboot_smoke_ready(live, "boot1", "b" * 32))
     def test_reboot_smoke_requires_key_proof_on_healthy_new_boot(self):
         baseline = "boot=old\nzygote=running pid=1\nsystem_server=12\n"
         after = (
