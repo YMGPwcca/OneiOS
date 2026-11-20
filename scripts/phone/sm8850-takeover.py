@@ -25,16 +25,12 @@ ASSETS = REPO / "app/switcher/assets"
 TARGET = "SM-S948B:m3q:SM8850"
 ACK = "I_ACCEPT_SM8850_FRAMEWORK_TAKEOVER"
 ADB_DEFAULT = Path.home() / "Android/Sdk/platform-tools/adb"
+# The actual 3D xnuhost and display helpers come from the locally built,
+# SHA-256-attested OneiOS binaries, NOT old runtime/bench files on the phone.
+# Manifest the COMPLETE existing iOS image tree, including its trust modules.
 REQUIRED = {
-    "bench/xnuhost-gui-bench", "image/manifest.json", "image/kernel.kc",
-    "image/kernel.kc.hashes", "image/kernel.kc.gpuaddon", "image/kernel.kc.trustcache",
-    "image/os.img", "image/systemos.img", "image/app.img", "image/data.seed",
-    "image/os.img.hashes", "image/systemos.img.hashes", "image/app.img.hashes",
-    "image/trust/static.trustcache", "image/trust/app.trustcache",
-    "image/trust/system.trustcache", "image/trust/os.root_hash",
-    "image/trust/system.root_hash", "image/trust/app.root_hash",
-    "runtime/runtime.json", "runtime/bin/oneios-display", "runtime/bin/liboneios-display.so",
-    "runtime/lib/oneios-display.dex",
+    "image/manifest.json", "image/kernel.kc", "image/kernel.kc.gpuaddon",
+    "image/os.img", "image/systemos.img", "image/app.img",
 }
 STATUS = f"""stage={STAGE}
 echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
@@ -110,19 +106,23 @@ class Phone:
 def manifest_bytes(path):
     entries = {}
     for line in path.read_text().splitlines():
-        match = re.fullmatch(r"([0-9a-f]{64})\s+((?:image|runtime|bench)/[A-Za-z0-9_][A-Za-z0-9._/+-]*)", line)
+        match = re.fullmatch(r"([0-9a-f]{64})\s+(image/[A-Za-z0-9_][A-Za-z0-9._/+-]*)", line)
         if not match:
             raise ValueError(f"Malformed manifest line {line!r}")
         digest, name = match.groups()
         if any(part in {"", ".", ".."} for part in name.split("/")) or name in entries:
             raise ValueError(f"Unsafe or repeated benchmark path {name}")
-        if name.startswith("bench/") and name != "bench/xnuhost-gui-bench":
-            raise ValueError(f"Unexpected benchmark executable {name}")
-        if ".." in name or name == "runtime/bin/xnuhost-gui-bench":
-            raise ValueError(f"Incompatible staged path {name}")
+        if ".." in name:
+            raise ValueError(f"Incompatible staged image path {name}")
         entries[name] = digest
     if REQUIRED - entries.keys():
         raise ValueError(f"Manifest omits {', '.join(sorted(REQUIRED - entries.keys()))}")
+    if not (
+        "image/kernel.kc.trustcache" in entries or
+        {"image/trust/static.trustcache",
+         "image/overlay/userland/owner-trust.json"} <= entries.keys()
+    ):
+        raise ValueError("Image lacks a verified kernel trustcache sidecar or static+owner trust module")
     if any(parent.as_posix() in entries for name in entries for parent in Path(name).parents):
         raise ValueError("A benchmark path is both a file and a directory")
     return "".join(f"{digest}  {name}\n" for name, digest in sorted(entries.items())).encode()
