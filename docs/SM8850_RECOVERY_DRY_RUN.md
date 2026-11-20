@@ -1,5 +1,12 @@
 # Phase 3 SM8850 recovery dry-run
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Recovery drill-down**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> **Historical source or earlier experimental procedure.** The latest S26 Ultra full guest ran ~600.6 s with a displayed frame, but serious heat and unverified recovery remain open. Use the [physical ledger](SM8850_LIVE_STATUS_2026-11-20.md) for current decisions.
+
 This phase targets the Galaxy S26 Ultra SM-S948B / m3q / SM8850, Android 17 / One UI 9.
 The phase uses the parent-pinned OneOS scripts and leaves SM8850 switching disabled.
 The owner previously confirmed USB ADB and simultaneous physical Volume Up and
