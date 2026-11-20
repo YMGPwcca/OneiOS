@@ -187,10 +187,12 @@ the exact Samsung BusyBox and F2FS namespace still require live evidence.
 **The APFS Data clone was already marked consumed BEFORE Framework
 stop. Never use it again.** The new `rearm` operation does not
 re-copy the 24 image files, rebuild the image, rerun takeover, or
-repeat the reboot-only smoke. It rejects rearming if any bytes in the
-consumed Data files differ from the original seed; it archives both
-consumed data and its record under root-owned `.retired-data/`,
-and only then publishes a new one-shot clone. The existing image
+repeat the reboot-only smoke. When a real guest has changed the
+consumed Data, rearm first requires the original seed to match **both
+files in the same earlier, root-owned pristine archive**; otherwise
+it refuses without replacement. It archives the entire consumed guest
+Data and its `data.consumed` record under root-owned `.retired-data/`,
+then publishes a fresh one-shot clone. Do not unlink the marker manually. The existing image
 and runtime hashes, GPU sidecars, and watchdog configuration remain
 unchanged.
 
