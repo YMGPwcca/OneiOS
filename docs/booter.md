@@ -1,5 +1,13 @@
 # The booter: xnuhost and the loader
 
+
+**OneiOS · Galaxy S26 Ultra / SM8850 · Hosted kernel and runtime reference**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This is a detailed implementation reference. Any old example or externally sourced configuration must be checked against the live SM8850 firmware; a passing host build or a historical source reference is not a new phone acceptance.
+
 Owner: booter. Code: `runtime/loader/` (the loader library), `runtime/xnuhost/` (the program),
 `runtime/build.sh` (what `runtime/package.sh` calls). Date: 2026-11-10.
 
@@ -495,7 +503,7 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
   of the RAM memfd in the task. Shared memory between tasks, the shared region at `0x180000000` and the
   commpage at `0xFFFFFC000` are all the same call. `task_unmap`, `task_protect`, `ram_discard` (hole punch)
   are the rest of a pmap.
-- **Address space**: the S24 Ultra's kernel gives user space 39 bits. The kernel must run in the low half
+- **Address space**: the earlier reference device's kernel gives user space 39 bits. The kernel must run in the low half
   (it does: it runs where the window is mapped) and iOS's task map must end below `xh_info.user_va_limit`
   (`0x7e00000000`, 504 GiB).
 - **16 KiB pages on a 4 KiB host**: nothing to do in the host. Linux maps at 4 KiB granularity, so XNU may
@@ -613,7 +621,7 @@ The same reading goes to the guest on the bridge's channel 6 (`drivers/thermal`)
   aperture"; an app's `brk` (Swift traps, `__builtin_trap`) reached iOS as that fault too, not as `EXC_BREAKPOINT`.
 - **A cache maintenance fault is a read** (fix-webkit-icache, 2026-11-14). A `dc cvau`, `dc cvac`, `dc civac`,
   `dc cvap` or `ic ivau` (the cache maintenance by address EL0 may run; Linux sets SCTLR_EL1.UCI and traps them only
-  for Cortex-A53 r0p0-r0p2 errata, not on the SM8650's cores) runs natively in the task process. On a page the
+  for Cortex-A53 r0p0-r0p2 errata, not on the earlier reference SoC's cores) runs natively in the task process. On a page the
   task's Linux process has not mapped (the hosted pmap maps a page into the task only when it faults) it takes a
   data abort whose ESR has **ISS.WnR = 1 and ISS.CM = 1**; Linux treats it as a read (`is_write_abort` is WnR without
   CM), finds no VMA and sends SIGSEGV with that ESR whole in `esr_context` (`set_thread_esr` sanitizes kernel
@@ -656,7 +664,7 @@ store of a word in the shared trap page and, when the other side sleeps, a futex
 **What changed.**
 
 - **`cpu-pin` (default 1).** With the CPU plan (the bridges on: the phone), each vCPU thread is on one host CPU of its
-  plan's mask (the rank-th of its kind: on the S24 Ultra vCPU *i* on CPU *i*), and the iOS thread it runs and the task's
+  plan's mask (the rank-th of its kind: on the earlier reference device vCPU *i* on CPU *i*), and the iOS thread it runs and the task's
   service thread, when that vCPU gives it an order, go on the same CPU. A hand-off is then a switch on one core. Across
   cores it is a wake-up of another CPU (an IPI, the way out of idle) each way. The thermal step's masks still apply: a
   narrowed mask gives the vCPUs of a kind its CPUs in turn. `cpu-pin=0` is the old placement (any core of the kind).
@@ -817,13 +825,13 @@ with its CPUs and the `cpufreq/boost` switch (`cpu: xnuhost's cpuset /..., CPUs 
   and DroidVMCpufreq's thread-group preferences (UI, above-UI and realtime classes on the P cluster) place the threads.
   So three levels (X4, A720, A520) cannot be told to this kernel by the tree alone: that needs a kernel built with
   per-cluster ids and `M` cores (not done; a guess that the Edge scheduler would take three cluster types on this config).
-- **The SM8650's four kinds** (cpu0-1 A520 2.27 GHz, cpu2-4 A720 3.15 GHz, cpu5-6 A720 2.96 GHz, cpu7 X4 3.39 GHz on the
-  S24 Ultra; read at run time, not coded): E = the A520s (the lowest capacity), P = the A720s and the X4. The 2.96 GHz
+- **The earlier reference SoC's four kinds** (cpu0-1 A520 2.27 GHz, cpu2-4 A720 3.15 GHz, cpu5-6 A720 2.96 GHz, cpu7 X4 3.39 GHz on the
+  earlier reference device; read at run time, not coded): E = the A520s (the lowest capacity), P = the A720s and the X4. The 2.96 GHz
   A720s are P on purpose: each is about twice an A520's work at the same clock, and as E they would take iOS's background
   work while UI work queued on four P cores. They are the P cluster's slowest cores: cpu-pin puts vCPU 5-6 there, and
   with the hint below a UI thread there still asks the host for its top clock.
 - **Each vCPU is described as its own core** (`br_cpu_plan_make`): cpu-pin puts the rank-th vCPU of a kind on the
-  rank-th CPU of the kind's mask, in CPU order (vCPU *i* on CPU *i* on the S24 Ultra), and the vCPU's clock table,
+  rank-th CPU of the kind's mask, in CPU order (vCPU *i* on CPU *i* on the earlier reference device), and the vCPU's clock table,
   capacity and caches are now that core's. Before, every P vCPU was described as the fastest core of its kind (six X4s),
   and a frequency request of a vCPU on an A720 was sized against the X4's table.
 - **The X4's top**: the guest's `DroidVMCpufreq: ... 480000-3052800 kHz (cpu7)` on the phone was the table of
@@ -936,7 +944,7 @@ and feature handshake) at `0x0a000000 + n * 0x1000`, SPI `32 + n`, in this order
 | --- | --- | --- | --- |
 | Block, read-only (`F_RO`) | `virtio_blk.c`, `blk.c` | `os.img`, `systemos.img`, `app.img`, a tar `data.seed` | UniXNU `NativeVirtioBlock` (node `virtio-mmio-N`, `compatible` `virtio,mmio`) |
 | Block, writable | same | `<data>/data.img`, sparse, 32 GiB logical, flush = `fdatasync` | the Data store window (node `data-store`) |
-| Input | `virtio_input.c`, `input.c` | `/dev/input/event*`: the multitouch events of the one device that is the screen (`INPUT_PROP_DIRECT`; a multitouch pointer device such as the S24 Ultra's `sec_touchpad` is not taken; the log line gives the screen's x and y ranges) and the three side keys, unchanged evdev codes, the panel's own axis ranges | UniXNU-droidvm `DroidVMVirtioInput.c` |
+| Input | `virtio_input.c`, `input.c` | `/dev/input/event*`: the multitouch events of the one device that is the screen (`INPUT_PROP_DIRECT`; a multitouch pointer device such as the earlier reference device's `sec_touchpad` is not taken; the log line gives the screen's x and y ranges) and the three side keys, unchanged evdev codes, the panel's own axis ranges | UniXNU-droidvm `DroidVMVirtioInput.c` |
 | GPU, 2D scanout | `virtio_gpu.c`, `display.c` | the display back end | UniXNU-droidvm `DroidVMVirtioGpuDisplay.cpp` under IOMobileFramebufferLegacy: `kernel/patches/oneios-hosted/display/` (a 2D resource per surface, up to 16384 backing entries each) |
 | Console | `uart.c` | the log | XNU's PL011 console (`uart0`) |
 | Bridge channel, network, sound | `runtime/bridges` (the bridges agent's; `docs/hardware.md`) | haptics and Bluetooth HCI; a tap with built-in DHCP; an AAudio helper process | `drivers/bridge`, `DroidVMVirtioNet.c`, `DroidVMVirtioSnd.c` |
@@ -1042,7 +1050,7 @@ Linux's page cache and a sparse file: the store is a raw image.
      `overlay/userland/xnuhost.conf`. With all three given, the panel is not asked at all.
   2. In a session on the `shm` back end, the helper's `panel` report: xnuhost listens first, waits up to 10 s for the
      helper to connect and 8 s for the report, and only then makes the frame. The helper's `--takeover` asks for the
-     panel's native mode first, so this is that mode, or the active one if surfaceflinger refused. The S24 Ultra in
+     panel's native mode first, so this is that mode, or the active one if surfaceflinger refused. The earlier reference device in
      QHD+: 1440x3120 at 120 Hz.
   3. The largest mode of the connected built-in panel's connector in `/dev/dri/card0` (LVDS, eDP, DSI or DPI only).
      The Virtual (writeback) connectors report "connected" with modes up to 5120x2560, and DSI-1's list need not hold
@@ -1327,7 +1335,7 @@ itself (an ESR with CM is a read, whatever WnR says) is checked on the host by `
 
 **Not covered anywhere**: qemu-user has no seccomp and no `process_vm_writev`, so the `svc #0x80` trap and
 `task_read/write` have run nowhere (the test prints SKIP). The filter's logic is tested in the interpreter
-only. The KMS back end, evdev reader and uid drop have never run. Nothing has run on the S24 Ultra.
+only. The KMS back end, evdev reader and uid drop have never run. Nothing has run on the earlier reference device.
 
 One experiment with the kernel agent's build (`out/kernel/current/xnu.macho`, the unchanged EL1 kernel):
 xnuhost loads it and enters `_start`; under qemu it runs `_start_first_cpu`, builds its bootstrap page
