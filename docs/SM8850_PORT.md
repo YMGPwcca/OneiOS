@@ -1,5 +1,10 @@
 # SM8850 host validation — Galaxy S26 Ultra
 
+
+**OneiOS · Galaxy S26 Ultra / SM8850 · SM8850 hardware validation**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
 > **2026-11-20 update:** hardware-only early port notes below are historical.
 > The separate root-only S26 Ultra Framework experiment now **has**
 > physically booted iOS 27.0.1, shown its first frame and executed for
@@ -12,7 +17,7 @@
 >
 
 
-Original S24 Ultra switch/return audit and upstream synchronization plan:
+Original earlier reference device switch/return audit and upstream synchronization plan:
 [SM8850_ORIGINAL_AUDIT.md](SM8850_ORIGINAL_AUDIT.md). This passive
 probe must be reviewed before any phone session; an absent stage and an
 unverified recovery path are BLOCKED, not a switch permission.
