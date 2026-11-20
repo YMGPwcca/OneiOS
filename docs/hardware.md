@@ -69,6 +69,21 @@ While the Framework is stopped, the OneOS script's protected service inventory i
 
 **P0 work:** inventory thermal sensors and units read-only, implement a narrowly scoped temperature guard available with `bridges=0`, and connect its critical return request to the already-bounded OneOS recovery path. Missing or invalid sensors must fail safely.
 
+## Bridge reference map
+
+Some older component READMEs refer to the former hardware guide's numbered bridge subsections. Use these **current owning references** instead; any unverified peripheral behavior remains explicitly unverified for SM8850.
+
+| Previously referenced area | Current owning reference |
+| :--- | :--- |
+| Panel brightness / ambient light (`7a`) | [Brightness bridge](../runtime/bridges/brightness/README.md), [SM8850 hardware audit](SM8850_PORT.md) |
+| Touch and buttons (`7b`) | [Hosted HID implementation](../kernel/patches/oneios-hosted/hid/README.md), [touch preview](SM8850_IOS_TOUCH_PREVIEW.md) |
+| Battery (`7c`) | [Battery bridge](../runtime/bridges/battery/README.md) |
+| Thermal (`7d`) | [Thermal bridge](../runtime/bridges/thermal/README.md), [P0 safeguards](TODO.md) |
+| Samsung/Treble backends (`7e`) | [Runtime bridge architecture](../runtime/bridges/README.md) |
+| S Pen (`7f`) | [HID implementation](../kernel/patches/oneios-hosted/hid/README.md) |
+| HEVC/MediaCodec (`7g`) | [Encoder bridge](../runtime/bridges/encoder/README.md) |
+| Camera (`7`) | [Camera bridge](../runtime/bridges/camera/README.md) |
+
 ## Practical evidence sources
 
 | Topic | Where to look |
