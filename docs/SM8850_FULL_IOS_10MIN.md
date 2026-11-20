@@ -178,3 +178,31 @@ The root switch accepts the already archived, root-owned original
 smoke evidence, not a fake current-boot marker; no repeated reboot-smoke
 is required. It still checks the current boot reason and refuses any
 unexpected firmware/root/watchdog changes.
+
+
+## 2026-11-20 second rearm attempt: BusyBox one-operand remount
+
+The local full-run regression passed **8/8**, and updating the staged
+OneOS recovery scripts passed without stopping One UI. The on-device,
+isolated mount-namespace probe then failed BEFORE any APFS Data copy:
+
+```text
+mount: can't find /data/adb/.oneios-m3q-upload.*/mount-target in /proc/mounts
+STAGING REFUSED: Android BusyBox cannot create read-only guest stage and writable Data/session mounts
+```
+
+Root cause: both the probe and full guest `--inner` used a **single
+target operand** for BusyBox `mount -o remount,bind,ro`. On this
+Android BusyBox build the single-operand form looks up the target in
+`/proc/mounts` and rejects an otherwise successfully bind-mounted
+directory. Both now use explicit SOURCE and TARGET operands:
+`mount -o remount,bind,ro "$dst" "$dst"` in the private probe, and
+`mount -o remount,bind,ro /data /data` in the guest namespace.
+
+The root-stage read-only and Data/session-writable negative write probes
+remain mandatory. The next `rearm` first executes the **exact same
+two-operand remount** in an unshared namespace on the phone, and after
+replacing only the APFS Data clone, executes a **passive full-run
+admission check** (no Framework stop). Do not claim device confirmation
+until `SM8850_MOUNT_NAMESPACE_PROBE=PASS_NO_FRAMEWORK_STOP` and
+`FULL_TAKEOVER_ADMISSION=PASS_NO_FRAMEWORK_STOP` appear.
