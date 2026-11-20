@@ -373,6 +373,16 @@ mkdir launches/{token}
                 this_session = f"control/framework.launch={token}" in state
                 if this_session and "control/state=returned" in state and "launch_exit=" in state:
                     collected = collect(phone, output)
+                    if reboot_only:
+                        # A successful key-triggered reboot cannot return on
+                        # the same boot. Do not apply the in-place predicate
+                        # and then report the misleading generic failure.
+                        values = dict(line.split("=", 1) for line in state.splitlines() if "=" in line)
+                        print("REBOOT_SMOKE=SAME_BOOT_RETURNED_NO_KEY_REBOOT")
+                        print("TAKEOVER_MARKER=" + str(bool(values.get("control/framework.takeover-confirmed"))))
+                        print("RETURN_OUTCOME=" + values.get("outcome", "UNAVAILABLE"))
+                        print("See device-logs.tar / launches/*/switch.log for the earliest failure.")
+                        return 4
                     restored = collected and restored_on_same_boot(baseline, state, mode)
                     print("Device reported an in-place return. Review the archived evidence." if restored
                           else "Recovery or phase verification failed. See the archived evidence.")
@@ -380,6 +390,9 @@ mkdir launches/{token}
                 active = any(f"control/state={phase}" in state for phase in ("starting", "running", "returning"))
                 if re.search(r"^launch_exit=[1-9]", state, re.M) and (not this_session or not active):
                     collect(phone, output)
+                    if reboot_only:
+                        print("REBOOT_SMOKE=SWITCH_EXITED_BEFORE_VERIFIED_KEY_REBOOT")
+                        print("See device-logs.tar / launches/*/switch.log for the earliest failure.")
                     return 4
             except (subprocess.SubprocessError, OSError) as error:
                 timeline.write(f"ADB unavailable: {error}\n")
