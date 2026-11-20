@@ -1,6 +1,13 @@
-# SM8850 Framework takeover — physical status (2026-11-20)
+# Framework takeover · Galaxy S26 Ultra
 
-> **Status: guest boot/first frame observed; performance and independent recovery NOT accepted.** This page supersedes the pretrial 240-second/2D/in-place-return proposal that previously occupied this file. The live SM8850 path has changed substantially: it is a **600-second, GPU-auto/3D, 8-vCPU, 4-GiB RAM** root-only experiment with **mandatory reboot**, not an ordinary OneOS app switch.
+**OneiOS 27.0.1 · SM-S948B / m3q / SM8850 · physical run report**
+
+[← Documentation](README.md) · [Live evidence](SM8850_LIVE_STATUS_2026-11-20.md) · [Full-run procedure](SM8850_FULL_IOS_10MIN.md) · [Safety roadmap](TODO.md)
+
+> [!CAUTION]
+> **Guest boot and first frame observed; performance and recovery not accepted.**
+> The current root-only path is **8 vCPU · 4 GiB RAM · GPU auto/3D · 600-second reboot deadline**.
+> The device was very hot and the UI lagged badly. This is not an approved OneOS app switch.
 
 See the authoritative [2026-11-20 evidence ledger](SM8850_LIVE_STATUS_2026-11-20.md),
 the [full-run/staging procedure](SM8850_FULL_IOS_10MIN.md), and OneOS's
