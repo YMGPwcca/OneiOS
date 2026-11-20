@@ -1,5 +1,8 @@
 # GPU: virtio-gpu 3D on the phone's Adreno
 
+> [!IMPORTANT]
+> **2026-11-20 physical evidence supersedes early checkpoints below.** iOS 27.0.1 reached guest-ready/first frame during a ~600.6-second root-only Framework experiment; real drm2kgsl/KGSL contexts, imports, GPU blobs and a retired `backboardd` fence were **observed**. Older “only gpuctl ran”, “nothing booted”, or “3D never ran” comments are historical. Vulkan conformance, sustained animation FPS and thermal/recovery acceptance remain **NOT VERIFIED**. See [physical status](SM8850_LIVE_STATUS_2026-11-20.md) and [GPU triage](SM8850_IOS_INTERACTIVE_PERF_TRIAGE.md).
+
 
 **OneiOS · Galaxy S26 Ultra / SM8850 · Graphics and KGSL reference**
 
@@ -12,7 +15,7 @@ Owner: fable-gpu. Date: 2026-11-10. The Metal path of OneiOS, as Droid-VM runs i
 Metal plug-in runs Turnip, Turnip speaks the drm/msm protocol over virtio-gpu's DRM native context, and the host
 serves that protocol on `/dev/kgsl-3d0` with Droid-VM's `drm2kgsl`.
 
-**State, plainly.** The host side is written, builds for Android and passes its tests on the PC. On the phone only
+**Historical pre-full-run checkpoint (2026-11-11, superseded as a current status).** The host side is written, builds for Android and passes its tests on the PC. On the phone only
 `gpuctl` has run (2026-11-11, runtime 0.1.3, as root from the fork's Hardware checks): KGSL opened, the context and
 `GET_PARAM` worked, and the first buffer import failed with ENOMEM. The cause was found in Samsung's KGSL source and is
 fixed here (section 4.1); the fix has **not** run on the phone yet, `gpuctl` of the next runtime release shows whether
@@ -1107,7 +1110,7 @@ A set built from either lists its own two CDHashes in `owner-trust.json`; the pl
 under the other's trust list. `ios-sign.py` is not a cause: it writes what Apple's codesign writes (Turnip's dylib
 re-signed by both: the same bytes).
 
-**Not verified:** anything at run time. No guest has loaded the bundle: until `0031-gpu-addon-mount.patch` no kernel
+**Historical bundle-specific checkpoint, not a statement that current iOS never booted:** this exact Metal bundle had not yet been verified as loaded; at that time no guest had loaded the bundle: until `0031-gpu-addon-mount.patch` no kernel
 showed it to iOS (section 5.1), and that patch has compiled but not run. Whether dyld and AMFI of this guest accept the binaries, whether the
 writes above have the effect they have on the iPad, and whether MetalCheck passes are all open.
 

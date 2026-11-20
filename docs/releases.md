@@ -1,5 +1,8 @@
 # Releases
 
+> [!IMPORTANT]
+> **Current S26 Ultra branch:** `YMGPwcca/OneiOS` `feat/oneios-sm8850-m3q` runs local CachyOS CI first. Its `.github/workflows/release.yml` is **manual, self-hosted and runtime-only**; no APK, macOS job or automatic PR release. The `akshaynexus/*` release records and commands below belong to **historical upstream**, not this fork's SM8850 release flow.
+
 **OneiOS · Galaxy S26 Ultra / SM8850 · Runtime packages and release verification**
 
 [← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
@@ -9,8 +12,7 @@ Owner: release-kernel. Scripts: `runtime/package.sh`, `runtime/package/`, `.gith
 
 ## What a release is
 
-Up to two assets and their checksums on a GitHub release of `akshaynexus/OneiOS`, from one run of
-`.github/workflows/release.yml` (below, "CI and releases"):
+**Historical upstream release format** at `akshaynexus/OneiOS` (not the active S26 branch's artifact contract):
 
 ```
 oneios-runtime-<version>-arm64.tar.zst             the runtime package (this repository's code)
@@ -19,7 +21,7 @@ OneOS-oneios-<versionName>-debug.apk               the OneOS app: the fork (subm
 OneOS-oneios-<versionName>-debug.apk.sha256        one sha256sum line
 ```
 
-A tag push releases both. A dispatch can release the runtime only or the APK only; a release without the runtime is
+Historically a tag push released both, and dispatch could release runtime-only or APK-only; the current S26 workflow releases runtime-only. a release without the runtime is
 never marked latest, because the app's runtime download reads `releases/latest` and refuses a release that has no
 `oneios-runtime-*-arm64.tar.zst` (the fork's `OneiosReleases.parse`). The APK's names match none of the app's
 runtime patterns, so the app ignores them. The release notes name the OneiOS commit, the fork commit, the APK's
@@ -162,7 +164,7 @@ runtime/package.sh 0.1.7-dev                           # -> out/release/oneios-r
 
 ## How the OneOS fork consumes it
 
-1. Takes the latest release of `akshaynexus/OneiOS` (or a pinned tag), downloads the `.tar.zst` and the `.sha256`.
+1. **Historical app download:** obtained `akshaynexus/OneiOS` release `.tar.zst` and `.sha256`. The current SM8850 root-only lab path instead uses locally built, hash-verified artifacts and a fresh one-shot APFS Data clone; it is not an app-authorized switch.
 2. Checks the SHA-256 of the archive, unpacks it, and checks every file against `runtime.json` (size, SHA-256, mode);
    a file that is not listed, or a listed file that is missing, refuses the whole package.
 3. Stages it as `/data/local/tmp/oneios/runtime/` and starts `runtime.json`'s `xnuhost` with the command line of
@@ -260,7 +262,14 @@ the APK beside the runtime.
 
 Checked after the workflow ran: the asset's SHA-256 against its `.sha256`, `runtime.json` first, regular files only.
 
-## Cutting a release
+## Current S26 branch release boundary
+
+- Run native/Python tests and `JOBS=8 ./scripts/ci-local.sh all 0.0.0-ci` on CachyOS first.
+- The optional `.github/workflows/release.yml` is **manual-only**, uses the trusted self-hosted CachyOS runner and packages the ARM64 runtime without `app/` checkout or APK jobs.
+- No Apple image assets may be published. Neither a build PASS nor the historic 600.6-second guest run authorizes another full Framework takeover.
+- Publish only from a reviewed release decision; never copy historical upstream tags/commands into the S26 feature branch.
+
+## Historical upstream release commands — do not execute for SM8850
 
 ```sh
 git pull --rebase origin main
@@ -272,7 +281,7 @@ git tag -a v0.1.0 -m "OneiOS runtime 0.1.0" && git push origin v0.1.0
 gh workflow run release.yml --ref main -f version=0.1.0 -f build=both      # "runtime only", "apk only"
 ```
 
-The workflow does the rest: the runtime from this commit, the APK from the head of the fork's branch `oneios`
+Historically the upstream workflow built the runtime from that commit and an APK from the old `oneios` fork branch
 (not from the commit recorded for `app/`). Check the release page for the four files (two with "runtime only" or
 "apk only") and the commits in the notes, then tell the oneos agent the tag (`docs/agents.md`). To redo a broken
 release: delete the release and the tag, fix, tag again; never replace an asset under the same version once the

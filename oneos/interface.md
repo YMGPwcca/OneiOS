@@ -1,12 +1,13 @@
 # What the OneOS fork expects (session ABI 1)
 
+> [!CAUTION]
+> **Historical OneOS app ABI, NOT the current SM8850 Framework takeover contract.** The S26 Ultra uses a separate root-only stage `/data/adb/oneios-m3q-framework`, `bench/bridges=0`, mandatory reboot-return and strict device/risk gates. The normal OneOS app iOS switch stays **BLOCKED**. Use [the live evidence](../docs/SM8850_LIVE_STATUS_2026-11-20.md), [physical takeover](../docs/SM8850_FRAMEWORK_TAKEOVER.md) and [OneOS current contract](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-reboot-smoke/docs/oneios.md) instead.
+
 **OneiOS · SM8850 · Kernel / session interface**
 
 [← Handbook](../docs/README.md) · [Current evidence](../docs/SM8850_LIVE_STATUS_2026-11-20.md)
 
-Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`), and the
-submodule `app/` of this repository (`.gitmodules`: `branch = oneios`; CI builds the head of that branch, not the
-recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases").
+**Current companion:** `YMGPwcca/OneOS` on `feat/sm8850-reboot-smoke`, **pinned by the `app/` gitlink**. `git submodule sync -- app && git submodule update --init app` reproduces the recorded SHA. Never use `--remote` as part of local CI; the older upstream `akshaynexus/OneOS` branch `oneios` is not the active S26 Ultra dependency.
 Its side of this is `docs/oneios.md`, `switcher/assets/oneios_switch.sh`, `switcher/assets/oneios_return.sh`
 and `app-android/app/src/full/assets/root/oneios_root.sh` there.
 
@@ -15,7 +16,7 @@ Anything below that the booter, release-kernel or image-build cannot meet: chang
 
 ## 1. Runtime package (release-kernel packs it, booter's xnuhost is in it)
 
-- Release asset of `akshaynexus/OneiOS`: `oneios-runtime-<version>-arm64.tar.zst`, and next to it
+- **Historical upstream app ABI only:** release asset formerly at `akshaynexus/OneiOS` (not the current S26 research runtime release): `oneios-runtime-<version>-arm64.tar.zst`, and next to it
   `oneios-runtime-<version>-arm64.tar.zst.sha256` holding one `sha256sum` line (`<64 hex>  <file name>`).
   `<version>` is `[0-9A-Za-z][0-9A-Za-z._-]*`. The app takes the latest release, or a pinned tag.
   The app can also import the same `.tar.zst` from a file ("I have the file"), for builds before a release.

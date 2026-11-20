@@ -1,5 +1,8 @@
 # Building and testing OneiOS
 
+> [!IMPORTANT]
+> **Current S26 Ultra policy:** CachyOS local-first tests on `YMGPwcca/OneiOS` branch `feat/oneios-sm8850-m3q`; `app/` is the pinned `YMGPwcca/OneOS` commit from `feat/sm8850-reboot-smoke`. The release workflow is **manual, self-hosted and runtime-only**. Older `akshaynexus`, `oneios`, APK/macOS CI and main-tag sections below are **historical**, not instructions for this branch.
+
 
 **OneiOS · Galaxy S26 Ultra / SM8850 · Build and test reference**
 
@@ -564,9 +567,7 @@ so and fix or extend the CLI. **The CLI has not run on the real phone yet** (wri
 phone on a box without one, 2026-11-12): until its first run there, the commands of "The same by hand" below are
 the ones that were run, and `scripts/phone/stage.sh` stays.
 
-The app's checkout is the submodule `app/` (section 7): clone with `git clone --recurse-submodules`, and
-`git submodule update --remote app` brings it to the head of the fork's branch `oneios` before an `app` or `cycle`
-build.
+The `app/` checkout is a **pinned gitlink**, so use `git submodule sync -- app && git submodule update --init app` for the S26 Ultra regression suite. `--remote` floats to another revision and is not a reproducible CI operation.
 
 ```sh
 T=tools/oneios-tool/target/release/oneios-tool        # cargo build --release --manifest-path tools/oneios-tool/Cargo.toml
@@ -757,22 +758,18 @@ URLs are also in `logs/serve-urls.txt`; each tunnel's log is `logs/serve-tN.log`
 
 ### The checkout: the submodule `app/`
 
-The fork (`https://github.com/akshaynexus/OneOS`, branch `oneios`) is the submodule `app/` of this repository
-(`.gitmodules`: `branch = oneios`). Clone both at once, or add it to a checkout you have:
+The S26 Ultra companion is [YMGPwcca/OneOS](https://github.com/YMGPwcca/OneOS), branch `feat/sm8850-reboot-smoke`, at an **exact reviewed gitlink commit**. It is not the original upstream `akshaynexus/OneOS` branch `oneios`.
 
 ```sh
-git clone --recurse-submodules https://github.com/akshaynexus/OneiOS     # app/ at the commit OneiOS recorded
-git submodule update --init app            # an existing checkout: the same
-git submodule update --remote app          # app/ at the head of the fork's branch oneios (what CI builds)
-git -C app switch oneios                   # to work on the fork in app/: a branch instead of a detached head
+git clone --branch feat/oneios-sm8850-m3q --recurse-submodules https://github.com/YMGPwcca/OneiOS
+# Or within an existing S26 checkout:
+git pull --ff-only origin feat/oneios-sm8850-m3q
+git submodule sync -- app
+git submodule update --init app
+git submodule status app
 ```
 
-`--remote` moves only your `app/`; `git status` then shows `app` as modified. The commit OneiOS records for
-`app/` moves forward only in a commit made to pin it (`git commit -m "app: pin the fork at <sha>" --
-app`). CI does not use the recorded commit: every build takes the head of `oneios` (`git submodule update --init
---remote app`, [releases.md](releases.md) "CI and releases"). Nothing of OneiOS walks into `app/`:
-`git ls-files` (the CI checks, the host-test loop, `check-tracked-files.sh`) lists it as one entry, the runtime
-package takes `runtime/`, `kernel/` and `LICENSE` only, and the runtime job never checks it out.
+Avoid `git submodule update --remote app` during CI or phone preflight. Changing the OneOS dependency requires separately reviewing and committing the updated `app/` gitlink. The SM8850 OneiOS release workflow is runtime-only, not an APK build.
 
 With `oneios-tool` (first choice; **not used for a real build or install yet**: the Linux PC builds no app and has no
 JDK 21 or Android SDK, by the owner's decision, so the tool was tested there with stand-ins only):
@@ -792,14 +789,12 @@ OneiOS checkout (the submodule: the default); `app/` of the OneiOS main checkout
 `OneOS` beside the OneiOS main checkout (the clone from before the submodule). A checkout named by hand comes before
 `app/`, and a named folder that is no checkout is an error, not a reason to take `app/`. A checkout is a folder with
 `app-android/app/build.gradle.kts` and `switcher/assets/oneios_switch.sh`, whatever its name. An empty `app/` (the
-submodule is not initialised) is not one: the tool says so with the command, `git submodule update --init --remote app`,
+submodule is not initialised) is not one: the tool says so with the command, `git submodule update --init app`,
 and looks further; with nothing found it ends with status 1 and lists the places. Each command's first line says
 which checkout and how it was found; `$T app dir` prints the path alone. `cycle` (section 6) uses the same lookup.
 By hand, and what the tool runs:
 
-Repo `akshaynexus/OneOS`, branch `oneios`. Every OneiOS pull request, push to `main` and release builds the APK
-from the head of that branch (`./gradlew test assembleFullDebug`, and `./gradlew test` on macOS; the job `apk` of
-`.github/workflows/release.yml`, [releases.md](releases.md)). A push to `oneios` itself runs the fork's own
+**Historical upstream APK CI only:** former `akshaynexus/OneOS` branch `oneios` built app APKs with Gradle. The S26 Ultra OneiOS release workflow packages **only the ARM64 runtime** and never checks out `app/`. A push to `oneios` itself runs the fork's own
 `.github/workflows/oneios-apk.yml`: it builds the full debug APK (the workflow's own `GITHUB_TOKEN` reads the SESL
 packages), runs the unit tests and publishes the prerelease `oneios-<version>` on the fork (0.4.75 is the first
 with the Hardware checks screen). Locally: a `read:packages` token in `~/.config/twidget/github.properties`
@@ -807,10 +802,7 @@ with the Hardware checks screen). Locally: a `read:packages` token in `~/.config
 
 ## 8. Releases
 
-A tag `vN.N.N` on `main` (or a dispatch with a version) runs `.github/workflows/release.yml`, which builds the
-runtime package with the pinned NDK and the fork's APK (submodule `app/`, the head of `oneios`) on two runners at
-once, and attaches both with their `.sha256` to the release. No kernel, no image, no package set. See
-[releases.md](releases.md).
+**Current S26 feature-branch scope:** `.github/workflows/release.yml` runs **manually** on the trusted self-hosted CachyOS runner, packages the ARM64 runtime only, and does **not** publish an APK. Historical upstream tags and commands here are not release instructions; see [releases.md](releases.md).
 The first release is [`v0.1.0`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.0) (2026-11-10).
 
 ## 9. iOS user-space code (executables, dylibs, bundles): Xcode on macOS, a cross toolchain on Linux
