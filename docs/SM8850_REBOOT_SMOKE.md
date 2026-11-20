@@ -185,6 +185,51 @@ Resolve the exact firmware's watchdog owner and a provable handback
 contract before any further reboot-smoke. The previously PASS local
 fixtures do not simulate a kernel's real exclusive-open semantics.
 
+### Measured sole holder and possible no-reopen transfer
+
+The subsequent native single-process scan on the live One UI boot
+`71545c10-23d6-459c-896f-73f0801f851e` completed in 64 ms:
+
+```text
+holder=21964 comm=system_server fd=121 target=/dev/watchdog rdev=a:82
+WATCHDOG_FDS=1
+FD_DIRECTORIES_SCANNED=1109
+FD_LINKS_SCANNED=31209
+FD_DIR_PERMISSION_ERRORS=0
+SCAN_COVERAGE=COMPLETE_FOR_VISIBLE_PROCESSES
+```
+
+This rules out a second **visible userspace FD owner in that snapshot**.
+It does not establish which process or internal kernel state caused the
+`EBUSY` after stopping Framework. Linux watchdog core implements an
+exclusive-open gate and normally clears it on the file's final release.
+Simply retrying the same `printf V > /dev/watchdog` races with that
+gate and is not a verified watchdog handback.
+
+A candidate no-reopen architecture is to duplicate the *existing open
+file description* through Linux `pidfd_getfd()` **before**
+terminating system_server, and transfer the reference to a dedicated
+native supervisor. This is only a hypothesis, not implemented, because
+the ptrace access check may be denied by Android SELinux/permissions
+and the Samsung watchdog must be independently qualified.
+
+The safe first capability probe is:
+
+```sh
+bash scripts/phone/sm8850-pidfd-capability.sh R5GL64LZ9HA
+```
+
+This probe selects only a pre-existing `/dev/null` descriptor held by
+`system_server`, verifies major:minor `1:3`, duplicates that harmless
+FD, and closes it without I/O. It **never duplicates FD 121**, opens
+a watchdog, or stops Android Framework. Possible results:
+`SUPPORTED_BENIGN_FD_ONLY`, `BLOCKED_GETFD`, `BLOCKED_PIDFD_OPEN`,
+`NO_BENIGN_FD`, or `BLOCKED_TARGET_NOT_SYSTEM_SERVER`.
+Even `SUPPORTED_BENIGN_FD_ONLY` proves *only permission for a benign
+descriptor at this moment*. It does not authorize using a watchdog
+descriptor or running another live smoke. If blocked, investigate
+kernel/SELinux constraints rather than bypassing them.
+
 ## Not yet enabled
 
 Do not infer full iOS boot approval from a reboot-only smoke. The normal
