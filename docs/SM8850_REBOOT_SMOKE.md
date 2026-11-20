@@ -307,3 +307,19 @@ Do not infer full iOS boot approval from a reboot-only smoke. The normal
 `--recovery-smoke` (in-place return) and `--run` continue to require
 their independent watchdog qualification, prepared APFS snapshot,
 and recovery acceptance. No app-side S26 iOS Switch permission is changed.
+
+
+## Separate full iOS 27 takeover experiment (not a repeat smoke)
+
+The 20-second Framework-only reboot smoke already has physical evidence;
+**do not rerun it** merely to unlock guest admission. The separate
+full iOS 27 experimental path is documented in
+[SM8850_FULL_IOS_10MIN.md](SM8850_FULL_IOS_10MIN.md).
+It stages the locally built GPU-3D/SHM xnuhost, touch-exclusive input,
+8 vCPUs, 4 GiB RAM and a fresh root-owned APFS Data clone. With
+a **separate explicit legacy-watchdog risk acknowledgement**, the device
+may perform full Framework takeover and start iOS; its independent guard
+requires reboot after 600 seconds from verified Framework stop, or earlier
+on failure. This is not a qualified native-watchdog handback and does not
+certify unassisted normal One UI reboot. No Volume Up+Down key test while
+USB is attached.
