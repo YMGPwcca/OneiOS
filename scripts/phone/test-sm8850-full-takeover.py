@@ -37,7 +37,14 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('SM8850_PREVIOUS_REBOOT_SMOKE=VERIFIED_DEADLINE_REQUEST_ONLY', source)
         self.assertIn('the attested 3D, 8-vCPU, 600s guest stage was not finalized', source)
         self.assertIn('reboot-deadline-or-manual*"who=framework-deadline"', source)
-        self.assertIn('the staged one-shot APFS Data clone has already been consumed', source)
+        self.assertTrue(
+            'isolated APFS Data clone was already consumed' in source,
+            'OneOS must reject a previously consumed isolated APFS Data clone',
+        )
+        self.assertIn('APFS_DATA_CLONE=CONSUMED_ONE_SHOT_BEFORE_FRAMEWORK_STOP', source)
+        self.assertIn('host_allowed=$(awk', source)
+        self.assertIn('/proc/$/status)', source)
+        self.assertNotIn('/proc/$/status)', source)
 
     def test_reboot_return_is_still_native_oneos_without_inplace_handback(self):
         switch = ONEOS_SWITCH.read_text()
