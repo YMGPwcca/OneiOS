@@ -265,6 +265,23 @@ control/framework.result=smoke complete
             )
             upload.assert_not_called()
 
+    def test_rootless_post_reboot_diagnostic_uses_only_adb_shell(self):
+        phone = unittest.mock.Mock()
+        phone.call.return_value = subprocess.CompletedProcess(
+            [], 0,
+            b"boot=new-boot\\nboot_completed=1\\n"
+            b"boot_reason=reboot,watchdog\\n"
+            b"system_boot_reason=reboot,watchdog\\nzygote=running\\n",
+        )
+        values, raw = TAKEOVER.post_reboot_without_root(phone)
+        self.assertEqual("new-boot", values["boot"])
+        self.assertEqual("reboot,watchdog", values["boot_reason"])
+        self.assertIn("boot_completed=1", raw)
+        self.assertEqual(["shell", "-T"], phone.call.call_args.args[0][:2])
+        self.assertNotIn("su ", phone.call.call_args.args[0][2])
+        self.assertNotIn("reboot ", phone.call.call_args.args[0][2])
+        phone.root.assert_not_called()
+
     def test_full_takeover_deadline_receipt_not_unassisted_boot_proof(self):
         baseline = "boot=old\n"
         after = (
