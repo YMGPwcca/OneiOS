@@ -54,7 +54,7 @@ cleanup() {
     if command -v wl-copy >/dev/null 2>&1; then
         wl-copy --type text/plain < "$LOG" || :
         if command -v wl-paste >/dev/null 2>&1 &&
-           wl-paste --no-newline --type text/plain | cmp -s "$LOG" -; then
+           wl-paste --type text/plain | cmp -s "$LOG" -; then
             echo "CLIPBOARD=VERIFIED"
         else
             echo "CLIPBOARD=NOT_VERIFIED"
@@ -74,6 +74,12 @@ trap cleanup EXIT
   "$ADB" -s "$serial" shell getprop ro.product.model
   "$ADB" -s "$serial" shell getprop ro.build.version.incremental
   if [ "$mode" = prepare ]; then
+    echo "===== LOCAL REGRESSION (NO PHONE FRAMEWORK STOP) ====="
+    python3 scripts/phone/test-sm8850-takeover.py -v
+    python3 scripts/phone/test-sm8850-full-takeover.py -v
+    python3 scripts/phone/test-sm8850-oneos-legacy-feeder.py -v
+    python3 scripts/phone/test-sm8850-stage-upgrade.py -v
+
     echo "===== BUILD CURRENT 3D XNUHOST AND DISPLAY USING ALL LOCAL CPU CORES ====="
     jobs=$(nproc)
     echo "LOCAL_BUILD_JOBS=$jobs"
@@ -95,12 +101,6 @@ valid = mod.manifest_bytes(Path(sys.argv[1]))
 Path(sys.argv[1]).write_bytes(valid)
 print(f"IMAGE_MANIFEST=VERIFIED_ENTRIES:{len(valid.splitlines())}")
 PY
-
-    echo "===== LOCAL REGRESSION (NO PHONE FRAMEWORK STOP) ====="
-    python3 scripts/phone/test-sm8850-takeover.py -v
-    python3 scripts/phone/test-sm8850-full-takeover.py -v
-    python3 scripts/phone/test-sm8850-oneos-legacy-feeder.py -v
-    python3 scripts/phone/test-sm8850-stage-upgrade.py -v
 
     echo "===== SAFE STAGE CHECK AND ROLLBACK-BACKED UPGRADE ====="
     python3 scripts/phone/sm8850-takeover.py \
