@@ -57,7 +57,7 @@ class TakeoverTest(unittest.TestCase):
             phone.root.return_value = subprocess.CompletedProcess([], 0, b"PREFLIGHT OK\n")
             self.assertEqual(0, TAKEOVER.reboot_stage_check(phone, Path(folder)))
             audit.assert_called_once_with(phone, Path(folder) / "preflight.txt", reboot_only=True)
-            upload.assert_called_once_with(phone, "install")
+            upload.assert_called_once_with(phone, "upgrade")
             self.assertIn("--framework-check reboot-smoke", phone.root.call_args.args[0])
             self.assertEqual("PREFLIGHT OK\n", (Path(folder) / "stage-check.txt").read_text())
 
