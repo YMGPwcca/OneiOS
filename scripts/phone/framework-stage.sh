@@ -159,6 +159,9 @@ if [ "$operation" = rearm-data ]; then
     mkdir -m 700 "$incoming/mount-source" "$incoming/mount-target" ||
         fail "cannot create mount namespace probe"
     mkdir -p "$incoming/mount-source/data" "$incoming/mount-source/session/tmp" "$incoming/mount-source/control"
+    # BusyBox on this Samsung failed a single-operand remount even for a
+    # directory bind; use SOURCE+TARGET as in the live guest --inner path.
+    # The probe must run in an unshared namespace while One UI is running.
     if ! "$bb_probe" unshare -m /system/bin/sh -s -- "$incoming/mount-source" "$incoming/mount-target" "$bb_probe" <<'ONEIOS_MOUNT_PROBE'
 set -eu
 src=$1 dst=$2 bb=$3
@@ -167,7 +170,7 @@ src=$1 dst=$2 bb=$3
 for d in data session; do
     "$bb" mount --bind "$dst/$d" "$dst/$d"
 done
-"$bb" mount -o remount,bind,ro "$dst"
+"$bb" mount -o remount,bind,ro "$dst" "$dst"
 if true 2>/dev/null > "$dst/.unexpected-write"; then exit 12; fi
 if true 2>/dev/null > "$dst/control/.unexpected-write"; then exit 13; fi
 for writable in "$dst/data" "$dst/session/tmp"; do
