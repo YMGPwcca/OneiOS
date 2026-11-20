@@ -1,5 +1,9 @@
 # Guest helpers
 
+**OneiOS · SM8850 · iOS userland integration**
+
+[← Handbook](../../docs/README.md) · [Current status](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Small programs of ours that run inside the iOS guest. Source only; built by `build.sh` with the toolchain of
 `scripts/ios` (docs/building.md section 9): Xcode's clang, ld and iPhoneOS SDK on macOS, the cross toolchain on
 Linux, linked against the guest's iOS 27 stubs and signed by `scripts/ios/ios-sign.py`. Built on the Mac
