@@ -4,6 +4,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -36,6 +37,52 @@ class TakeoverTest(unittest.TestCase):
             self.assertEqual(1, device.root.call_count)
             self.assertEqual("/system/bin/sh -s -- --framework-audit", device.root.call_args.args[0])
             self.assertEqual("BLOCKED: watchdog\n", (Path(folder) / "preflight.txt").read_text())
+
+    def test_readiness_reports_blockers_without_phone_modifications(self):
+        baseline = ("boot=abc\nzygote=running pid=12\nsystem_server=30\n"
+                    "SELinux=Enforcing\nimage_ready=0\nsmoke_current_boot=0\n"
+                    "framework_app_cgroup_draining=blocked\n")
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(TAKEOVER, "upload", side_effect=AssertionError("no upload")), \
+                 patch.object(TAKEOVER, "launch", side_effect=AssertionError("no launch")), \
+                 patch.object(TAKEOVER, "status", return_value=baseline), \
+                 patch("builtins.print"):
+                phone = unittest.mock.Mock()
+                phone.root.return_value = subprocess.CompletedProcess(
+                    [], 1, b"BLOCKED: watchdog\n")
+                self.assertEqual(0, TAKEOVER.readiness(phone, Path(folder)))
+                self.assertEqual(1, phone.root.call_count)
+                self.assertEqual("/system/bin/sh -s -- --framework-audit",
+                                 phone.root.call_args.args[0])
+                report = json.loads((Path(folder) / "readiness.json").read_text())
+                self.assertEqual("SM8850_TAKEOVER_GATE0", report["phase"])
+                self.assertFalse(report["live_takeover_authorized"])
+                self.assertEqual(1, report["audit_exit_code"])
+                self.assertIn("BLOCKED: watchdog", report["blockers"])
+                self.assertIn("Independent takeover image/Data stage not finalized",
+                              report["blockers"])
+                self.assertIn("No verified recovery smoke accepted on the current boot",
+                              report["blockers"])
+                self.assertIn("At least one Android app cgroup cannot be drained by the current script",
+                              report["blockers"])
+
+    def test_readiness_pass_does_not_approve_live_takeover(self):
+        healthy = ("zygote=running pid=123\nsystem_server=456\nSELinux=Enforcing\n"
+                   "image_ready=1\nsmoke_current_boot=1\n")
+        report = TAKEOVER.interpret_readiness(0, "framework target: ok\n", healthy)
+        self.assertTrue(report["audit_pass"])
+        self.assertEqual([], report["blockers"])
+        self.assertFalse(report["live_takeover_authorized"])
+
+    def test_readiness_cli_needs_no_confirm_and_never_launches(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(TAKEOVER, "Phone") as phone, \
+                 patch.object(TAKEOVER, "readiness", return_value=0) as readiness, \
+                 patch.object(TAKEOVER, "launch", side_effect=AssertionError("no launch")), \
+                 patch("sys.argv", ["sm8850-takeover.py", "--readiness", "--output", str(Path(folder) / "readiness")]):
+                self.assertEqual(0, TAKEOVER.main())
+                phone.assert_called_once()
+                readiness.assert_called_once_with(phone.return_value, Path(folder) / "readiness")
 
     def test_return_checks_boot_pids_map_limit_and_phase_result(self):
         baseline = """boot=42

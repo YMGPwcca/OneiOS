@@ -1,5 +1,16 @@
 # SM8850 Framework takeover test
 
+> **Gate 0 status (2026-11-20): NOT CLEARED.** Use the
+> [read-only takeover/return readiness gate](SM8850_TAKEOVER_RETURN_GATE0.md)
+> before any disruptive experiment. The watchdog device-to-driver mapping,
+> timeout and first-framework-ping handback are not yet qualified, and
+> the prior S26 app-cgroup drain and independent snapshot storage gates
+> remain unresolved. The examples below describe a future, separately
+> authorized procedure; do **not** invoke `--recovery-smoke --confirm`
+> or `--run --confirm` as a shortcut. The current legacy full-run path
+> still uses GPU 2D, not the validated interactive GPU 3D benchmark.
+
+
 The lab profile is scoped to the Samsung SM-S948B, m3q, SM8850, fingerprint
 `samsung/m3qxxx/m3q:17/CP2A.260605.016/S948BXXS4BZIG_OXM4BZIG:user/release-keys`,
 and kernel `6.12.69-android16-6-pb4d3caf-abogkiS948BXXS4BZIG-4k`. It runs over

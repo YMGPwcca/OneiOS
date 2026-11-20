@@ -3,6 +3,7 @@
 
 import argparse
 import io
+import json
 import os
 from pathlib import Path
 import re
@@ -47,6 +48,18 @@ done
 echo "system_server=$(pidof system_server)"
 echo "SELinux=$(getenforce)"
 echo "vm.max_map_count=$(cat /proc/sys/vm/max_map_count)"
+if [ -f "$stage/smoke.accepted" ] && [ "$(cat "$stage/smoke.accepted")" = "$(cat /proc/sys/kernel/random/boot_id)" ]; then
+    echo "smoke_current_boot=1"
+else
+    echo "smoke_current_boot=0"
+fi
+for group in /sys/fs/cgroup/apps/uid_*; do
+    [ -d "$group" ] || continue
+    if [ ! -r "$group/cgroup.events" ] || [ ! -w "$group/cgroup.kill" ]; then
+        echo "framework_app_cgroup_draining=blocked"
+        break
+    fi
+done
 grep -E '^(MemAvailable|SwapFree):' /proc/meminfo
 """
 
@@ -189,6 +202,65 @@ done
     return result.returncode == 0 and diagnostic.returncode == 0
 
 
+def interpret_readiness(audit_rc, audit_log, details):
+    """Strictly diagnostic: audit never authorizes a live Framework stop."""
+    values = dict(line.split("=", 1) for line in details.splitlines() if "=" in line)
+    blockers = []
+    if audit_rc != 0:
+        reasons = [line for line in audit_log.splitlines()
+                   if line.startswith(("BLOCKED:", "PREFLIGHT REFUSED:"))]
+        blockers.extend(reasons or [f"Framework audit failed, rc={audit_rc}; see audit.txt"])
+    if not values.get("zygote", "").startswith("running pid=") or not values.get("system_server", "").isdecimal():
+        blockers.append("Android Framework is not healthy on the inspected boot")
+    if values.get("SELinux") != "Enforcing":
+        blockers.append("SELinux is not Enforcing")
+    if values.get("framework_app_cgroup_draining") == "blocked":
+        blockers.append("At least one Android app cgroup cannot be drained by the current script")
+    if values.get("image_ready") != "1":
+        blockers.append("Independent takeover image/Data stage not finalized")
+    if values.get("smoke_current_boot") != "1":
+        blockers.append("No verified recovery smoke accepted on the current boot")
+    # A passing passive audit cannot verify physical handback or justify
+    # mutating system_server. The operator must independently accept watchdog,
+    # recovery, and return gates for this exact firmware and boot.
+    return {
+        "phase": "SM8850_TAKEOVER_GATE0",
+        "scope": "READ_ONLY_NO_FRAMEWORK_STOP_NO_WATCHDOG_OPEN",
+        "audit_exit_code": audit_rc,
+        "audit_pass": audit_rc == 0,
+        "status": values,
+        "blockers": blockers,
+        "live_takeover_authorized": False,
+        "next_gate": "Independent physical watchdog/return qualification, stage, and smoke acceptance",
+    }
+
+
+def readiness(phone, output):
+    """Passive root metadata/audit only. Never calls upload, launch or return."""
+    result = phone.root("/system/bin/sh -s -- --framework-audit",
+                        input=(ASSETS / "oneios_switch.sh").read_bytes(),
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=25)
+    audit_log = result.stdout.decode(errors="replace")
+    (output / "audit.txt").write_text(audit_log)
+    try:
+        details = status(phone)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        details = "status_error=" + str(error) + "\n"
+    (output / "status.txt").write_text(details)
+    report = interpret_readiness(result.returncode, audit_log, details)
+    (output / "readiness.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+    print("READINESS_MODE=READ_ONLY")
+    print("FRAMEWORK_AUDIT=" + ("PASS" if report["audit_pass"] else "BLOCKED"))
+    print("LIVE_TAKEOVER_AUTHORIZED=NO")
+    for why in report["blockers"]:
+        print("BLOCKER=" + why)
+    if not report["blockers"]:
+        print("NEXT_GATE=Independent watchdog and physical return review still required")
+    print("READINESS_REPORT=" + str(output / "readiness.json"))
+    print("READINESS_AUDIT=" + str(output / "audit.txt"))
+    return 0  # Captured a diagnostic, not a permission or live success.
+
+
 def restored_on_same_boot(baseline, after, mode):
     before = dict(line.split("=", 1) for line in baseline.splitlines() if "=" in line)
     now = dict(line.split("=", 1) for line in after.splitlines() if "=" in line)
@@ -266,7 +338,7 @@ mkdir launches/{token}
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for mode in ("dry-run", "recovery-smoke", "run", "return", "status", "storage-probe", "prepare", "collect"):
+    for mode in ("dry-run", "readiness", "recovery-smoke", "run", "return", "status", "storage-probe", "prepare", "collect"):
         modes.add_argument(f"--{mode}", dest="mode", action="store_const", const=mode)
     parser.add_argument("--confirm", action="store_true", help="Explicitly opt in to the requested device changes")
     parser.add_argument("--serial", help="ADB USB serial. Defaults to the sole authorized USB device.")
@@ -304,6 +376,8 @@ def main():
     else:
         output.mkdir(parents=True, mode=0o700)
     print(f"Local evidence: {output}", flush=True)
+    if args.mode == "readiness":
+        return readiness(phone, output)
     if args.mode == "collect":
         return 0 if collect(phone, output) else 4
     return launch(phone, "smoke" if args.mode == "recovery-smoke" else "run", output)
