@@ -1,5 +1,9 @@
 # oneios-tool: OneiOS's host tools in Rust
 
+**OneiOS · SM8850 · Runtime engineering**
+
+[← Handbook](../../docs/README.md) · [Physical status](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 One binary, `oneios-tool`, with a subcommand per tool. Each tool that replaces a Python script is compared with that
 script before it may replace it; the commands and the results are below. What is left: [todo_rust.md](todo_rust.md).
 
@@ -63,7 +67,7 @@ $N/llvm-strip -o oneios-tool-android tools/oneios-tool/target/aarch64-linux-andr
 
 It built in 26 s on the Mac (13.9 MB stripped, a PIE for `/system/bin/linker64`). One change was needed:
 `oneios-image`'s in-kernel copy calls the `copy_file_range` system call itself, because the libc crate has no wrapper
-for Android. Run as root on the S24 Ultra, on the staged files of `/data/local/tmp/oneios` (One UI up, no session):
+for Android. Run as root on the earlier reference device, on the staged files of `/data/local/tmp/oneios` (One UI up, no session):
 `ioslog boots data/data.img` 3.1 s, `ioslog show data/data.img --boot last -o FILE` 4.0 s (540,553 entries),
 `image apfs-ls image/os.img /` 0.07 s. Not run on the phone yet: `prelink`, `remotezip`, `image apfs-copy`, the
 `package` check. Not built in CI or released yet.
@@ -1238,7 +1242,7 @@ and the 7 unit tests on synthetic log text.
 ## phone
 
 `oneios-tool phone [--serial S] CMD`: the phone on adb. Written against a stand-in (`tests/phone/fake-adb.sh`);
-**run on the real phone on 2026-11-12** (the Mac, SM-S928B): `status`, `stage runtime` (runtime 0.1.7 from the
+**run on the real phone on 2026-11-12** (the Mac, original non-SM8850 model): `status`, `stage runtime` (runtime 0.1.7 from the
 release's asset), `stage image`, `sums`, `image-check`, `switch`, `log --follow --markers`, `log --list`, `log --file`.
 `return` has not run on it yet. `pull-data` ran there on 2026-11-13 over wireless adb as the first port's one
 gzip stream and broke twice (below, "The copy that goes on"); the copy in chunks that replaced it **has not run
