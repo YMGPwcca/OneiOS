@@ -1,5 +1,33 @@
 # SM8850 full iOS 27 takeover: 8 vCPU, GPU 3D, 10-minute reboot deadline
 
+## Recorded result: 2026-11-20 physical full run (not a rerun authorization)
+
+**Observed:** the repaired on-device namespace probe and APFS Data-only rearm passed;
+the next full Framework takeover reached the real guest's ready marker and first
+displayed frame, with 8 host CPUs **allowed** (not independently pinned) and live
+Adreno/KGSL 3D fence/import traffic. The final `xnuhost` counters say **600.6 s
+since host process start**. After reboot Android reported `sys.boot_completed=1`
+and `reboot,oneios-sm8850-reboot-return`, while DirtyFrag root had disappeared.
+The host exited `4` for **missing root-owned post-return proof**, not because
+the iOS guest failed to start.
+
+**Not accepted:** severe lag, a very hot device, no independent case/SoC
+temperature trace, no demonstrated 60 Hz UI, no verified precise deadline
+requester or unassisted normal One UI recovery. The full-run `bench/bridges=0`
+path **does not start OneiOS's thermal bridge or usual CPU placement bridge**;
+kernel/firmware thermal limits still exist. The original legacy watchdog is
+still `UNVERIFIED_REBOOT_ONLY`; GPU-auto may fall back in a future run even
+though KGSL 3D was observed in this one.
+
+**Current decision: do not repeat the destructive 600-second run while hot or
+before a separate thermal guard and recovery evidence gate.** The consumed
+Data clone must never be reused. Follow the
+[physical evidence ledger + P0–P3 blockers](SM8850_LIVE_STATUS_2026-11-20.md).
+The commands below document the tested mechanism and previous staging
+procedure, **not a recommendation to execute it again now**.
+
+
+
 **Target only:** Samsung SM-S948B / m3q / SM8850, firmware
 `S948BXXS4BZIG`, Android SELinux Enforcing, KernelSU root, USB ADB.
 
