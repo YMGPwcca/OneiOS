@@ -365,7 +365,7 @@ mkdir launches/{token}
     print(f"Framework {session_mode} requested. Recovery runs on the device.", flush=True)
     if reboot_only:
         print("PHYSICAL_KEYS=DO_NOT_PRESS_YET", flush=True)
-        print("Wait for TAKEOVER_CONFIRMED=YES and PHYSICAL_KEYS=PRESS_NOW.", flush=True)
+        print("Wait for the explicit two-line readiness signal before pressing the keys.", flush=True)
         print("Pressing Volume Up + Down before the confirmation CANCELS the takeover.", flush=True)
     end = time.monotonic() + 1000
     reboot_seen = None
