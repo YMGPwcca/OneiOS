@@ -1,5 +1,12 @@
 # SM8850 GPU bench: first preboot block and exact-error retry
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Prior GPU bench failure and retry**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This page is earlier device evidence or an experimental design record. Compare with the [latest physical status](SM8850_LIVE_STATUS_2026-11-20.md); do not infer current safety or performance from a historical PASS.
+
 The first hardware guest runner (`eaeb9c3`) could report `blocked:2` before starting
 `xnuhost`: it incorrectly required `image/kernel.kc.trustcache`. But xnuhost's
 `sidecar("trustcache")` is optional. When no sidecar is present and the
