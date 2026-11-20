@@ -37,6 +37,7 @@ REQUIRED = {
 }
 STATUS = f"""stage={STAGE}
 echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
+echo "boot_completed=$(getprop sys.boot_completed)"
 for name in boot state framework.mode framework.return framework.takeover-confirmed framework.launch framework.deadline framework.result watchdog.phase; do
     if [ -f "$stage/control/$name" ]; then printf 'control/%s=' "$name"; cat "$stage/control/$name"; fi
 done
@@ -284,6 +285,7 @@ def reboot_smoke_verified(baseline, after):
     now = dict(line.split("=", 1) for line in after.splitlines() if "=" in line)
     return (
         bool(before.get("boot")) and bool(now.get("boot")) and now["boot"] != before["boot"]
+        and now.get("boot_completed") == "1"
         and now.get("control/framework.mode") == "smoke"
         and now.get("control/framework.return") == "reboot"
         and bool(now.get("control/framework.takeover-confirmed"))
@@ -325,6 +327,7 @@ mkdir launches/{token}
         return 2
     print(f"Framework {session_mode} requested. Recovery runs on the device.", flush=True)
     end = time.monotonic() + 1000
+    reboot_seen = None
     with (output / "timeline.txt").open("w") as timeline:
         while time.monotonic() < end:
             try:
@@ -332,13 +335,23 @@ mkdir launches/{token}
                 timeline.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n{state}\n")
                 timeline.flush()
                 current_boot = re.search(r"^boot=(.+)$", state, re.M).group(1)
+                if reboot_only and current_boot != boot:
+                    # Do not fail early when the phone has rebooted but
+                    # boot_completed/zygote_next/system_server are still starting.
+                    if reboot_smoke_verified(baseline, state):
+                        collect(phone, output)
+                        print("REBOOT_SMOKE=PASS_PHYSICAL_KEY_AND_ONEUI")
+                        return 0
+                    if reboot_seen is None:
+                        reboot_seen = time.monotonic()
+                    if time.monotonic() - reboot_seen >= 120:
+                        collect(phone, output)
+                        print("REBOOT_SMOKE=INCOMPLETE_OR_AUTOMATIC_REBOOT")
+                        return 4
+                    time.sleep(2)
+                    continue
                 if current_boot != boot and "zygote=running" in state:
                     collect(phone, output)
-                    if reboot_only:
-                        verified = reboot_smoke_verified(baseline, state)
-                        print("REBOOT_SMOKE=" + ("PASS_PHYSICAL_KEY_AND_ONEUI" if verified
-                              else "INCOMPLETE_OR_AUTOMATIC_REBOOT"))
-                        return 0 if verified else 4
                     print("Device rebooted during recovery. See the archived evidence.", file=sys.stderr)
                     return 4
                 this_session = f"control/framework.launch={token}" in state
