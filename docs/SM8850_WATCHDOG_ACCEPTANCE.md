@@ -1,5 +1,13 @@
 # SM8850 watchdog attribution and recovery acceptance
 
+
+**OneiOS · Galaxy S26 Ultra / SM8850 · Watchdog provenance research**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> **Historical research.** This document records earlier source/diagnostic decisions, not current SM8850 runtime admission. Live guest boot, performance and safety conclusions belong to the [physical status ledger](SM8850_LIVE_STATUS_2026-11-20.md).
+
 > **2026-11-20 status reconciliation:** the "no handoff was attempted" and
 > blocked entries below are historical Phase 4A passive findings. The
 > *separate*, explicitly risk-acknowledged root-only SM8850 profile has
@@ -66,7 +74,7 @@ The official source center returned HTTP 403 on model and build searches.
 Public repository searches for the build and Samsung m3q/SM8850 kernel tree
 did not yield a matching source release. The firmware catalogs confirm binary
 firmware provenance only. There was no exact source archive in the local
-inventory. Generic Linux, Qualcomm trees and the SM8650 reference explain
+inventory. Generic Linux, Qualcomm trees and the earlier reference SoC reference explain
 possible semantics without establishing this firmware's implementation.
 [Samsung source search by build](https://opensource.samsung.com/uploadSearch?searchValue=S948BXXS4BZIG) ·
 [Prior source and implementation review](../app/docs/oneios-watchdog-recovery.md)
