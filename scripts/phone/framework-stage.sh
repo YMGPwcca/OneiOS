@@ -147,6 +147,39 @@ fi
 # Refuse rearming if the consumed Data differs from the original seed.
 if [ "$operation" = rearm-data ]; then
     install_stage
+    # One physical failure was specifically Android BusyBox refusing a
+    # single-file remount. Verify the REPLACEMENT directory-bind strategy
+    # using the phone's own BusyBox, F2FS and isolated mount namespace,
+    # while One UI and its Framework are healthy. No global mount changes.
+    bb_probe=
+    for candidate in /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox /data/adb/magisk/busybox; do
+        [ ! -x "$candidate" ] || { bb_probe=$candidate; break; }
+    done
+    [ -n "$bb_probe" ] || fail "root manager BusyBox missing for isolated mount probe"
+    mkdir -m 700 "$incoming/mount-source" "$incoming/mount-target" ||
+        fail "cannot create mount namespace probe"
+    mkdir -p "$incoming/mount-source/data" "$incoming/mount-source/session/tmp" "$incoming/mount-source/control"
+    if ! "$bb_probe" unshare -m /system/bin/sh -s -- "$incoming/mount-source" "$incoming/mount-target" "$bb_probe" <<'ONEIOS_MOUNT_PROBE'
+set -eu
+src=$1 dst=$2 bb=$3
+"$bb" mount --make-rprivate /
+"$bb" mount --bind "$src" "$dst"
+for d in data session; do
+    "$bb" mount --bind "$dst/$d" "$dst/$d"
+done
+"$bb" mount -o remount,bind,ro "$dst"
+if true 2>/dev/null > "$dst/.unexpected-write"; then exit 12; fi
+if true 2>/dev/null > "$dst/control/.unexpected-write"; then exit 13; fi
+for writable in "$dst/data" "$dst/session/tmp"; do
+    p="$writable/.probe-write.$"
+    (set -C; true 2>/dev/null > "$p") || exit 14
+    rm -f "$p" || exit 15
+done
+ONEIOS_MOUNT_PROBE
+    then
+        fail "Android BusyBox cannot create read-only guest stage and writable Data/session mounts"
+    fi
+    echo "SM8850_MOUNT_NAMESPACE_PROBE=PASS_NO_FRAMEWORK_STOP"
     [ "$(cat "$stage/image.ready" 2>/dev/null)" = sm8850-ios27-3d-8cpu-600s ] &&
         [ "$(sed -n 's/^xnuhost=//p' "$stage/runtime.conf" 2>/dev/null)" = bin/xnuhost ] ||
         fail "prepared 3D image/runtime stage was not verified"
