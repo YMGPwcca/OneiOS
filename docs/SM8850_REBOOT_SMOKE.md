@@ -123,6 +123,57 @@ scripts. Preserve its evidence and do not delete its files or bypass its
 existing-content check to force an update. Only carry out an explicit,
 verified no-active-session stage-upgrade procedure after root-cause review.
 
+## Physical reboot incident: 2026-11-20, 10:54 local
+
+**Physical outcome: reboot into One UI, but NO verified Framework takeover
+and NO physical-key-reboot acceptance. The current legacy feeder contract
+is not qualified for another live attempt.**
+
+On SM-S948B firmware S948BXXS4BZIG, this smoke entered phase 3
+(`FRAMEWORK_OWNS -> TRANSFER_PENDING`) and wrote `control/stopped`.
+The legacy feeder then logged:
+
+```text
+can't create /dev/watchdog: Device or resource busy
+OneOS legacy watchdog feeder stopped making progress
+```
+
+The watchdog-failure request reached `oneios_return.sh`, which recorded
+`reboot-deadline-or-manual ... who=watcher reason=watchdog feeder failed`
+and issued `sys.powerctl=reboot,oneios-sm8850-reboot-return`.
+After boot the reason properties consistently reported
+`reboot,oneios-sm8850-reboot-return`. No panic signature was observed
+in the filtered `/proc/last_kmsg` output. The log's `vold`
+`reboot_on_failure` message occurred during system shutdown and does
+not independently establish the initiating cause.
+
+`control/framework.takeover-confirmed` was absent and the session never
+reached `running`. A `control/stopped` marker is written immediately
+before stopping zygote; it **does not prove takeover succeeded**.
+
+The Linux watchdog core uses an exclusive-open flag for a watchdog
+device; opening a watchdog already held by another file descriptor
+returns `-EBUSY`. The misc legacy `/dev/watchdog` can share the
+same core state as `/dev/watchdog0` despite distinct device numbers.
+An EBUSY here demonstrates failure to obtain a feeder handle; it
+**does not by itself identify the owner or prove kernel panic**.
+Changing the feeder to ignore EBUSY or claiming it is feeding would
+leave recovery unqualified. Do not repeatedly reboot hoping to race
+the FD open. See Linux watchdog core `watchdog_dev.c`.
+
+Next evidence (no device changes):
+
+```sh
+bash scripts/phone/sm8850-watchdog-owners.sh R5GL64LZ9HA
+```
+
+This walks `/proc/*/fd` and reads names/metadata only. It never opens
+a watchdog. Its current-boot result cannot reveal with certainty who
+owned the device in the short interval after `system_server` stopped.
+Resolve the exact firmware's watchdog owner and a provable handback
+contract before any further reboot-smoke. The previously PASS local
+fixtures do not simulate a kernel's real exclusive-open semantics.
+
 ## Not yet enabled
 
 Do not infer full iOS boot approval from a reboot-only smoke. The normal
