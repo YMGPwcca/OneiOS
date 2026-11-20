@@ -1,5 +1,12 @@
 # SM8850 watchdog supervisor and handback
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Watchdog supervisor design**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> **Historical source or earlier experimental procedure.** The latest S26 Ultra full guest ran ~600.6 s with a displayed frame, but serious heat and unverified recovery remain open. Use the [physical ledger](SM8850_LIVE_STATUS_2026-11-20.md) for current decisions.
+
 This is an experimental OneOS integration for SM-S948B / m3q / SM8850
 running S948BXXS4BZIG. The native binary is built from
 `app/switcher/native/oneios_watchdog.c` for Android arm64 and belongs to
