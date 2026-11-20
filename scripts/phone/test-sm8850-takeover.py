@@ -19,7 +19,7 @@ SPEC.loader.exec_module(TAKEOVER)
 
 class TakeoverTest(unittest.TestCase):
     def test_change_requires_opt_in_before_contacting_a_device(self):
-        for action in ("--recovery-smoke", "--reboot-smoke", "--run", "--storage-probe", "--prepare"):
+        for action in ("--recovery-smoke", "--reboot-stage-check", "--reboot-smoke", "--run", "--storage-probe", "--prepare"):
             with self.subTest(action=action), patch.object(TAKEOVER, "Phone") as phone, \
                     patch("sys.argv", ["sm8850-takeover.py", action]), \
                     contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
@@ -47,6 +47,26 @@ class TakeoverTest(unittest.TestCase):
             command = device.root.call_args.args[0]
             self.assertEqual("/system/bin/sh -s -- --framework-audit-reboot", command)
             self.assertIn(b"framework_legacy_target", device.root.call_args.kwargs["input"])
+
+    def test_reboot_stage_check_installs_only_after_passive_audit(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(TAKEOVER, "audit", return_value=0) as audit, \
+                patch.object(TAKEOVER, "upload", return_value=0) as upload, \
+                contextlib.redirect_stdout(io.StringIO()):
+            phone = unittest.mock.Mock()
+            phone.root.return_value = subprocess.CompletedProcess([], 0, b"PREFLIGHT OK\n")
+            self.assertEqual(0, TAKEOVER.reboot_stage_check(phone, Path(folder)))
+            audit.assert_called_once_with(phone, Path(folder) / "preflight.txt", reboot_only=True)
+            upload.assert_called_once_with(phone, "install")
+            self.assertIn("--framework-check reboot-smoke", phone.root.call_args.args[0])
+            self.assertEqual("PREFLIGHT OK\n", (Path(folder) / "stage-check.txt").read_text())
+
+    def test_reboot_stage_check_never_uploads_after_refused_audit(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(TAKEOVER, "audit", return_value=1), \
+                patch.object(TAKEOVER, "upload") as upload:
+            self.assertEqual(2, TAKEOVER.reboot_stage_check(unittest.mock.Mock(), Path(folder)))
+            upload.assert_not_called()
 
     def test_reboot_smoke_rejects_missing_separate_risk_consent(self):
         with patch.object(TAKEOVER, "Phone") as phone, \
