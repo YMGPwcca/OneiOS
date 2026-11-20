@@ -1,5 +1,12 @@
 # SM8850 bounded iOS GPU-auto bench (One UI remains running)
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Bounded GPU bench notes**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This page is earlier device evidence or an experimental design record. Compare with the [latest physical status](SM8850_LIVE_STATUS_2026-11-20.md); do not infer current safety or performance from a historical PASS.
+
 This is the **first guest hardware attempt after the vgpu-3d=1 source fix**, not a Framework takeover or a stable-GUI acceptance test. It uses the previously SHA-256-verified, independent 8 GiB APFS Data snapshot at a nonce-only path, a newly built Android `xnuhost`, and the **original** GPU addon and trustcache already installed in the benchmark image. The runner does not modify Apple binaries, boot partitions, original APFS Data or watchdog devices. **Exception:** `xnuhost` itself raises global `vm.max_map_count` when below 1,048,576 (`runtime/xnuhost/src/mem.c`). This setting is not restored automatically.
 
 The current signed GPU addon has no Vulkan-API instrumentation. Therefore this run can determine whether the new `xnuhost` supplies `vgpu-3d=1`, whether the DRM-native renderer is offered, whether Vulkan error -3 is still observed, whether any backboardd GPU fences retire, and whether the QuartzCore assertion recurs. **It does not automatically prove `vkCreateDevice` succeeded or that the GUI is stable.** Instrumented addon and matching trustcache would still be a separate, qualified change.
