@@ -26,6 +26,9 @@
 | :--- | :--- |
 | [SM8850 LIVE STATUS 2026-11-20](SM8850_LIVE_STATUS_2026-11-20.md) | Current verified state · physical run, limitations and evidence |
 | [TODO](TODO.md) | Engineering queue · P0 safety through P3 acceptance |
+| [SM8850 THERMAL GUARD](SM8850_THERMAL_GUARD.md) | Proposed independent thermal protection for `bridges=0` — **not implemented** |
+| [SM8850 RECOVERY ACCEPTANCE](SM8850_RECOVERY_ACCEPTANCE.md) | Independent watchdog, reboot and deadline proof — **not certified** |
+| [SM8850 PERFORMANCE BASELINE](SM8850_PERFORMANCE_BASELINE.md) | 600 s physical-run metrics, limitations and missing measurements |
 | [architecture](architecture.md) | How hosted XNU, iOS tasks and Android hardware integrate |
 | [building](building.md) | Build, test, verify and package locally on CachyOS |
 | [SM8850 FULL IOS 10MIN](SM8850_FULL_IOS_10MIN.md) | Full Framework takeover record and one-shot staging — **historical; not a retest instruction** |

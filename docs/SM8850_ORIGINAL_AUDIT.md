@@ -1,5 +1,8 @@
 # SM8850 audit · original switch and return gates
 
+> [!NOTE]
+> **Historical research archive, intentionally retained at this path** to preserve existing links, exact original evidence and git blame. It is **not** an operational full-takeover instruction or a current recovery PASS. For decisions start at [the 2026-11-20 evidence ledger](SM8850_LIVE_STATUS_2026-11-20.md).
+
 
 **OneiOS · Galaxy S26 Ultra / SM8850 · Original device audit (historical)**
 

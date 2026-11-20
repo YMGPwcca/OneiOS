@@ -291,7 +291,7 @@ p90/p99, `TOUCH_TO_FRAME_MAX_MS`, posted frame cadence, CPU probe's
 policy caps, Android MemAvailable and visible responsiveness to the
 baseline with the same touch/UI sequence.
 
-Do not increase the guest's 4-vCPU count for this isolation experiment.
+**Historical four-vCPU isolation benchmark only:** preserve four vCPUs for matched A/B data here; this is **not** the live eight-vCPU full Framework takeover profile.
 Do not reuse a consumed snapshot. If a local native/Python regression
 fails, **do not boot**; the experiment hasn't been locally validated.
 To return to normal, simply omit `--cpu-affinity-bench` from the next

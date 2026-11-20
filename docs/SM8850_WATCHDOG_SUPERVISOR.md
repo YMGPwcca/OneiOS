@@ -1,5 +1,8 @@
 # SM8850 watchdog supervisor and handback
 
+> [!NOTE]
+> Links to `out/sm8850/` diagnostics from earlier machine-local runs are now **path references only**: their bytes were not committed to GitHub and cannot be opened as repository links. Preserve existing logs locally and do not manufacture replacement evidence.
+
 **OneiOS · Galaxy S26 Ultra / SM8850 · Watchdog supervisor design**
 
 [← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
@@ -141,4 +144,4 @@ checkout. The default recovery mode tests the parent-pinned scripts.
 Bash and mksh use an isolated fake phone to verify close-before-zygote
 ordering, state readback for both nowayout branches, a new owner's ping
 evidence, a stuck init request, and guarded reboot at handback timeout
-without transport. See [local logs](../out/sm8850/watchdog-supervisor/).
+without transport. See **local logs** (local evidence: `out/sm8850/watchdog-supervisor/`).

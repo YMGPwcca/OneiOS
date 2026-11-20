@@ -188,7 +188,7 @@ reboot-only smoke will not resolve those separate blockers.
   Framework briefly under an independent device timer and verify
   same-boot in-place return, unlock and physical touch. A reboot is a
   failsafe, not an in-place PASS.
-- Gate 3: isolated 2D takeover under the already verified 240s window,
+- **Historical proposed Gate 3, not current authorization:** isolated 2D takeover under the previously measured 240s window,
   existing return guard and a freshly verified image.
 - Gate 4: migrate the previously validated 3D GPU and physical touch
   path one variable at a time, retaining the same return contract.

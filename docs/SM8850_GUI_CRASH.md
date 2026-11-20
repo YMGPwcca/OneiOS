@@ -1,5 +1,8 @@
 # SM8850 iOS 27.0.1 GUI crash
 
+> [!NOTE]
+> Links to `out/sm8850/` diagnostics from earlier machine-local runs are now **path references only**: their bytes were not committed to GitHub and cannot be opened as repository links. Preserve existing logs locally and do not manufacture replacement evidence.
+
 **OneiOS · Galaxy S26 Ultra / SM8850 · iOS GUI crash forensics**
 
 [← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
@@ -36,8 +39,8 @@ with SIGKILL and a backboardd-respawn reason. The same assertion recurs
 at 4264.332 s in generation 257. The auto run shows the same pair of
 QuartzCore frames in `backboardd[52]` and `backboardd[233]`. An earlier
 `chronod` SIGABRT in the 2D capture has a different call stack.
-[xnuhost 2D log](../out/sm8850/ios27-touch-2d-xnuhost.log) ·
-[xnuhost auto log](../out/sm8850/ios27-touch-xnuhost.log)
+**xnuhost 2D log** (local evidence: `out/sm8850/ios27-touch-2d-xnuhost.log`) ·
+**xnuhost auto log** (local evidence: `out/sm8850/ios27-touch-xnuhost.log`)
 
 ## Renderer boundaries
 
@@ -123,9 +126,9 @@ with AddressSanitizer and UndefinedBehaviorSanitizer enabled, and
 covered the board default plus the `TU_DARWIN_VIRTGPU=0/1` overrides.
 The Vulkan device steps ran on RADV. The local setup has no execution
 environment for the arm64e Darwin Turnip Vulkan driver.
-[Transport replay](../out/sm8850/gui-crash/drm-replay/drm-native.log) ·
-[RADV buffer probe](../out/sm8850/gui-crash/drm-replay/vulkan-buffer.log) ·
-[Saved Adreno evidence](../out/sm8850/gpu-standalone-triage.txt)
+**Transport replay** (local evidence: `out/sm8850/gui-crash/drm-replay/drm-native.log`) ·
+**RADV buffer probe** (local evidence: `out/sm8850/gui-crash/drm-replay/vulkan-buffer.log`) ·
+**Saved Adreno evidence** (local evidence: `out/sm8850/gpu-standalone-triage.txt`)
 
 For an instrumented build, guest boot argument `oneios-vk-init=1`
 enables process-tagged stderr and Mesa diagnostics. They record the
@@ -272,8 +275,8 @@ The original backup pair and the disposable raw target both matched
 the original SHA-256 manifest after the rehearsal. Hardware guest boot
 and use of recovered Data remain unverified and are outside this
 offline gate.
-[Exact paths and file metadata](../out/sm8850/gui-crash/restore-rehearsal/files.json) ·
-[Restore comparison](../out/sm8850/gui-crash/restore-rehearsal/restore-comparison.json)
+**Exact paths and file metadata** (local evidence: `out/sm8850/gui-crash/restore-rehearsal/files.json`) ·
+**Restore comparison** (local evidence: `out/sm8850/gui-crash/restore-rehearsal/restore-comparison.json`)
 
 ## Preservation
 

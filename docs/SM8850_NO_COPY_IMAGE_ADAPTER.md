@@ -1,5 +1,8 @@
 # Design for a no-copy SM8850 bench image adapter
 
+> [!NOTE]
+> Links to `out/sm8850/` diagnostics from earlier machine-local runs are now **path references only**: their bytes were not committed to GitHub and cannot be opened as repository links. Preserve existing logs locally and do not manufacture replacement evidence.
+
 **OneiOS · Galaxy S26 Ultra / SM8850 · Historical no-copy design exploration**
 
 [← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
@@ -40,7 +43,7 @@ Data file for writing.
    open the store, and pin the original path identity against rename
    so it cannot be swapped for a second store. On a host Btrfs fixture,
    a read lease blocked a writer through a hardlink and still allowed
-   rename. [Host lease probe](../out/sm8850/watchdog-supervisor/storage-lease-host-probe.log)
+   rename. **Host lease probe** (local evidence: `out/sm8850/watchdog-supervisor/storage-lease-host-probe.log`)
    A lease break must trip the independent return and make the
    adapter stop serving Data before the kernel's forced
    break deadline. If timing, mandatory exclusion or SELinux cannot
