@@ -33,10 +33,11 @@ Never confuse a green preflight or offline fixture with physical validation.
   offline root/host tests. Do not execute this mode if any fail.
 - Read `--reboot-audit` and the ordinary `--readiness` results separately.
   The ordinary live iOS takeover stays BLOCKED.
-- There are two hardware gestures: hold Volume Up + Volume Down together
-  for at least three seconds to request a software reboot via detached
-  key readers; if this does not work, Side/Power + Volume Down initiates
-  Samsung's hardware forced restart. Neither can be guaranteed in advance.
+- **Do not use Volume Up + Volume Down as a test gesture on a
+  USB-connected SM-S948B.** If a reboot occurs while both keys are held,
+  Samsung can enter Download Mode. Samsung's documented force-restart
+  gesture is Side/Power + Volume Down for more than seven seconds.
+  That hardware action is a fallback, not proof of the key-reader watcher.
 
 ## Local preflight (read-only)
 
@@ -72,32 +73,37 @@ python3 scripts/phone/sm8850-takeover.py --reboot-smoke \
   --confirm --accept-legacy-watchdog-risk --serial R5GL64LZ9HA
 ```
 
-**Do not press Volume Up + Volume Down when the session starts or merely
-because the script prints `[3/5] Stopping the One UI framework`.** On
-2026-11-20, a key chord triggered at 10:42:32 while the switch was still
-preparing the stop, resulting in a safe same-boot abort: `STOP_MARKER=ABSENT`,
-`TAKEOVER_MARKER=ABSENT`, `One UI was never stopped`.
+**Historical evidence, not the current instructions:** on 2026-11-20,
+the chord invoked during early preparation caused a safe same-boot abort
+before Framework was stopped. In the next experiment, the host printed
+`TAKEOVER_CONFIRMED=YES`; the phone then rebooted automatically and
+holding Volume Up + Volume Down while the USB cable was attached led to
+Samsung Download Mode (D2/reboot screen with passcode-related text).
+Disconnecting USB and using the hardware force restart brought One UI
+back. This is **not** a successful volume-chord recovery test, and the
+specific automatically-triggered reboot reason still requires an archive
+inspection.
 
-Wait for the host CLI to print **both**
-`TAKEOVER_CONFIRMED=YES` and `PHYSICAL_KEYS=PRESS_NOW`. These lines are
-issued only when the root-side takeover marker is present, session state
-is `running`, zygote is stopped and `system_server` is absent on the
-original boot. Then hold Volume Up + Volume Down together for at least
-three seconds; the detached watcher should initiate reboot. If the
-confirmation never appears, do not improvise a timing guess or call the
-test successful. Inspect the failure evidence before retrying.
+**Current SM8850 experiment is deadline-only.** Do not press the two
+volume keys when `TAKEOVER_CONFIRMED=YES` appears. The independent
+`framework.deadline` is set to **20 seconds after the verified stop**
+and automatically requests reboot. The host prints
+`AUTO_REBOOT=EXPECTED_AFTER_20_SECOND_FRAMEWORK_DEADLINE`.
+The screen may be black with One UI's framework down; that alone is not
+evidence of a panic.
 
-The phase timer requests a reboot automatically after
-the short smoke interval. If both paths fail, try Samsung Side +
-Volume Down forced restart; this is not evidence of the scripted key
-reader working. The deadline and reboot paths do not rely on SSH/ADB.
+After reconnecting, inspect the archived `return.outcome` and
+`session/return.request`. `REBOOT_SMOKE=PASS_AUTOMATIC_DEADLINE_AND_ONEUI`
+is reported only for a verified, healthy *new boot* with the exact
+launch token, takeover marker, and framework-deadline return request.
+`PHYSICAL_KEY_REBOOT=NOT_VERIFIED` is deliberately retained. A
+hardware force-restart or a software key request is not evidence that
+the Samsung bootloader followed the expected normal boot path.
+Do not flash firmware or experiment with Download Mode during this test.
 
-`REBOOT_SMOKE=PASS_PHYSICAL_KEY_AND_ONEUI` requires a new boot ID, a
-recorded verified Framework stop and key-triggered return receipt, running
-zygote and zygote_next, a new healthy system_server and SELinux Enforcing.
-After reconnecting, personally unlock One UI and test physical touch.
-A forced reboot or deadline-driven return is a recovery result, NOT a
-physical key chord pass.
+Physical-key acceptance will require a **separate, Samsung-safe**
+boot-mode procedure and independent evidence. Do not re-enable the
+Volume Up + Volume Down instruction merely to obtain a green result.
 
 ## Diagnosing a returned session without reboot
 
