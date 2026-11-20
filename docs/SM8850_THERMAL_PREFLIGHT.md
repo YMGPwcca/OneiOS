@@ -180,3 +180,10 @@ OneOS draft PR #6 now contains a **boot-pinned four-sensor reader prototype**: `
 - Report records individual temperatures, maximum by group, unreadable types and missing readings. `COVERAGE_COMPLETE=NO` for any type/read failure or missing required CPU/GPU/DDR category. Even if complete, `acceptance=NOT_QUALIFIED`: this is a sensor inventory, **not** vendor thermal guard calibration or recovery certification.
 - `tests/test_sm8850_thermal_junction_inventory.py` introduces **16 new offline test methods** for strict type parsing and groups, pseudo-zone exclusion, bounded enumeration, root escalation scope, mid-read type change, invalid sensor, maximum aggregation, missing DDR and run identity drift. The branch runner now demands **123** tests; prior **107/107** is operator-verified, but the 16 added tests **await CachyOS**. No new device survey has been run yet.
 - The OneOS draft-source `--framework-session run` admission refusal still applies before APFS Data consumption and Android Framework stop. The old staged script on the physical phone is unchanged; full 600s takeover stays BLOCKED.
+
+
+## P0.2 independent supervisor/return acceptance reference
+
+The companion [OneOS P0.2 guard acceptance contract](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-p0-thermal-reader-sim/docs/SM8850_P0_INDEPENDENT_GUARD_ACCEPTANCE.md) now specifies root monitor ownership outside xnuhost/guest cgroups, genuine CPU/GPU/DDR sensor admission, versioned boot/generation/launch/heartbeat binding, independent liveness supervision, mandatory reboot-only return escalation, persistent next-boot verification and the no-bypass source gate. **This is documentation of required future behavior, not a running implementation.**
+
+OneOS's proposed next sensor inventory has 16 additional host tests; the operator last confirmed 107/107 tests on the previous revision. Full takeover remains blocked until genuine vendor limits and independent recovery are physically certified.
