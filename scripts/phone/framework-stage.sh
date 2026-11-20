@@ -212,8 +212,35 @@ for name in data.img unique-chip-id; do
     copy_one "$from" "$incoming/data/$name" "$data_sha"
     [ "$(file_id "$from")" = "$data_before" ] || fail "APFS source changed while hashing"
 done
-chmod 700 "$incoming/runtime/bin/"*
-printf 'version=sm8850-ios27-bench\nsession_abi=1\nxnuhost=bin/xnuhost-gui-bench\nimage_formats=1\nplaceholder=0\n' > "$incoming/runtime.conf"
+# Import the exact 3D/touch-capable binaries from the same local build as
+# the validated non-takeover SHM demo. Never accept old 2D bench binaries
+# as the active takeover runtime. Validate on device after the ADB tar upload.
+[ -f "$incoming/native.sha256" ] && [ ! -L "$incoming/native.sha256" ] ||
+    fail "signed 3D runtime artifact checksum list missing"
+[ "$(wc -l < "$incoming/native.sha256")" -eq 4 ] ||
+    fail "the GPU-3D artifact list must have exactly four expected files"
+for name in xnuhost oneios-display oneios-display.dex liboneios-display.so; do
+    path="$incoming/native/$name"
+    [ -f "$path" ] && [ ! -L "$path" ] || fail "native 3D artifact missing: $name"
+    expected=$(awk -v n="$name" '$2 == n && length($1) == 64 {print $1}' "$incoming/native.sha256")
+    case "$expected" in ''|*[!0-9a-f]*) fail "bad GPU artifact hash for $name" ;; esac
+    [ "${#expected}" = 64 ] || fail "invalid GPU hash length for $name"
+    [ "$(hash_of "$path")" = "$expected" ] ||
+        fail "GPU artifact was modified while uploading: $name"
+    [ "$(stat -c %s "$path")" -ge 256 ] || fail "empty GPU artifact: $name"
+    [ ! -L "$incoming/runtime/bin/$name" ] || fail "symlinked runtime target: $name"
+    install -m 700 "$path" "$incoming/runtime/bin/$name" ||
+        fail "could not stage GPU artifact $name"
+    [ "$(hash_of "$incoming/runtime/bin/$name")" = "$expected" ] ||
+        fail "GPU runtime staging hash mismatch: $name"
+    awk -v n="bin/$name" '$2 != n {print}' "$incoming/runtime.sha256" > "$incoming/runtime.sha256.new" ||
+        fail "cannot update staged runtime hash list"
+    mv "$incoming/runtime.sha256.new" "$incoming/runtime.sha256"
+    printf '%s  bin/%s\n' "$expected" "$name" >> "$incoming/runtime.sha256"
+done
+chmod 700 "$incoming/runtime/bin/xnuhost" "$incoming/runtime/bin/oneios-display"
+chmod 400 "$incoming/runtime/bin/liboneios-display.so" "$incoming/runtime/bin/oneios-display.dex"
+printf 'version=sm8850-ios27-3d-8cpu-600s\nsession_abi=1\nxnuhost=bin/xnuhost\nimage_formats=1\nplaceholder=0\n' > "$incoming/runtime.conf"
 printf 'format=1\nversion=27.0.1\nbuild=24A446\n' > "$incoming/image.conf"
 [ "$(df -Pk "$stage" | awk 'NR==2 {print $4}')" -ge "$MIN_FREE" ] || fail "benchmark reserve crossed"
 # Publish the completion marker last. An interrupted installation is
@@ -222,5 +249,6 @@ for name in data image runtime image.sha256 image.ids image.conf runtime.sha256 
     mv "$incoming/$name" "$stage/$name"
 done
 sync
-printf 'sm8850-ios27-bench\n' > "$stage/image.ready"
-echo "Validated experimental image and independent APFS Data snapshot ready at $stage"
+printf 'sm8850-ios27-3d-8cpu-600s\n' > "$stage/image.ready"
+echo "Verified GPU-3D xnuhost/display, 8-vCPU configuration and independent one-shot APFS Data snapshot staged at $stage"
+echo "GUEST_TAKEOVER_LIVE_AUTHORIZED=NO (requires separate watchdog and unassisted-recovery qualification)"
