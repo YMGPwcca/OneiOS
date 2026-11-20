@@ -44,10 +44,17 @@ Never confuse a green preflight or offline fixture with physical validation.
 cd ~/projects/OneiOS
 scripts/ci-local.sh recovery
 python3 scripts/phone/sm8850-takeover.py --reboot-audit --serial R5GL64LZ9HA
+bash scripts/phone/sm8850-flock-probe.sh R5GL64LZ9HA
 ```
 
 Do not proceed if `--reboot-audit` returns a nonzero code, if One UI
 is unhealthy, or if the watchdog owner or device identity has changed.
+The standalone temporary-file lock probe must report `LOCK_PROBE=PASS`:
+Android mksh's permanent FD8 is not inherited by external `flock`, so
+staging and switch duplicate its open file description into command-scoped
+FD0 (`flock -n 0 0<&8`). The holder then retains FD8 until stage/switch
+completion. The probe makes and removes only a temporary directory in
+`/data/local/tmp`; it does not touch Framework or the watchdog.
 
 ## Physically approved smoke (changes running system, risks data loss)
 
