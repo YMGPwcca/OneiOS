@@ -93,19 +93,22 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         inner = source[begin:end]
         self.assertIn('for d in data session; do', inner)
         self.assertIn('mount --bind "/data/$d" "/data/$d"', inner)
-        self.assertIn('mount -o remount,bind,ro /data', inner)
+        self.assertIn('mount -o remount,bind,ro /data /data', inner)
         self.assertIn('the staged /data root is writable', inner)
         self.assertIn('guest writable island is read-only', inner)
         self.assertIn('if true 2>/dev/null > /data/control/.w', inner)
         self.assertNotIn('for d in runtime image control bin oneios_switch.sh oneios_return.sh', inner)
         self.assertNotIn('mount -o remount,bind,ro "/data/$d"', inner)
+        self.assertNotIn('mount -o remount,bind,ro /data ||', inner)
+        self.assertNotIn('mount -o remount,bind,ro "$dst" ||', STAGER.read_text())
+        self.assertIn('probe="$check/.oneios-write-check.' + chr(36) * 2 + '"', inner)
         self.assertLess(
             inner.index('for d in data session; do'),
-            inner.index('mount -o remount,bind,ro /data'),
+            inner.index('mount -o remount,bind,ro /data /data'),
             'Data/session write mounts must be isolated before making stage root ro',
         )
         self.assertLess(
-            inner.index('mount -o remount,bind,ro /data'),
+            inner.index('mount -o remount,bind,ro /data /data'),
             inner.index('echo ' + chr(36) * 2 + ' > /data/session/xnuhost.pid'),
             'Fail-safe read-only guard must finish before guest pid is published',
         )
@@ -122,8 +125,9 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('mv "$stage/image.ready" "$stage/image.ready.rearm-pending"', stage)
         self.assertIn('mv "$incoming/data" "$stage/data"', stage)
         self.assertIn('SM8850_MOUNT_NAMESPACE_PROBE=PASS_NO_FRAMEWORK_STOP', stage)
+        self.assertIn('p="$writable/.probe-write.' + chr(36) * 2 + '"', stage)
         self.assertIn('"$bb_probe" unshare -m /system/bin/sh -s --', stage)
-        self.assertIn('mount -o remount,bind,ro "$dst"', stage)
+        self.assertIn('mount -o remount,bind,ro "$dst" "$dst"', stage)
         self.assertIn('Android BusyBox cannot create read-only guest stage', stage)
         self.assertIn('APFS_DATA_REARMED=YES', stage)
         self.assertIn('"rearm-data"', host)
