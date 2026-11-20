@@ -1,5 +1,15 @@
 # Phase 4B image and host boot readiness
 
+> **Historical 2026-11 readiness phase:** staging later advanced to a
+> successful isolated F2FS/BusyBox mount probe and verified one-shot
+> APFS Data rearm. A separate root-only full experiment physically
+> booted the iOS 27.0.1 guest and posted its first frame for ~600.6 s.
+> The earlier "stage untouched / boot blocked" reports remain valid
+> *at the time they were made*, not current. Thermal, watchdog and
+> unassisted return qualification are still open.
+> [Live status](SM8850_LIVE_STATUS_2026-11-20.md).
+
+
 This validation targets iOS 27.0.1 build `24A446`, iPhone18,2 / v54ap /
 T8150 / arm64e. OneOS uses image format 1 and session ABI 1. The checks run
 on CachyOS x86_64. S26 switch authorization stays disabled.
