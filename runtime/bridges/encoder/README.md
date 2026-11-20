@@ -1,5 +1,9 @@
 # runtime/bridges/encoder: the host video encoder
 
+**OneiOS · SM8850 · Runtime engineering**
+
+[← Handbook](../../../docs/README.md) · [Physical status](../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: the encoder agent. The iOS/guest side: `kernel/patches/oneios-hosted/codec`. The whole path and the route:
 `docs/hardware.md` section 7g ("Video encoder"). This is the host end of iOS's paravirtualized VideoToolbox
 encoder, so CMPhoto writes HEIC: chronod's widget snapshots, screenshots, the photo library (then video later).
