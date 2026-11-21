@@ -91,7 +91,22 @@ def check() -> None:
             "P0_THERMAL_SAMPLE=OK",
             "P0_XNUHOST_LOAD=READ_ONLY",
             "case $((seq % 5)) in")
-    require(OS, "tests/run_sm8850_thermal_local.sh", "EXPECTED_TESTS=179")
+    require(OS, "tests/run_sm8850_thermal_local.sh", "EXPECTED_TESTS=193")
+    # OneOS original main's S26/SM8850 support supplies the multi-level CPU
+    # cap idea. Our iOS adaptation uses *host root* emergency-sensor heartbeat,
+    # not Android guest SKIN/HAL, and never lifts Samsung's prior vote.
+    require(OS, "switcher/assets/oneios_sm8850_thermal_cap.sh",
+            'if [ "$cur" -gt "$target" ]; then', 'thermal.cap.heartbeat',
+            'return 2', 'case "$level" in 1) pct=80',
+            'cpufreq_write_or_readback')
+    require(OS, "switcher/assets/oneios_switch.sh",
+            'framework_thermal_cap_healthy()',
+            'P0_CPU_CAP=ARMED_BEFORE_XNUHOST_NOT_HARDWARE_CERTIFIED',
+            'SM8850 independent CPU frequency cap missing or stale',
+            'P0_FULL_600S_TAKEOVER=BLOCKED_UNQUALIFIED_THERMAL_GUARD')
+    require(OS, "scripts/phone/sm8850-takeover-short-probe.py",
+            'CAP = ROOT/', '"oneios_sm8850_thermal_cap.sh": CAP',
+            '"cap_sha256":hashlib.sha256(CAP.read_bytes()).hexdigest()')
     # The first complete-run failure was the orchestration itself: an invalid
     # package version and a truncated AdrenoPM4 git SHA. Check both before
     # spending CPU on CI; do not replace those checks with a loose prefix.
