@@ -353,13 +353,14 @@ static void place(int tid, unsigned vcpu)
   if (sched_setaffinity(tid, sizeof set, &set) && (tid == 0 || config.cpu_affinity_bench))
     LOGE("cpu: vCPU %u thread %d on host CPUs 0x%llx: %s", vcpu, tid, (unsigned long long)mask, strerror(errno));
 }
-// Strict bench-only pairing: the 4 vCPUs each get their own allowed host
-// CPU (and share it with the iOS thread released by that vCPU). This is a
-// process-local scheduling A/B, NOT the full bridge CPU plan: no virtual
-// cpufreq MMIO, uclamp, governor or thermal sensor is touched. Guest-visible
-// CPU cluster types are unchanged so the comparison isolates host affinity.
-// Prefer higher capacity/frequency cores, but never place two vCPUs on one
-// host CPU, which could multiply futex handoff latency under load.
+// Strict bench-only pairing: up to 8 vCPUs each get a distinct, allowed
+// host CPU (shared with the iOS thread released by that vCPU). This is scoped
+// to xnuhost/task threads: no device bridge, cpufreq MMIO, global governor or
+// thermal sysfs writes. Guest-visible CPU cluster types are unchanged.
+// On an 8-core Qualcomm Oryon host, reuse the direct-parent topology plan
+// (slowest 2 physical P cores lent to E vCPUs) for placement only; otherwise
+// preserve the existing capacity-ranked A/B path. Never stack two vCPUs on
+// one host core, and fail closed when the cpuset lacks eight allowed cores.
 static int bench_affinity_init(void)
 {
   br_cpu_topology host;
@@ -385,6 +386,25 @@ static int bench_affinity_init(void)
         unsigned tmp = ids[i]; ids[i] = ids[j]; ids[j] = tmp;
       }
     }
+  // Reuse parent fork's Oryon physical-core ordering without enabling
+  // hardware bridges or modifying XNU's guest-visible CPU cluster metadata.
+  // Do not assume an SM8850 layout from a generic 0-7 mask: every MIDR and
+  // allowed core is checked. If any core cannot be identified, fall back to
+  // the old capacity-ranked A/B path, not to an invented topology.
+  bool parent_oryon = config.ncpu == 8 && host.ncpu == 8 && host.n_e == 0 && host.n_p == 8;
+  for (unsigned i = 0; i < 8 && parent_oryon; i++)
+    if (!host.cpu[i].present || host.cpu[i].implementer != 0x51 || !CPU_ISSET(i, &allowed))
+      parent_oryon = false;
+  if (parent_oryon) {
+    br_cpu_plan parent_plan;
+    if (br_cpu_plan_make(&host, 8, true, &parent_plan) == 0 &&
+        parent_plan.n_e == 2 && parent_plan.n_p == 6) {
+      for (unsigned i = 0; i < 8; i++) ids[i] = parent_plan.v[i].host_cpu;
+      LOGI("cpu: SM8850 Oryon parent placement selected: 2 borrowed E + 6 P host-core slots; bridge and guest cluster changes remain off");
+    } else {
+      LOGE("cpu: Oryon parent plan unavailable; preserving capacity-ranked bench mapping");
+    }
+  }
   memset(&cpu_plan, 0, sizeof cpu_plan);
   cpu_plan.nvcpu = config.ncpu;
   for (unsigned i = 0; i < config.ncpu; i++) {
@@ -418,8 +438,9 @@ static void thermal_step(void *ctx, const br_thermal_state *state)
 // The host's cores as read at start (named files only, runtime/bridges/cpu), what each vCPU is described as to iOS, and the
 // cpuset xnuhost runs in: a cpuset of fewer CPUs (Android's background or system-background) would keep the vCPUs off the
 // X4 and the A720s whatever cpu-pin asks, so its CPUs are said here (host-overhead, 2026-11-15).
-static const char *core_name(unsigned part)
+static const char *core_name(unsigned implementer, unsigned part)
 {
+  if (implementer == 0x51) return "Qualcomm Oryon";
   return part == 0xd80 ? "Cortex-A520" : part == 0xd81 ? "Cortex-A720" : part == 0xd82 ? "Cortex-X4" : part == 0xd46 ? "Cortex-A510" :
          part == 0xd4d ? "Cortex-A715" : part == 0xd4e ? "Cortex-X3" : part ? "an Arm core" : "unknown";
 }
@@ -444,7 +465,7 @@ static void log_cpu_layout(const br_cpu_topology *host)
   for (unsigned c = 0; c < host->ncpu; c++) {
     const br_host_cpu *h = &host->cpu[c];
     if (!h->present) continue;
-    LOGI("cpu: host CPU %u: %s (part 0x%x), %c, frequency domain of CPU %u, capacity %u, %u-%u kHz%s%s%.0u", c, core_name(h->part), h->part,
+    LOGI("cpu: host CPU %u: %s (implementer 0x%x, part 0x%x), %c, frequency domain of CPU %u, capacity %u, %u-%u kHz%s%s%.0u", c, core_name(h->implementer, h->part), h->implementer, h->part,
          h->type, h->policy, h->capacity, h->min_khz, h->max_khz, h->boost_khz ? " (top as a boost frequency)" : "",
          h->scaling_max_khz && h->scaling_max_khz < h->max_khz ? "; capped now: scaling_max_freq " : "",
          h->scaling_max_khz && h->scaling_max_khz < h->max_khz ? h->scaling_max_khz : 0);
