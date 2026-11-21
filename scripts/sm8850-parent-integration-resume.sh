@@ -46,7 +46,7 @@ allow_diff() {
       ios:docs/*|ios:scripts/sm8850-parent-integration-all.sh|\
       ios:scripts/sm8850-parent-integration-resume.sh|\
       ios:scripts/phone/test-sm8850-parent-parity.py|\
-      os:docs/*|os:app-android/*) ;;
+      os:docs/*|os:app-android/*|      os:switcher/assets/oneios_switch.sh|      os:switcher/assets/oneios_sm8850_thermal_cap.sh|      os:scripts/phone/sm8850-takeover-short-probe.py|      os:tests/test_sm8850_thermal_cap.py|      os:tests/run_sm8850_thermal_local.sh) ;;
       *) [ -z "$line" ] || { echo "CACHE_REJECTED_CHANGE=$line"; return 1; } ;;
     esac
   done < <(git -C "$repo" diff --name-only "$old" "$new")
@@ -92,7 +92,8 @@ note IOS_SOURCE "$IOS_SHA"
 note ONEOS_SOURCE "$OS_SHA"
 note ONEIOS_ALL PASS_REUSED_VERIFIED_PINNED_GPU3D
 note METAL_IOS27 PASS_REUSED_VERIFIED_PINNED_ARM64E
-note ONEOS_P0_ALL PASS_REUSED_UNCHANGED_SWITCHER_AND_P0_TESTS
+# Current SM8850 source changed: the independent CPU cap and its admission
+# need fresh P0 tests. Do not falsely reuse the prior source-only P0 verdict.
 
 WORK=$(mktemp -d "$OUT/work.XXXXXX")
 cleanup() {
@@ -103,6 +104,15 @@ cleanup() {
 trap cleanup EXIT
 git -C "$IOS" worktree add --detach "$WORK/OneiOS" "$IOS_SHA" > "$OUT/worktree-ios.log" 2>&1
 git -C "$OS" worktree add --detach "$WORK/OneOS" "$OS_SHA" > "$OUT/worktree-oneos.log" 2>&1
+
+p0_ok=0
+if bash "$WORK/OneOS/tests/run_sm8850_thermal_local.sh" > "$OUT/ONEOS_P0_ALL.log" 2>&1; then
+  p0_ok=1
+  note ONEOS_P0_ALL PASS_CURRENT_SOURCE_193_TESTS
+else
+  note ONEOS_P0_ALL FAIL_CURRENT_SOURCE
+  tail -n 80 "$OUT/ONEOS_P0_ALL.log" || :
+fi
 
 if ONEOS_REPO="$WORK/OneOS" python3 "$WORK/OneiOS/scripts/phone/test-sm8850-parent-parity.py" > "$OUT/STATIC_PARITY.log" 2>&1; then
   static_ok=1
@@ -192,7 +202,7 @@ status["phone_actions"]=False
 PY
 echo "REPORT_JSON=$OUT/report.json"
 echo "GRADLE_FAILURE_REPORT=$OUT/ONEOS_GRADLE_FAILURES.txt"
-if [ "$static_ok" = 1 ] && [ "$app_ok" = 1 ]; then
+if [ "$static_ok" = 1 ] && [ "$p0_ok" = 1 ] && [ "$app_ok" = 1 ]; then
   echo "SM8850_PARENT_INTEGRATION=PASS_OFFLINE_CACHED_GPU3D_METAL_REVALIDATED_ONEOS"
 else
   echo "SM8850_PARENT_INTEGRATION=PARTIAL_ONEOS_JUNIT_OR_STATIC_FAILURE"
