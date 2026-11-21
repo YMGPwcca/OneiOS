@@ -46,7 +46,12 @@ allow_diff() {
       ios:docs/*|ios:scripts/sm8850-parent-integration-all.sh|\
       ios:scripts/sm8850-parent-integration-resume.sh|\
       ios:scripts/phone/test-sm8850-parent-parity.py|\
-      os:docs/*|os:app-android/*|      os:switcher/assets/oneios_switch.sh|      os:switcher/assets/oneios_sm8850_thermal_cap.sh|      os:scripts/phone/sm8850-takeover-short-probe.py|      os:tests/test_sm8850_thermal_cap.py|      os:tests/run_sm8850_thermal_local.sh) ;;
+      os:docs/*|os:app-android/*|\
+      os:switcher/assets/oneios_switch.sh|\
+      os:switcher/assets/oneios_sm8850_thermal_cap.sh|\
+      os:scripts/phone/sm8850-takeover-short-probe.py|\
+      os:tests/test_sm8850_thermal_cap.py|\
+      os:tests/run_sm8850_thermal_local.sh) ;;
       *) [ -z "$line" ] || { echo "CACHE_REJECTED_CHANGE=$line"; return 1; } ;;
     esac
   done < <(git -C "$repo" diff --name-only "$old" "$new")
