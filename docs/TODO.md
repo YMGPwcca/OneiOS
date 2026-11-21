@@ -1,6 +1,6 @@
 # Roadmap & engineering checklist
 
-**OneiOS 27.0.1 · Galaxy S26 Ultra · last evidence review 2026-11-20**
+**OneiOS 27.0.1 · Galaxy S26 Ultra · last evidence review 2026-11-21**
 
 [← Handbook](README.md) · [Physical results](SM8850_LIVE_STATUS_2026-11-20.md) · [Architecture](architecture.md) · [Testing](building.md)
 
@@ -19,6 +19,8 @@
 The proposed [thermal guard](SM8850_THERMAL_GUARD.md), [independent recovery acceptance](SM8850_RECOVERY_ACCEPTANCE.md) and [measured performance baseline](SM8850_PERFORMANCE_BASELINE.md) describe outstanding work; writing them has **not implemented or verified** these gates.
 
 ## P0 · Must fix before another long takeover
+
+**2026-11-21 physical 300s-request result:** one-shot APFS Data rearm PASS, 28-zone preflight PASS, root Thermal Guard armed, a subsequent normal One UI boot observed (operator reports automatic reboot after ~20s), but Framework stop, guest exec and exact early-return cause not independently evidenced. Host preserved 3,358-byte switch stream. **P0 remains OPEN / no new long takeover**; inspect existing archived host logs before any new physical operation. See [live ledger](SM8850_LIVE_STATUS_2026-11-20.md) and [OneOS probe record](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-p0-thermal-reader-sim/docs/SM8850_SHORT_GUARDED_IOS_PROBE.md).
 
 - [ ] **P0.1 — Independent thermal telemetry.** Read SoC, battery and skin sensors using an isolated, read-only component available with `bench/bridges=0`. Define trustworthy sensor selection, units, missing-sensor behavior and session-token ownership. Do **not** enable unrelated hardware bridges.
 - [ ] **P0.2 — Bounded over-temperature response.** Add thermal thresholds, hysteresis and a fail-safe request to the existing OneOS reboot-return path, with deterministic logging. Keep vendor/kernel throttling intact; never force CPU/GPU clocks or disable thermal trips.
