@@ -19,6 +19,8 @@
 The proposed [thermal guard](SM8850_THERMAL_GUARD.md), [independent recovery acceptance](SM8850_RECOVERY_ACCEPTANCE.md) and [measured performance baseline](SM8850_PERFORMANCE_BASELINE.md) describe outstanding work; writing them has **not implemented or verified** these gates.
 
 ## P0 · Must fix before another long takeover
+**2026-11-21 read-only physical subgates:** corrected OneOS CPU90-branch guard returned `P0_THERMAL_PID_BIRTH=PASS_READ_ONLY` and `P0_THERMAL_GUARD=READ_ONLY_CURRENT_BOOT_READY_NOT_CERTIFIED` on S26 Ultra. The first proves PID-birth parsing; the second proves current-boot manifest/sensor acceptance. **Neither qualifies the detached guard heartbeat, watchdog or unattended reboot-return.** Next: non-disruptive independent heartbeat/lifecycle qualification design and separate returner provenance review. No APFS rearm or guest retry needed for these receipts.
+
 **CPU90 experiment diagnosis (2026-11-21, isolated OneOS branch):** a physical attempt never stopped Framework because the root guard source used `BIRTH=$(birth $)` instead of `BIRTH=$(birth $$)`, producing `no_pid_birth`. `control/state=failed`; no new boot or guest launch; freshly rearmed APFS Data was still marked consumed. OneOS source fix adds a passive guard PID selftest before the APFS claim and before the wrapper's rearm. **Next: validate PID selftest on the actual phone read-only**, not another physical takeover. The 75.2 C fault recorded earlier belongs to the *preceding* 55 C attempt, not this CPU90 failure.
 
 
