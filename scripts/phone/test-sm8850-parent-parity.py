@@ -7,6 +7,8 @@ combines this check with host tests and a separately validated GPU3D build.
 from __future__ import annotations
 
 import os
+import re
+import subprocess
 from pathlib import Path
 
 IOS = Path(__file__).resolve().parents[2]
@@ -90,6 +92,32 @@ def check() -> None:
             "P0_XNUHOST_LOAD=READ_ONLY",
             "case $((seq % 5)) in")
     require(OS, "tests/run_sm8850_thermal_local.sh", "EXPECTED_TESTS=179")
+    # The first complete-run failure was the orchestration itself: an invalid
+    # package version and a truncated AdrenoPM4 git SHA. Check both before
+    # spending CPU on CI; do not replace those checks with a loose prefix.
+    runner = content(IOS, "scripts/sm8850-parent-integration-all.sh")
+    v = re.search(r'^VERSION="([^"]+)"$', runner, re.MULTILINE)
+    if not v or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.]*)?", v.group(1)):
+        raise AssertionError("INVALID_RUNTIME_PACKAGE_VERSION")
+    required_pin = "282606b528b2595bc4274ea7490b62b323f35a5f"
+    if runner.count(required_pin) < 2:
+        raise AssertionError("ADRENOPM4_PIN_TRUNCATED_IN_RUNNER")
+    if required_pin not in content(IOS, "scripts/setup/get-references.sh"):
+        raise AssertionError("ADRENOPM4_PIN_DISAGREES_WITH_REFERENCE_TABLE")
+    for setting in ("--continue --max-workers=3", "ONEOS_GRADLE_FAILURES.txt",
+                    "gradle-test-results", "gradle-html-reports",
+                    "PARENT_DRIFT", "DOCUMENTATION_ONLY_NO_EXECUTABLE_CODE_DRIFT",
+                    "SM8850_PARENT_INTEGRATION=PASS_OFFLINE_NO_PHONE"):
+        if setting not in runner:
+            raise AssertionError(f"INTEGRATION_MISSING {setting}")
+    forbidden = ("adb shell", "fastboot flash", "sys.powerctl", "rearm-data")
+    for value in forbidden:
+        if value in runner:
+            raise AssertionError(f"INTEGRATION_PHONE_ACTION {value}")
+    syntax = subprocess.run(["bash", "-n", str(IOS / "scripts/sm8850-parent-integration-all.sh")],
+                            capture_output=True, text=True)
+    if syntax.returncode:
+        raise AssertionError(f"INTEGRATION_SHELL_SYNTAX {syntax.stderr[:1000]}")
     print("SM8850_PARENT_PARITY_STATIC=PASS_SOURCE_ONLY")
     print("SM8850_PHYSICAL_THERMAL_RECOVERY=NOT_CERTIFIED")
 
