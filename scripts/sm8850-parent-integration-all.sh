@@ -165,19 +165,28 @@ fi
 # Separate Android app source gate: read-only OneOS Probe debug APK and JVM
 # tests. Never build, sign or install a privileged SM8850 OneOS switch APK.
 app_ok=0
+app_tests_ok=0
+# --continue compiles independent Probe APK tasks even if an unrelated JVM
+# unit test fails. The overall verdict still FAILS when any test fails.
 if run ONEOS_APP_PROBE bash -c '
   set -euo pipefail
   cd "$1/app-android"
-  ./gradlew --no-daemon --max-workers=3 :core:model:test :core:safety:test :core:root:testDebugUnitTest :app:assembleProbeDebug
+  ./gradlew --no-daemon --console=plain --continue --max-workers=3 :core:model:test :core:safety:test :core:root:testDebugUnitTest :app:assembleProbeDebug
 ' _ "$WORK/OneOS"; then
-  apk="$WORK/OneOS/app-android/app/build/outputs/apk/probe/debug/app-probe-debug.apk"
-  if [ -s "$apk" ]; then
-    cp -- "$apk" "$OUT/artifacts/"
-    app_ok=1
-    note ONEOS_PROBE_APK "PASS_DEBUG_READONLY_PROBE"
-  else
-    note ONEOS_PROBE_APK "FAIL_OUTPUT_MISSING"
-  fi
+  app_tests_ok=1
+fi
+apk="$WORK/OneOS/app-android/app/build/outputs/apk/probe/debug/app-probe-debug.apk"
+if [ -s "$apk" ]; then
+  cp -- "$apk" "$OUT/artifacts/"
+  note ONEOS_PROBE_APK "BUILT_DEBUG_READONLY_PROBE"
+  if [ "$app_tests_ok" = 1 ]; then app_ok=1; fi
+else
+  note ONEOS_PROBE_APK "NOT_BUILT"
+fi
+if [ "$app_tests_ok" = 1 ]; then
+  note ONEOS_APP_UNIT_TESTS "PASS"
+else
+  note ONEOS_APP_UNIT_TESTS "FAILED_NEEDS_NAMED_JUNIT_REPORT"
 fi
 
 # Preserve Gradle test XML/HTML before deleting the worktree. The Gradle
