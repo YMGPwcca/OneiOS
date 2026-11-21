@@ -71,10 +71,30 @@ git -C "$OS" fetch --no-tags https://github.com/akshaynexus/OneOS.git oneios >"$
 PARENT_OS=$(git -C "$OS" rev-parse FETCH_HEAD)
 note DIRECT_PARENT_IOS "$PARENT_IOS"
 note DIRECT_PARENT_ONEOS "$PARENT_OS"
+# A new documentation-only parent commit does not alter any executable
+# sources or binary input. Preserve its exact delta rather than forcing the
+# operator to rerun an expensive build for a release-note-only change.
+parent_docs_only() {
+  local tree=$1 old=$2 new=$3 file delta
+  git -C "$tree" merge-base --is-ancestor "$old" "$new" || return 1
+  delta=$(git -C "$tree" diff --name-only "$old" "$new") || return 1
+  [ -n "$delta" ] || return 0
+  while IFS= read -r file; do
+    case "$file" in docs/*) ;; *) return 1 ;; esac
+  done <<< "$delta"
+}
+git -C "$IOS" diff --name-only "$PARENT_IOS_PIN" "$PARENT_IOS" >"$OUT/parent-ios-since-reviewed.txt" || :
+git -C "$OS" diff --name-only "$PARENT_OS_PIN" "$PARENT_OS" >"$OUT/parent-os-since-reviewed.txt" || :
+parent_ok=0
 if [ "$PARENT_IOS" = "$PARENT_IOS_PIN" ] && [ "$PARENT_OS" = "$PARENT_OS_PIN" ]; then
+  parent_ok=1
   note PARENT_DRIFT "NONE_FROM_REVIEWED_SOURCE"
+elif parent_docs_only "$IOS" "$PARENT_IOS_PIN" "$PARENT_IOS" &&
+     parent_docs_only "$OS" "$PARENT_OS_PIN" "$PARENT_OS"; then
+  parent_ok=1
+  note PARENT_DRIFT "DOCUMENTATION_ONLY_NO_EXECUTABLE_CODE_DRIFT"
 else
-  note PARENT_DRIFT "UNREVIEWED_NEW_PARENT_COMMITS"
+  note PARENT_DRIFT "UNREVIEWED_SOURCE_CHANGES_NOT_AUTO_MERGED"
 fi
 git -C "$IOS" diff --stat "$PARENT_IOS" "$IOS_SHA" >"$OUT/parent-ios-diffstat.txt" 2>&1 || :
 git -C "$OS" diff --stat "$PARENT_OS" "$OS_SHA" >"$OUT/parent-os-diffstat.txt" 2>&1 || :
@@ -314,7 +334,7 @@ echo "SHA256_MANIFEST=$OUT/SHA256SUMS"
 echo "REPORT_JSON=$OUT/report.json"
 if [ "$static_ok" = 1 ] && [ "$os_ok" = 1 ] && [ "$runtime_ok" = 1 ] &&
    [ "$app_ok" = 1 ] && [ "$metal_ok" = 1 ] &&
-   [ "$PARENT_IOS" = "$PARENT_IOS_PIN" ] && [ "$PARENT_OS" = "$PARENT_OS_PIN" ]; then
+   [ "$parent_ok" = 1 ]; then
   echo "SM8850_PARENT_INTEGRATION=PASS_OFFLINE_NO_PHONE"
 else
   echo "SM8850_PARENT_INTEGRATION=PARTIAL_OR_BLOCKED_REPORT_ALL_LOGS"
