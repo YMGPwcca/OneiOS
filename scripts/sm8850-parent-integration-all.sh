@@ -112,7 +112,15 @@ fi
 # pipeline. It fetches the pinned 3D virglrenderer, refuses 2D-only binaries,
 # runs host tests once, packages runtime, verifies SHA and ELF dependencies.
 if [ "$static_ok" = 1 ] && [ "$os_ok" = 1 ]; then
-  if run ONEIOS_ALL env JOBS="$JOBS" bash "$WORK/OneiOS/scripts/ci-local.sh" all "$VERSION"; then
+  # An existing ignored external checkout must be exactly the pinned GPU
+  # reference. get-references.sh deliberately does not overwrite old clones.
+  virgl="$WORK/OneiOS/external/virglrenderer"
+  if [ -d "$virgl" ] &&
+     [ "$(git -C "$virgl" rev-parse HEAD 2>/dev/null)" != "7e17c8e814e963912fc1e4e737137a31b5efa027" ]; then
+    note ONEIOS_ALL "BLOCKED_VIRGLRENDERER_PIN_MISMATCH"
+    echo "BLOCKED=VIRGL_PIN expected=7e17c8e814e963912fc1e4e737137a31b5efa027 actual=$(git -C "$virgl" rev-parse HEAD 2>/dev/null || echo none)"
+    runtime_ok=0
+  elif run ONEIOS_ALL env JOBS="$JOBS" bash "$WORK/OneiOS/scripts/ci-local.sh" all "$VERSION"; then
     runtime_ok=1
     runtime="$WORK/OneiOS/out/release/oneios-runtime-$VERSION-arm64.tar.zst"
     [ -s "$runtime" ] && [ -s "$runtime.sha256" ] ||
@@ -162,6 +170,19 @@ metal_build() (
     https://github.com/Droid-VM/UniXNU.git \
     62d0b11773ec17561fb409ed6e4c5adfa29ff45b wip/droidvm
   scripts/setup/get-references.sh NativeMetal NativeAdreno NativeMobileDisplay AdrenoPM4 metal2vulkan mesa-droidvm
+  # Do not silently build an unrelated Mesa/Turnip/Metal revision because an
+  # older external clone happens to exist on this developer's machine.
+  while read -r name commit; do
+    actual=$(git -C "external/$name" rev-parse HEAD 2>/dev/null || echo "missing")
+    [ "$actual" = "$commit" ] || { echo "METAL_PIN_MISMATCH=$name expected=$commit actual=$actual"; return 4; }
+  done <<'PINS'
+NativeMetal b0d6a07a3da3e23486593aff235904177e94a3ff
+NativeAdreno 627836d507ef08037fff2f9b12e9274ba7b2a4f3
+NativeMobileDisplay ed08bd437b93772d4c41d74633af12446918f18a
+AdrenoPM4 282606b528b2595bc4274ea7490b62b323f35a5
+metal2vulkan 624bab3918de5b978e1101517abca2b4fa426565
+mesa-droidvm cecc0e96d7193c72356a31abb0cc589e4fc0415e
+PINS
   export IOS_LD="${IOS_LD:-$IOS/out/ios-toolchain/cctools/bin/ld}"
   export IOS_TBD="${IOS_TBD:-$IOS/out/ios27-tbd}"
   export METAL_OUT="$OUT/artifacts/metal"
