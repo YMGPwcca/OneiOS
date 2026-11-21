@@ -180,6 +180,67 @@ if run ONEOS_APP_PROBE bash -c '
   fi
 fi
 
+# Preserve Gradle test XML/HTML before deleting the worktree. The Gradle
+# tail alone does not identify the failing tests.
+GRADLE_SOURCE="$WORK/OneOS/app-android"
+GRADLE_XML="$OUT/gradle-test-results"
+GRADLE_HTML="$OUT/gradle-html-reports"
+mkdir -p "$GRADLE_XML" "$GRADLE_HTML"
+while IFS= read -r -d '' report; do
+  relative=${report#"$GRADLE_SOURCE/"}
+  destination="$GRADLE_XML/$relative"
+  mkdir -p "$(dirname "$destination")"
+  cp -- "$report" "$destination"
+done < <(find "$GRADLE_SOURCE" -type f -name 'TEST-*.xml' -path '*/build/test-results/*' -print0)
+while IFS= read -r -d '' report; do
+  relative=${report#"$GRADLE_SOURCE/"}
+  destination="$GRADLE_HTML/$relative"
+  mkdir -p "$(dirname "$destination")"
+  cp -- "$report" "$destination"
+done < <(find "$GRADLE_SOURCE" -type f -path '*/build/reports/tests/*' -print0)
+python3 - "$GRADLE_XML" "$OUT/ONEOS_GRADLE_FAILURES.txt" <<'PY'
+from pathlib import Path
+import sys
+from xml.etree import ElementTree
+
+root = Path(sys.argv[1])
+target = Path(sys.argv[2])
+reports = sorted(root.rglob("TEST-*.xml"))
+failures = []
+tests = 0
+for report in reports:
+    try:
+        tree = ElementTree.parse(report)
+        for test in tree.iter("testcase"):
+            tests += 1
+            for kind in ("failure", "error"):
+                for issue in test.findall(kind):
+                    reason = " ".join((issue.get("message") or "").split())
+                    detail = " ".join((issue.text or "").split())
+                    failures.append(
+                        f"{test.get('classname', '?')}.{test.get('name', '?')}"
+                        f" ({kind}): {reason or detail[:400]}"
+                    )
+    except (OSError, ElementTree.ParseError) as exc:
+        failures.append(f"COULD_NOT_PARSE {report}: {exc}")
+lines = [
+    f"GRADLE_TEST_XML_FILES={len(reports)}",
+    f"GRADLE_TEST_CASES={tests}",
+    f"GRADLE_FAILED_TESTS={len(failures)}",
+]
+lines += ("GRADLE_FAILED_TEST=" + item for item in failures)
+target.write_text("\n".join(lines) + "\n")
+print("===== PRESERVED ONEOS JUNIT DIAGNOSTICS =====")
+for line in lines[:15]:
+    print(line[:900])
+print(f"GRADLE_TEST_REPORT={target}")
+PY
+if [ "$app_ok" = 0 ]; then
+  note ONEOS_APP_DIAGNOSTICS "PRESERVED_TEST_XML_HTML_AND_FAILURE_SUMMARY"
+else
+  note ONEOS_APP_DIAGNOSTICS "PRESERVED_TEST_XML_HTML"
+fi
+
 # Metal/Turnip is a separate iOS 27 arm64e build: it requires a previously
 # installed iPhoneOS SDK and ld64/stubs. Attempt all dependencies once and
 # produce ONE grouped report. Do not silently call a 2D runtime a Metal PASS.
