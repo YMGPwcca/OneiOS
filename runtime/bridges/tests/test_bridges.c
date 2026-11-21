@@ -191,9 +191,10 @@ static void test_cpu(const char *tmp)
 }
 
 // Galaxy S26 Ultra (SM-S948B / m3q / SM8850), captured from a rooted Android 17 host.
-// These sysfs capacities are relative scheduler scores: 741 does not imply six
-// physical efficiency cores. Until XNU scheduling is validated on SM8850 we
-// test the current automatic 6E/2P classification instead of silently changing it.
+// All eight captured MIDRs are Qualcomm implementer 0x51 (Oryon).
+// Six lower-capacity host cores are NOT physical little cores: treat them as P,
+// then lend the two slowest to XNU as E vCPUs, as in the direct parent fork.
+// This changes only the guest model/affinity; never host cpufreq/sysfs.
 static void test_sm8850_cpu(const char *tmp)
 {
   char root[400], rel[128], value[64];
@@ -217,20 +218,26 @@ static void test_sm8850_cpu(const char *tmp)
   br_cpu_topology t;
   br_cpu_plan plan;
   CHECK(br_cpu_read(root, &t) == 0);
-  CHECK(t.ncpu == 8 && t.n_e == 6 && t.n_p == 2);
-  CHECK(t.cpu[0].capacity == 741 && t.cpu[5].type == 'E');
+  CHECK(t.ncpu == 8 && t.n_e == 0 && t.n_p == 8);
+  CHECK(t.cpu[0].capacity == 741 && t.cpu[0].type == 'P' && t.cpu[0].implementer == 0x51);
+  CHECK(t.cpu[5].type == 'P' && t.cpu[5].implementer == 0x51);
   CHECK(t.cpu[6].capacity == 1024 && t.cpu[7].type == 'P');
   CHECK(br_cpu_plan_make(&t, 8, false, &plan) == 0);
-  CHECK(plan.n_e == 6 && plan.n_p == 2 && plan.nvcpu == 8);
-  CHECK(plan.v[0].affinity == 0x3f && plan.v[5].affinity == 0x3f);
-  CHECK(plan.v[6].affinity == 0xc0 && plan.v[7].affinity == 0xc0);
+  CHECK(plan.n_e == 2 && plan.n_p == 6 && plan.nvcpu == 8);
+  CHECK(plan.v[0].type == 'E' && plan.v[1].type == 'E' && plan.v[2].type == 'P');
+  CHECK(plan.v[0].affinity == 0x30 && plan.v[1].affinity == 0x30);
+  CHECK(plan.v[2].affinity == 0xcf && plan.v[7].affinity == 0xcf);
+  CHECK(plan.v[0].host_cpu == 4 && plan.v[1].host_cpu == 5);
   CHECK(plan.v[0].max_khz == 3628800 && plan.v[7].max_khz == 4742400);
-  CHECK(plan.v[0].host_cpu == 0 && plan.v[7].host_cpu == 7);
+  CHECK(br_cpu_pin_mask(&plan, &plan, 0) == 0x10 && br_cpu_pin_mask(&plan, &plan, 1) == 0x20);
+  CHECK(br_cpu_pin_mask(&plan, &plan, 2) == 0x01 && br_cpu_pin_mask(&plan, &plan, 7) == 0x80);
   CHECK(br_cpu_plan_make(&t, 8, true, &plan) == 0);
-  CHECK(plan.v[0].affinity == 0x01 && plan.v[5].affinity == 0x20);
-  CHECK(plan.v[6].affinity == 0x40 && plan.v[7].affinity == 0x80);
+  CHECK(plan.v[0].affinity == 0x10 && plan.v[1].affinity == 0x20);
+  CHECK(plan.v[2].affinity == 0x40 && plan.v[3].affinity == 0x80);
+  CHECK(plan.v[4].affinity == 0x01 && plan.v[7].affinity == 0x08);
   CHECK(br_cpu_plan_make(&t, 4, false, &plan) == 0);
-  CHECK(plan.n_e == 1 && plan.n_p == 3); // current plan policy with reduced vCPU count
+  CHECK(plan.n_e == 1 && plan.n_p == 3 && plan.v[0].type == 'E');
+  CHECK(plan.v[0].affinity == 0x20);  // one lent performance core, two prime cores stay P
 }
 
 // ---- haptics -------------------------------------------------------------------------------------
