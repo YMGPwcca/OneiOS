@@ -93,8 +93,15 @@ git -C "$OS" worktree add --detach "$WORK/OneOS" "$OS_SHA" >"$OUT/worktree-os.lo
 
 # Reuse pre-existing pinned reference clones and iOS stubs as read-only
 # source input; the worktree has its own output directory and test results.
+# Link existing pinned dependency directories individually, not the entire
+# external/ folder. New missing clones stay inside the disposable worktree
+# instead of modifying the operator's main checkout.
+mkdir -p "$WORK/OneiOS/external"
 if [ -d "$IOS/external" ]; then
-  ln -s "$IOS/external" "$WORK/OneiOS/external"
+  for reference in "$IOS"/external/*; do
+    [ -d "$reference" ] || continue
+    ln -s "$reference" "$WORK/OneiOS/external/$(basename "$reference")"
+  done
 fi
 export JOBS
 if run STATIC_PARITY env ONEOS_REPO="$WORK/OneOS" python3 "$WORK/OneiOS/scripts/phone/test-sm8850-parent-parity.py"; then
