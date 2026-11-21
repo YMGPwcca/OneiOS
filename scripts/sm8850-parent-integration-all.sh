@@ -100,7 +100,23 @@ mkdir -p "$WORK/OneiOS/external"
 if [ -d "$IOS/external" ]; then
   for reference in "$IOS"/external/*; do
     [ -d "$reference" ] || continue
-    ln -s "$reference" "$WORK/OneiOS/external/$(basename "$reference")"
+    name=$(basename "$reference")
+    expected=""
+    case "$name" in
+      virglrenderer) expected=7e17c8e814e963912fc1e4e737137a31b5efa027 ;;
+      Droid-VM-UniXNU) expected=62d0b11773ec17561fb409ed6e4c5adfa29ff45b ;;
+      NativeMetal) expected=b0d6a07a3da3e23486593aff235904177e94a3ff ;;
+      NativeAdreno) expected=627836d507ef08037fff2f9b12e9274ba7b2a4f3 ;;
+      NativeMobileDisplay) expected=ed08bd437b93772d4c41d74633af12446918f18a ;;
+      AdrenoPM4) expected=282606b528b2595bc4274ea7490b62b323f35a5 ;;
+      metal2vulkan) expected=624bab3918de5b978e1101517abca2b4fa426565 ;;
+      mesa-droidvm) expected=cecc0e96d7193c72356a31abb0cc589e4fc0415e ;;
+    esac
+    if [ -n "$expected" ] && [ "$(git -C "$reference" rev-parse HEAD 2>/dev/null || echo missing)" != "$expected" ]; then
+      printf 'REF_PIN_DRIFT=%s; fetching isolated pinned clone if required\n' "$name" >>"$OUT/reference-pins.log"
+      continue
+    fi
+    ln -s "$reference" "$WORK/OneiOS/external/$name"
   done
 fi
 export JOBS
