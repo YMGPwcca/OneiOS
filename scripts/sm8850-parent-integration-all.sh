@@ -11,10 +11,10 @@ IOS="${ONEIOS_REPO:-$HOME/projects/OneiOS}"
 OS="${ONEOS_REPO:-$HOME/projects/OneiOS/app}"
 IOS_REF="feat/oneios-sm8850-m3q"
 OS_REF="feat/sm8850-p0-thermal-reader-sim"
-PARENT_IOS_PIN="92886287724d3f9aa097dc17157281e585457500"
+PARENT_IOS_PIN="a29dde8ffe81936476b619c6343f0beceded2f00"
 PARENT_OS_PIN="53abb04e7bd87c785fff7a1db3ebd0742e777eb5"
 JOBS="${JOBS:-8}"
-VERSION="0.0.0-sm8850-parity"
+VERSION="0.0.0-sm8850parity"
 case "$JOBS" in ''|*[!0-9]*) echo "REFUSED=BAD_JOBS"; exit 2 ;; esac
 [ "$JOBS" -ge 1 ] && [ "$JOBS" -le 16 ] || { echo "REFUSED=JOBS_OUT_OF_RANGE"; exit 2; }
 for c in git bash python3 make sha256sum tar zstd; do
@@ -108,7 +108,7 @@ if [ -d "$IOS/external" ]; then
       NativeMetal) expected=b0d6a07a3da3e23486593aff235904177e94a3ff ;;
       NativeAdreno) expected=627836d507ef08037fff2f9b12e9274ba7b2a4f3 ;;
       NativeMobileDisplay) expected=ed08bd437b93772d4c41d74633af12446918f18a ;;
-      AdrenoPM4) expected=282606b528b2595bc4274ea7490b62b323f35a5 ;;
+      AdrenoPM4) expected=282606b528b2595bc4274ea7490b62b323f35a5f ;;
       metal2vulkan) expected=624bab3918de5b978e1101517abca2b4fa426565 ;;
       mesa-droidvm) expected=cecc0e96d7193c72356a31abb0cc589e4fc0415e ;;
     esac
@@ -202,7 +202,7 @@ metal_build() (
 NativeMetal b0d6a07a3da3e23486593aff235904177e94a3ff
 NativeAdreno 627836d507ef08037fff2f9b12e9274ba7b2a4f3
 NativeMobileDisplay ed08bd437b93772d4c41d74633af12446918f18a
-AdrenoPM4 282606b528b2595bc4274ea7490b62b323f35a5
+AdrenoPM4 282606b528b2595bc4274ea7490b62b323f35a5f
 metal2vulkan 624bab3918de5b978e1101517abca2b4fa426565
 mesa-droidvm cecc0e96d7193c72356a31abb0cc589e4fc0415e
 PINS
