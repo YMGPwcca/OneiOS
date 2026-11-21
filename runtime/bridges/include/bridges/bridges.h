@@ -27,7 +27,8 @@ typedef struct {
   unsigned nfreq;
   uint32_t boost_khz;                     // the highest of scaling_boost_frequencies (also in freq_khz), 0 = none listed
   uint32_t scaling_max_khz;               // scaling_max_freq when read (a cap someone set: logged, never written)
-  unsigned part;                          // MIDR part number (0xd80 A520, 0xd81 A720, 0xd82 X4), 0 = unknown
+  unsigned part;                          // MIDR part number (Arm: 0xd80 A520, 0xd81 A720, 0xd82 X4), 0 = unknown
+  unsigned implementer;                   // MIDR implementer: 0x41 Arm, 0x51 Qualcomm Oryon, 0 = unknown
   uint32_t l1d_bytes, l1i_bytes, l2_bytes, l3_bytes;
   char     type;                          // 'P' or 'E', set by br_cpu_read
 } br_host_cpu;
@@ -39,7 +40,9 @@ typedef struct {
 } br_cpu_topology;
 
 // Reads <root>/devices/system/cpu (root = "/sys" on the phone; tests pass a fixture). Returns 0, or
-// -1 when no CPU was found. CPUs of the lowest capacity are E when capacities differ, else all P.
+// -1 when no CPU was found. Lowest-capacity cores are E unless MIDR identifies
+// Qualcomm Oryon (0x51), where all physical cores are P and guest E cores are lent
+// from slower P cores by br_cpu_plan_make. Unknown MIDR remains unqualified.
 int br_cpu_read(const char *sysfs_root, br_cpu_topology *out);
 
 typedef struct {
@@ -59,9 +62,11 @@ typedef struct {
   br_vcpu  v[BR_MAX_VCPUS];
 } br_cpu_plan;
 
-// vCPUs for the guest: E vCPUs first (the boot CPU is an E core on iPhones), then P. With pin = true
-// and nvcpu == host CPUs each vCPU gets one host CPU; otherwise a vCPU may run on any core of its
-// kind and Linux places it. Returns 0, -1 on bad arguments.
+// vCPUs for the guest: E vCPUs first (the boot CPU is an E core on iPhones), then P.
+// A physical all-P host with unequal core capacities (Oryon) lends the slowest
+// cores as guest E vCPUs, retaining at least one P core. With pin=true and
+// nvcpu == host CPUs each vCPU gets one host CPU; otherwise Linux places it.
+// This is a guest topology model, NOT a host cpufreq or governor override.
 int br_cpu_plan_make(const br_cpu_topology *t, unsigned nvcpu, bool pin, br_cpu_plan *out);
 // Sets the affinity of Linux thread `tid` (0 = caller) to vCPU `index`'s mask. Returns 0 or -errno.
 int br_cpu_place(int tid, const br_cpu_plan *plan, unsigned index);
