@@ -6,7 +6,7 @@
 
 > [!CAUTION]
 > **Guest boot and first frame observed; performance and recovery not accepted.**
-> The current root-only path is **8 vCPU · 4 GiB RAM · GPU auto/3D · 600-second reboot deadline**.
+> The current root-only path is **8 vCPU · 4 GiB RAM · GPU 3D required (no 2D fallback) · 600-second reboot deadline**.
 > The device was very hot and the UI lagged badly. This is not an approved OneOS app switch.
 
 See the authoritative [2026-11-20 evidence ledger](SM8850_LIVE_STATUS_2026-11-20.md),
@@ -38,7 +38,7 @@ The last physically executed revisions were OneiOS `21b88f7372cf5a03bd94f9d2a290
 
 - The filtered saved excerpt covers ~200.758 s of display telemetry, **2,135 SurfaceFlinger posts** in 40 windows, **11 zero-post windows**, about **10.63 posted buffers/s weighted**. This is **not iOS animation FPS**, and an idle static screen can have zero posts.
 - The 600.6-second `xnuhost` report shows 21.54 million guest/host traps (**35.86k/s**), long tail syscall/interrupt stalls, repeated Spotlight ~one guest vCPU, about 1.4 GiB GPU blob memory in one sampled interval, **4 GiB prefaulted/locked** and **0 MiB guest swapped**.
-- Real `drm2kgsl`/KGSL traffic was seen; `gpu=auto` still allows 2D fallback in a *different* run. Do not claim Vulkan conformance or stable 60 Hz from readiness markers.
+- Real `drm2kgsl`/KGSL traffic was seen in the historical run using `gpu=auto`. The subsequent configuration requires `--gpu 3d`: failed KGSL initialization now aborts guest startup instead of silently falling back to 2D. This updated configuration has **not** passed a new physical run. Do not claim Vulkan conformance or stable 60 Hz from readiness markers.
 - `--mode bench --set bridges=0` is the exclusive-touch safety configuration. It **does not start the OneiOS thermal bridge or normal CPU topology/affinity bridge**. Linux kernel, Qualcomm and Samsung firmware thermal limits still apply, but **temperature and throttling were not measured during this full-run excerpt**. The phone became extremely hot, and the owner reported severe UI lag.
 - An 8-CPU accessible mask is **not** eight independently pinned vCPUs. Do not boost/disable thermals or change global governor/sysctl to obtain a prettier FPS number.
 

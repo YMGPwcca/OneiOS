@@ -506,7 +506,7 @@ mkdir launches/{token}
         print("USB + both Samsung volume keys can enter Download Mode during reboot.", flush=True)
         if mode == "run":
             print("FULL_TAKEOVER=REQUESTED", flush=True)
-            print("GUEST_VCPUS=8; GPU=auto/3D; TOUCH_EXCLUSIVE=YES; RAM=4GiB", flush=True)
+            print("GUEST_VCPUS=8; GPU=3d/required-no-fallback; TOUCH_EXCLUSIVE=YES; RAM=4GiB", flush=True)
             print("GPU_3D_STATUS=BACKEND_MUST_BE_CONFIRMED_IN_XNUHOST_LOG", flush=True)
             print("THERMAL_BRIDGE=NOT_ACTIVE_IN_BENCH_BRIDGES_0", flush=True)
             print("THERMAL_KERNEL_FIRMWARE_GUARDS=STILL_PRESENT_NOT_INDEPENDENTLY_VERIFIED", flush=True)
@@ -670,7 +670,7 @@ def main():
     parser.add_argument("--serial", help="ADB USB serial. Defaults to the sole authorized USB device.")
     parser.add_argument("--adb", type=Path, default=ADB_DEFAULT)
     parser.add_argument("--duration", type=int, choices=[600])
-    parser.add_argument("--gpu", choices=["auto"])
+    parser.add_argument("--gpu", choices=["3d"])
     parser.add_argument("--bench-manifest", type=Path)
     parser.add_argument("--output", type=Path, help="New local evidence directory")
     args = parser.parse_args()
@@ -678,8 +678,8 @@ def main():
         parser.error(f"--{args.mode} requires --confirm")
     if args.mode in {"reboot-smoke", "run"} and not args.accept_legacy_watchdog_risk:
         parser.error(f"--{args.mode} requires separate --accept-legacy-watchdog-risk consent")
-    if args.mode == "run" and (args.duration != 600 or args.gpu != "auto"):
-        parser.error("--run must specify --duration 600 --gpu auto; full-run is bounded by independent reboot deadline")
+    if args.mode == "run" and (args.duration != 600 or args.gpu != "3d"):
+        parser.error("--run must specify --duration 600 --gpu 3d; full-run is bounded by independent reboot deadline")
     if args.mode != "run" and (args.duration or args.gpu):
         parser.error("--duration and --gpu apply to --run")
     if (args.mode == "prepare") != bool(args.bench_manifest):

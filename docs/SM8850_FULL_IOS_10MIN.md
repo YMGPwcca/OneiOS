@@ -62,7 +62,7 @@ Configuration:
   `xnuhost` cpuset at launch; otherwise fail closed. No thermal/governor
   bypass or fixed maximum-frequency writes
 - 4096 MiB guest RAM, protected ram-prefault/lock checks
-- `--gpu auto`, 3D-enabled signed GPU addon, `--display shm`,
+- `--gpu 3d` (mandatory KGSL 3D, no 2D fallback; guest startup fails if unavailable), 3D-enabled signed GPU addon, `--display shm`,
   1080×2340 at 60 Hz, exclusive touchscreen capture
 - Root-private mount namespace; `/data` in the guest is an isolated
   one-shot APFS Data clone, never original Android `/data` or source Data

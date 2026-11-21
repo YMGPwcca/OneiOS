@@ -59,6 +59,9 @@ if [ -f "$ST/session/xnuhost.log" ]; then
     if tail -c 1048576 "$ST/session/xnuhost.log" 2>/dev/null | grep -Eaq 'guest .*SpringBoard\['; then
         printf 'M\tspringboard_log\t1\n'
     fi
+    if tail -c 1048576 "$ST/session/xnuhost.log" 2>/dev/null | grep -Fq 'gpu: drm2kgsl on /dev/kgsl-3d0'; then
+        printf 'M\tkgsl_3d_backend_log\t1\n'
+    fi
 fi
 '''
 
@@ -326,6 +329,7 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
     console.say(f"DEVICE={identity['model']} FIRMWARE={identity['firmware']} BOOT={identity['boot_id']}")
     console.say("THERMAL_LOGGER=PASSIVE_READ_ONLY; SCRIPT_THERMAL_FORCESHUTDOWN=NONE")
     console.say("KERNEL_FIRMWARE_THERMAL_PROTECTION=UNCHANGED")
+    console.say("GPU_3D=REQUIRED_NO_2D_FALLBACK; BACKEND_PROOF=CHECK_XNUHOST_KGSL_LOG")
     console.say("RECOVERY=EXISTING_DEVICE_SIDE_600S_DEADLINE_NOT_MODIFIED")
     console.say("SCHEDULE=15S FROM VERIFIED_FRAMEWORK_STOP; FINAL=ABOUT_T590S")
     console.say("WARNING=LEGACY_WATCHDOG_AND_UNASSISTED_RETURN_NOT_FULLY_QUALIFIED")
@@ -372,6 +376,7 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
         last_uptime = None
         seen_springboard = False
         seen_backboardd = False
+        seen_kgsl_3d = False
         last_error_report_at = 0.0
         launched_at = time.monotonic()
         post_reboot = False
@@ -402,6 +407,8 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
                 time.sleep(2)
                 continue
             boot, uptime, current_deadline = state_of(meta)
+            if token and meta.get("kgsl_3d_backend_log") == "1":
+                seen_kgsl_3d = True
             if boot != identity["boot_id"]:
                 console.say(f"POST_REBOOT=BOOT_CHANGED boot={boot} prior={identity['boot_id']}")
                 post_reboot = True
@@ -470,6 +477,7 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
             console.say(f"SPRINGBOARD_LOG_SEEN={seen_springboard} BACKBOARDD_LOG_SEEN={seen_backboardd}")
         if final is None:
             console.say("FINAL_590=NOT_CAPTURED; CHECK_LOGS_FOR_EARLY_RETURN_OR_USB_LOSS")
+        console.say(f"GPU_3D_BACKEND_LOG_SEEN={seen_kgsl_3d}; NO_2D_FALLBACK_ENFORCED_BY_ONEOS")
         console.say(f"LAST_BOOT_UPTIME={last_uptime} DEVICE_DEADLINE={deadline} TIMEBASE_VERIFIED={stop_verified}")
         console.say(f"SAMPLES_JSONL={out/'telemetry.jsonl'}")
         console.say(f"TAKEOVER_LOG={out/'takeover.log'}")
