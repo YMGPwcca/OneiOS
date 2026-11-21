@@ -17,9 +17,12 @@ case "$JOBS" in ''|*[!0-9]*) echo "REFUSED=JOBS_NOT_INTEGER" >&2; exit 2 ;; esac
 test "$JOBS" -ge 1 && test "$JOBS" -le 16 || {
   echo "REFUSED=JOBS_OUTSIDE_1_TO_16" >&2; exit 2;
 }
-test -d "$ONEIOS/.git" && test -d "$ONEOS/.git" || {
-  echo "REFUSED=LOCAL_GIT_CHECKOUT_MISSING" >&2; exit 2;
-}
+for source in "$ONEIOS" "$ONEOS"; do
+  if ! git -C "$source" rev-parse --is-inside-work-tree 2>/dev/null | grep -qx true; then
+    echo "REFUSED=LOCAL_GIT_CHECKOUT_MISSING path=$source" >&2
+    exit 2
+  fi
+done
 for required in git tar make python3; do
   command -v "$required" >/dev/null || {
     echo "REFUSED=MISSING_$required" >&2; exit 2;
