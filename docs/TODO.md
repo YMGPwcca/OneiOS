@@ -81,3 +81,14 @@ The proposed [thermal guard](SM8850_THERMAL_GUARD.md), [independent recovery acc
 ---
 
 **Next:** [Physical evidence ledger](SM8850_LIVE_STATUS_2026-11-20.md) · [Interactive performance analysis](SM8850_IOS_INTERACTIVE_PERF_TRIAGE.md) · [Documentation policy](STYLE_GUIDE.md)
+
+
+### 2026-11-21 one-shot direct-parent integration source update
+
+The user requested one completed, **offline-only** integration batch rather than per-fix phone retests. The full audit and per-subsystem status are in [SM8850 direct-parent parity](SM8850_DIRECT_PARENT_PARITY.md) (the OneOS ledger links to the OneiOS matrix). Immediate parent pins: `akshaynexus/OneiOS` main `92886287724d3f9aa097dc17157281e585457500`, `akshaynexus/OneOS` `oneios` `53abb04e7bd87c785fff7a1db3ebd0742e777eb5`. The ancestral `fahadalijaved/OneOS` was deliberately **not** treated as the parent.
+
+Code newly added to OneiOS: `gpu3d_kgsl.c` initializes the missing virgl fence table; exact parent `0007-a830-waittimestamp-fences.patch` uses the stable timestamp wait path with explicit FENCE A/B override; three exact direct-parent Metal2Vulkan patches `0101`, `0102`, `0103` are staged after the base at 9xxx by `userland/metal/build.sh`. The already-ported Oryon CPU plan is retained; the fork's other S26 GPU tracing/thermal and native haptic/encoder fixes are not overwritten. Conservative OneOS `--mode bench --cpus 8` now pins `setway-skip=1`, `spin-host=0`, `spin-task=0`, `gpu-level=deadline`, `gpu-priority=1`, and isolated vCPU affinity, with fixed locked RAM and `bridges=0`. The screen remains limited to **60 Hz** in this hot-risk profile, so it cannot demonstrate 110-118 displayed FPS. Root guard thresholds and the 600s source denial are unchanged.
+
+A complete single-run CachyOS orchestrator is checked into [OneiOS scripts/sm8850-parent-integration-all.sh](https://github.com/YMGPwcca/OneiOS/blob/feat/oneios-sm8850-m3q/scripts/sm8850-parent-integration-all.sh). It fetches fork + **direct parent** snapshots, checks static cross-repo invariants, runs the full OneOS offline P0 suite (179 expected tests) and OneiOS full GPU3D-required native ARM64 CI/package/ELF/hash, attempts a read-only OneOS Probe Debug APK and the pinned iOS arm64e Metal/Turnip bundle, and emits a combined artifact directory, hash list and JSON report. A missing SDK/JDK/Metal pin or build failure is **BLOCKED**, not a silent full PASS. **No ADB/phone, APFS stage/rearm, watchdog/reboot or Framework takeover in the script.**
+
+**No new operator CachyOS run of this batch has been provided**; prior `PASS_HOST_ONLY` covered older source before these GPU/Metal fixes. No native new binary is on the phone. **P0 thermal 101.1 C fault/independently certified watchdog and unattended return remain open; never use the 90 C experiment as an acceptance shortcut.**
