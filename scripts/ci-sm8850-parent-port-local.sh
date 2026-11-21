@@ -10,7 +10,7 @@ ONEOS="${ONEOS_REPO:-$HOME/projects/OneiOS/app}"
 IOS_BRANCH="feat/oneios-sm8850-m3q"
 OS_BRANCH="feat/sm8850-p0-thermal-reader-sim"
 IOS_PIN="bf5cd08f34f87804b3124fa09061cb3add5343d2"
-OS_PIN="cfff2a3eb1a69e77a7810006b09b2c5feb5efaec"
+OS_PIN="0b5e2a7bf4507a262b459e4f14b5424cdbb000c1"
 JOBS="${JOBS:-8}"
 
 case "$JOBS" in ''|*[!0-9]*) echo "REFUSED=JOBS_NOT_INTEGER" >&2; exit 2 ;; esac
