@@ -118,6 +118,24 @@ def check() -> None:
                             capture_output=True, text=True)
     if syntax.returncode:
         raise AssertionError(f"INTEGRATION_SHELL_SYNTAX {syntax.stderr[:1000]}")
+    # Cached acceptance must not accidentally reuse a binary after new host
+    # runtime, switcher or thermal changes. Verify its strict provenance
+    # checks, no-phone contract and Bash syntax as part of static parity.
+    resume = content(IOS, "scripts/sm8850-parent-integration-resume.sh")
+    for setting in ("CACHE_REUSE", "ONEIOS_ALL PASS_REUSED_VERIFIED_PINNED_GPU3D",
+                    "sha256sum --status -c", "allow_diff",
+                    "FALLBACK=COMPLETE_OFFLINE_PIPELINE",
+                    "gradle-test-results", "SM8850_PARENT_INTEGRATION=PASS_OFFLINE_CACHED_GPU3D_METAL_REVALIDATED_ONEOS"):
+        if setting not in resume:
+            raise AssertionError(f"RESUME_MISSING_GUARD {setting}")
+    for value in forbidden:
+        if value in resume:
+            raise AssertionError(f"RESUME_PHONE_ACTION {value}")
+    resume_syntax = subprocess.run(
+        ["bash", "-n", str(IOS / "scripts/sm8850-parent-integration-resume.sh")],
+        capture_output=True, text=True)
+    if resume_syntax.returncode:
+        raise AssertionError(f"RESUME_SHELL_SYNTAX {resume_syntax.stderr[:1000]}")
     print("SM8850_PARENT_PARITY_STATIC=PASS_SOURCE_ONLY")
     print("SM8850_PHYSICAL_THERMAL_RECOVERY=NOT_CERTIFIED")
 
