@@ -66,6 +66,19 @@ stage() {
   mkdir -p "$R/drivers" "$R/kits" "$R/.cache/gpu-reference" "$R/.cache/mesa-venv/bin" "$R/.cache/mesa-tools/bin" "$R/build"
   rsync -a --delete "$BASE/scripts/" "$R/scripts/"
   rsync -a --delete "$BASE/patches/" "$R/patches/"
+  # Direct-parent akshaynexus/OneiOS Adreno-generic shader fixes from
+  # hakios-arm64e-dada, rebased by that parent on this exact metal2vulkan pin.
+  # Stage after the base's patches as 9xxx; never modify the external checkout.
+  # A missing patch is a build failure, not a silent Metal compatibility PASS.
+  local count=0
+  for p in "$HERE"/patches/metal2vulkan/*.patch; do
+    [ -f "$p" ] || { echo "metal: missing required parent metal2vulkan patches" >&2; exit 1; }
+    mkdir -p "$R/patches/metal2vulkan"
+    cp "$p" "$R/patches/metal2vulkan/9$(basename "$p")"
+    count=$((count + 1))
+  done
+  [ "$count" -eq 3 ] || { echo "metal: expected three parent shader patches, saw $count" >&2; exit 1; }
+  say "staged $count direct-parent metal2vulkan patches as 9xxx (requires compile validation)"
   rsync -a --delete --exclude .git "$EXT/NativeMetal/" "$R/drivers/AdrenoMetal/"
   rsync -a --delete --exclude .git "$EXT/NativeAdreno/" "$R/drivers/Adreno740/"
   rsync -a --delete --exclude .git "$EXT/NativeMobileDisplay/" "$R/drivers/GopFramebuffer/"
