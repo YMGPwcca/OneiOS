@@ -24,7 +24,7 @@
 | GPU power/heat | `gpu-level=deadline` requests top KGSL clock only when a render-server frame needs it; `gpu-priority=1` separates foreground/background work; avoid legacy `gpu-level=hold` | **PINNED** deadline policy and per-context priority in conservative bench args; no hard global GPU clock cap or forced top-frequency hold |
 | Metal shader/Vulkan | Parent's three rebased `metal2vulkan` patches address oversized indexed constants, GEP constant pointers, and optional per-process pooled block sizes | **PORTED** 0101/0102/0103 byte-identical from parent; staged as 9xxx after Droid-VM base patches via `userland/metal/build.sh`. Must compile/link against pinned iOS 27 arm64e Metal/Turnip refs |
 | Adreno identity | Parent's Adreno 830 waittimestamp bug concerns SM8750; A830 fence event path caused SIGSEGV on its firmware | **PORTED GENERIC DEFENSIVE DEFAULT** waittimestamp path while leaving opt-in A/B environment; this is not SM8850 GPU certification |
-| Display | Parent has newer direct blob-to-display helper pathway and panel fallback settings | **NOT BLINDLY MERGED**: fork has custom GPU tracing, queue-generation tracking, SM8850 display perf work. Cross-file ABI changes remain a separate engineering integration, not safe to replace in a wholesale sync |
+| Display / refresh | Parent has newer direct blob-to-display helper pathway and panel fallback settings; frame-adaptive display must match panel Hz | **NOT BLINDLY MERGED**: fork has custom GPU tracing, queue-generation tracking, SM8850 display perf work. The current isolated risk-contained bench **explicitly fixes 1080x2340 at 60 Hz**; it cannot establish 110-118 displayed FPS, and raising Hz while the CPU has reached 101.1 C would be irresponsible. Cross-file ABI changes remain a separate engineering integration |
 | Touch and keys | Evdev/virtio HID, display helper, optional exclusive touch | **RETAIN FORK** exclusive-touch `bench/shm/bridges=0`; switching to `bridges=1` is rejected by runtime configuration |
 | Haptics | Parent vibrator bridge/Actuator; S26 fork has additional native preset impact and hardware HEAVY_CLICK acceptance | **RETAIN FORK** S26-specific ABI and tests; unavailable in current `haptics=off` isolated bench |
 | Audio and encoder | Parent AAudio and media bridge helpers | **RETAIN FORK** S26-specific audio error handling and encoder fixes; full guest hardware bridge inactive |
@@ -39,6 +39,10 @@
 ## Why a wholesale parent sync is unsafe
 
 The parents' SM8650/SM8750 hardware assumptions, vendor thermal thresholds, key input mapping, KGSL behavior, charger/coordinator, and recoverability are not SM8850 firmware evidence. OneiOS's fork also carries independent SM8850 improvements in `main.c`, `virtio_gpu.c`, GPU tracing, native haptic/encoder, and stage scripts that a naïve parent overwrite would remove. The appropriate definition of "parity" here is: **all compatible algorithms backported; distinct hardware defaults kept separate; full binary build validated; unqualified physical functions disabled until recovery and thermal qualify**.
+
+## First-run known limitations
+
+The integrated runner is a **one-shot source/build gate**, not a phone-deployment command. Some operations use Android SDK/JDK 21 and iOS 27 SDK/ld64/Rust+Mesa pins; when a dependency is unavailable, the script retains successful runtime artifacts and emits one summary with blocked stages/logs instead of calling it a full PASS. This is intentionally preferable to repeatedly requesting individual physical tests. The full build may take substantial resources on the host. The OneOS Probe Debug APK is a read-only diagnostic app, **not** a sideload of OneOS/OneiOS switching logic.
 
 ## One-command integrated local gate
 
