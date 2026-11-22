@@ -50,6 +50,7 @@ class TakeoverTest(unittest.TestCase):
         main = (root / "runtime/xnuhost/src/main.c").read_text()
         policy = (root / "runtime/xnuhost/src/sm8850_stage_admission.h").read_text()
         switch = (root / "app/switcher/assets/oneios_switch.sh").read_text()
+        wrapper = (root / "scripts/phone/sm8850-full-takeover.sh").read_text()
         self.assertIn('sm8850_stage_line("/data/control/framework.soft-thermal"', main)
         self.assertIn('sm8850_stage_line("/data/control/framework.duration"', main)
         self.assertIn('sm8850_stage_line("/data/control/framework.takeover-confirmed"', main)
@@ -66,6 +67,12 @@ class TakeoverTest(unittest.TestCase):
         self.assertIn('! sm8850_no_userspace_thermal', switch)
         self.assertIn('THERMAL_GUARD=OFF_NO_PROCESS_NO_HEARTBEAT_NO_SOFT_RETURN', switch)
         self.assertIn('CPU_THROTTLE=POST_STOP_BEST_EFFORT_28_PERCENT_NO_FATAL_CAP_ERROR', switch)
+        new_runtime_marker = 'SM8850_FULL_BRIDGES=ADMITTED_NO_USERSPACE_THERMAL_180S'
+        self.assertIn(new_runtime_marker, main)
+        self.assertIn(new_runtime_marker, switch)
+        self.assertIn(new_runtime_marker, wrapper)
+        self.assertLess(switch.index(new_runtime_marker),
+                        switch.index('APFS_DATA_CLONE=CONSUMED_ONE_SHOT_BEFORE_FRAMEWORK_STOP'))
 
     def test_recovery_audit_refusal_precedes_staging_and_launch(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(TAKEOVER, "upload") as upload, \
