@@ -281,6 +281,23 @@ done
 """, binary=True, stdout=archive, timeout=90)
     if result.returncode:
         print("Device log archive is incomplete. Device files remain available.", file=sys.stderr)
+    else:
+        # Post-process the ARCHIVE ONLY; never let analytical failure change
+        # reboot/return handling. This is not a guest tracing hot-path.
+        report_file = output / "frame-stall-report.json"
+        try:
+            p = subprocess.run(
+                [sys.executable, str(HERE / "sm8850-frame-stall-report.py"),
+                 "--archive", str(output / "device-logs.tar"),
+                 "--output", str(report_file)],
+                capture_output=True, text=True, timeout=25,
+            )
+            if p.returncode == 0:
+                print("FRAME_STALL_REPORT=" + str(report_file), flush=True)
+            else:
+                print("FRAME_STALL_REPORT=UNAVAILABLE " + p.stderr[:180], flush=True)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            print(f"FRAME_STALL_REPORT=UNAVAILABLE {type(error).__name__}", flush=True)
     with (output / "restored-device.txt").open("wb") as details:
         diagnostic = phone.root(STATUS + """
 echo '=== Input services ==='
