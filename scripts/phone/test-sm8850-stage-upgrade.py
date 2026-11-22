@@ -34,6 +34,11 @@ pidof() {
     return 1
 }
 __STAGE_FUNCTION__
+# Synthetic boot-pinned sensor inventory. Never inspect or modify host sysfs.
+thermal_manifest_build() {
+    printf 'v1 fixture-boot 3\nz 1 cpu-0 cpu\nz 2 gpuss-0 gpu\nz 3 ddr ddr\n' > "$incoming/thermal.guard.manifest"
+    chmod 600 "$incoming/thermal.guard.manifest"
+}
 install_stage
 """
 
@@ -48,6 +53,10 @@ class StageUpgradeTest(unittest.TestCase):
         cls.function = actual.replace(
             '"$(stat -c \'%u:%a\' "$1")" = 0:700',
             '"$(stat -c \'%u:%a\' "$1")" = "$TEST_UID:700"',
+        )
+        cls.function = cls.function.replace(
+            '"$(stat -c \'%u:%a\' "$stage/thermal.guard.manifest")" = 0:600',
+            '"$(stat -c \'%u:%a\' "$stage/thermal.guard.manifest")" = "$TEST_UID:600"',
         )
         if cls.function == actual:
             raise AssertionError("fixture did not patch root ownership predicate")
@@ -67,7 +76,9 @@ class StageUpgradeTest(unittest.TestCase):
             dirpath.chmod(0o700)
         (stage / "control/state").write_text("starting\n")
         (stage / "control/boot").write_text("previous-boot-id\n")
-        for name in ("oneios_switch.sh", "oneios_return.sh", "oneios-watchdog"):
+        for name in ("oneios_switch.sh", "oneios_return.sh", "oneios-watchdog",
+                     "oneios_sm8850_thermal_cap.sh",
+                     "oneios_sm8850_thermal_takeover_guard.sh"):
             (stage / name).write_text("old " + name + "\n")
             (incoming / name).write_text(
                 ("old " if name == "oneios-watchdog" else "new ") + name + "\n"
@@ -95,9 +106,12 @@ class StageUpgradeTest(unittest.TestCase):
                 self.assertIn("ONEOS_STAGE_UPGRADE=PASS_BACKUP_PRESERVED", result.stdout)
                 saved = list((stage / ".rollback").glob("oneos-compat.*"))
                 self.assertEqual(1, len(saved))
-                for name in ("oneios_switch.sh", "oneios_return.sh"):
+                for name in ("oneios_switch.sh", "oneios_return.sh",
+                             "oneios_sm8850_thermal_cap.sh",
+                             "oneios_sm8850_thermal_takeover_guard.sh"):
                     self.assertEqual("new " + name + "\n", (stage / name).read_text())
                     self.assertEqual("old " + name + "\n", (saved[0] / name).read_text())
+                self.assertIn("fixture-boot", (stage / "thermal.guard.manifest").read_text())
                 self.assertTrue((saved[0] / "old.sha256").exists())
                 self.assertTrue((saved[0] / "new.sha256").exists())
                 self.assertEqual("old oneios-watchdog\n", (stage / "oneios-watchdog").read_text())
