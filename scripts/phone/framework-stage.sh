@@ -164,9 +164,99 @@ install_stage() {
 
 case "$operation" in
     install|upgrade) install_stage; exit ;;
-    probe|prepare|rearm-data) ;;
+    probe|prepare|rearm-data|upgrade-runtime) ;;
     *) fail "unknown staging operation" ;;
 esac
+
+# Rebuilding xnuhost locally is not the same as installing it. A normal
+# prepare MUST refuse to overwrite an already-consumed one-shot guest Data
+# clone. This separately-confirmed native upgrade updates only the four
+# 3D/touch runtime artifacts. The consumed APFS Data and its marker remain
+# untouched, so a separate rearm-data is still required for the next launch.
+# BEGIN SM8850_NATIVE_RUNTIME_UPGRADE
+upgrade_native_runtime() {
+    install_stage
+    [ -f "$stage/data.consumed" ] && [ ! -L "$stage/data.consumed" ] &&
+        [ "$(stat -c '%u:%a:%h' "$stage/data.consumed")" = 0:600:1 ] ||
+        fail "native upgrade requires already-consumed one-shot Data (rearm separately)"
+    [ -f "$stage/image.ready" ] && [ ! -L "$stage/image.ready" ] &&
+        [ "$(cat "$stage/image.ready")" = sm8850-ios27-3d-8cpu-600s ] ||
+        fail "native upgrade requires completed SM8850 image stage"
+    [ -f "$stage/runtime.conf" ] &&
+        grep -qx 'xnuhost=bin/xnuhost' "$stage/runtime.conf" ||
+        fail "native upgrade requires the pinned 3D runtime profile"
+    [ -d "$stage/runtime" ] && root_dir "$stage/runtime" &&
+        [ -d "$stage/runtime/bin" ] && root_dir "$stage/runtime/bin" &&
+        [ ! -L "$stage/runtime.sha256" ] && [ -f "$stage/runtime.sha256" ] ||
+        fail "existing runtime stage is not trusted"
+    [ -f "$incoming/native.sha256" ] && [ ! -L "$incoming/native.sha256" ] &&
+        [ "$(wc -l < "$incoming/native.sha256")" -eq 4 ] &&
+        [ "$(wc -l < "$stage/runtime.sha256")" -eq 4 ] ||
+        fail "runtime upgrade requires four complete native hashes"
+    mkdir -m 700 "$incoming/runtime-next" "$incoming/runtime-next/bin" ||
+        fail "cannot allocate replacement native runtime"
+    : > "$incoming/runtime-next.sha256"
+    for name in xnuhost oneios-display oneios-display.dex liboneios-display.so; do
+        source="$incoming/native/$name"
+        old="$stage/runtime/bin/$name"
+        dest="$incoming/runtime-next/bin/$name"
+        [ -f "$source" ] && [ ! -L "$source" ] &&
+            [ "$(stat -c %s "$source")" -ge 256 ] ||
+            fail "invalid incoming native artifact: $name"
+        [ -f "$old" ] && [ ! -L "$old" ] && [ "$(stat -c %h "$old")" = 1 ] ||
+            fail "untrusted installed native artifact: $name"
+        expected=$(awk -v n="$name" '$2 == n && length($1) == 64 {print $1}' "$incoming/native.sha256")
+        installed=$(awk -v n="bin/$name" '$2 == n && length($1) == 64 {print $1}' "$stage/runtime.sha256")
+        case "$expected:$installed" in *[!0-9a-f:]*|'':*|*:'') fail "invalid native digest entry: $name" ;; esac
+        [ "${#expected}" = 64 ] && [ "${#installed}" = 64 ] ||
+            fail "duplicate or truncated native digest entry: $name"
+        [ "$(hash_of "$source")" = "$expected" ] &&
+            [ "$(hash_of "$old")" = "$installed" ] ||
+            fail "native source or installed runtime hash mismatch: $name"
+        perm=400
+        case "$name" in xnuhost|oneios-display) perm=700 ;; esac
+        install -m "$perm" "$source" "$dest" ||
+            fail "cannot install replacement native artifact: $name"
+        [ "$(hash_of "$dest")" = "$expected" ] ||
+            fail "native replacement checksum mismatch: $name"
+        printf '%s  bin/%s\n' "$expected" "$name" >> "$incoming/runtime-next.sha256" ||
+            fail "cannot record replacement native digest"
+        printf 'NATIVE_RUNTIME_SHA256=%s:%s\n' "$name" "$expected"
+    done
+    [ ! -e "$stage/image.ready.runtime-pending" ] &&
+        [ ! -L "$stage/image.ready.runtime-pending" ] ||
+        fail "previous interrupted native runtime upgrade: manual recovery required"
+    [ ! -L "$stage/.rollback" ] || fail "untrusted rollback folder"
+    [ -d "$stage/.rollback" ] || mkdir -m 700 "$stage/.rollback" ||
+        fail "cannot create rollback folder"
+    root_dir "$stage/.rollback" || fail "untrusted rollback folder"
+    archive=$(mktemp -d "$stage/.rollback/runtime.XXXXXXXX") ||
+        fail "cannot allocate native runtime backup"
+    root_dir "$archive" || fail "untrusted runtime archive"
+    # Revoke guest admission FIRST. Every failure from here leaves the
+    # ready marker absent; old binaries and manifest stay in the archive.
+    mv "$stage/image.ready" "$stage/image.ready.runtime-pending" ||
+        fail "cannot disarm stage for native runtime upgrade"
+    mv "$stage/runtime" "$archive/runtime" ||
+        fail "cannot preserve previous runtime"
+    mv "$stage/runtime.sha256" "$archive/runtime.sha256" ||
+        fail "cannot preserve previous runtime manifest"
+    mv "$incoming/runtime-next" "$stage/runtime" ||
+        fail "cannot publish new native runtime"
+    mv "$incoming/runtime-next.sha256" "$stage/runtime.sha256" ||
+        fail "cannot publish new runtime manifest"
+    sync
+    mv "$stage/image.ready.runtime-pending" "$stage/image.ready" ||
+        fail "cannot re-enable stage after native runtime upgrade"
+    echo "NATIVE_RUNTIME_UPGRADE=PASS_BACKUP_PRESERVED:$archive"
+    echo "APFS_DATA=CONSUMED_STILL_REQUIRES_SEPARATE_REARM"
+    echo "LIVE_FRAMEWORK_STOP=NO"
+}
+# END SM8850_NATIVE_RUNTIME_UPGRADE
+if [ "$operation" = upgrade-runtime ]; then
+    upgrade_native_runtime
+    exit 0
+fi
 chmod 700 "$incoming/image-copy"
 printf 'SM8850 reflink probe\n' > "$incoming/source"
 : > "$incoming/destination"
