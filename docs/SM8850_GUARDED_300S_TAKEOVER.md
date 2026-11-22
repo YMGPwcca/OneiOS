@@ -395,7 +395,7 @@ OneOS scripts without consuming or recloning the current one-shot
 APFS Data. Run the exact 300s read-only preflight again. Neither
 step qualifies unassisted recovery or authorizes the live run.
 
-## Experimental FULL hardware bridges=1 (source-only, not staged)
+## Experimental FULL hardware bridges=1 (local CI PASS; phone not staged)
 
 The user explicitly selected **real `bridges=1`**, not a
 brightness-only partial workaround. Both repositories now use the
@@ -434,11 +434,53 @@ rebuild and verify the actual runtime package **separately** before
 any phone staging. The independent thermal guard (90 C emergency),
 40% boot CPU cap, watchdog and reboot-only return are all unchanged.
 
-**Current status:** code pushed; source/static checks only. No
-CachyOS local CI or arm64 build has passed for this new branch, and
-no phone run is authorized by these commits alone. The
-`--reboot-stage-check` mode only stages the OneOS scripts and
-does not prove the new xnuhost binary is present.
+**Current status (operator log, 2026-11-22):** OneiOS
+`9cff1c0cbdddb43bb24d1056ed554556af32d2c2` and OneOS
+`3d40343bfc800c49112e2cbebbb4d2c939ecbe82` passed CachyOS local
+full-bridges CI: 19 Python tests, 14,327 native assertions (zero
+failures), and an NDK r28c arm64 Android 30 xnuhost link with
+`SM8850_FULL_BRIDGES=ACTIVE`. This is **local code/build evidence only**;
+there is no new full-bridges phone stage, boot, touch, thermal, or recovery
+acceptance. `--reboot-stage-check` upgrades OneOS scripts only and must
+not be mistaken for installing the new xnuhost.
+
+### Full-bridges stage-only follow-up (non-takeover)
+
+The `feat/sm8850-full-bridges-takeover` wrapper now deliberately rejects
+`prepare`, `rearm`, and `run` on this experimental branch until
+independent thermal and reboot-only recovery qualification is complete.
+The new `stage-runtime` action is restricted to this branch. It checks
+that the local prebuilt xnuhost has the full-bridges marker, checks that
+all four native artifacts exist, upgrades the OneOS root scripts with
+rollback preservation, and upgrades the four native artifacts with
+hash verification and the existing rollback archive. It **does not**
+start a guest, stop Android Framework, clone/rearm Data, or consume a
+one-shot APFS Data image.
+
+```bash
+cd ~/projects/OneiOS
+git pull --ff-only
+git submodule update --init --checkout app
+# Only after existing phone state and root are verified:
+bash scripts/phone/sm8850-full-takeover.sh stage-runtime R5GL64LZ9HA
+```
+
+Stage-only is intentionally refused when the existing phone stage has
+not recorded consumed one-shot Data: the underlying `upgrade-runtime`
+operation requires a trusted, already-consumed Data marker. Do not
+delete or fabricate that marker, and do not rearm a clone merely to
+make staging pass. Missing prebuilt display helpers or unavailable
+ephemeral root are also blockers; do not treat an offline arm64 xnuhost
+build as a complete staged runtime. On failure, preserve existing
+`.rollback`, `image.ready`, and `data.consumed` state and inspect the
+logs. Before deploying, inspect the wrapper's guard branch and the
+current phone state; stage-only is not physical admission.
+
+The original physical 95 C thermal abort before xnuhost, Samsung's
+dynamic CPU frequency minimum votes, and unqualified watchdog/unassisted
+return remain hard blockers for another live takeover. A staged binary
+is not proof that the CPU/thermal/brightness/touch bridges work on the
+device.
 
 ## 2026-11-22 300s physical run: guest boots, panel/touch interaction fails
 
