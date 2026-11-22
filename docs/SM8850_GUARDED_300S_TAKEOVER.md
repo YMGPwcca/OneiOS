@@ -80,18 +80,48 @@ The `control/state=starting` record and absence of
 frame mean **the guest did not start**. Do not attribute this run to
 Power/HID/Metal or call it a successful 300-second takeover.
 
-A concurrent cap log repeatedly reported
-`P0_CPU_CAP=MIN_FLOOR_LIMITED`: both CPU policies had an active
-`scaling_min_freq=2112000 kHz`, higher than the requested 40% caps
-(`policy0=1451520`, `policy6=1896960` kHz). The cap correctly
-**did not override Samsung's active minimum vote**, so it could not
-enforce the requested 40% ceiling. This is a plausible contributor,
-not an established cause of the spike. The switch recorded
-`MemAvailable: 8828480 kB` after Framework stop, so the earlier
-pre-launch low-RAM hypothesis is refuted. The 95 C reading is from a
-kernel thermal sensor; sensor correctness versus a transient must not
-be assumed without corroborating logs. Treat it as hazardous pending
-evidence.
+The *append-only* `thermal-cap.log` tail includes repeated
+`P0_CPU_CAP=MIN_FLOOR_LIMITED` messages showing
+`scaling_min_freq=2112000 kHz` on both policies, higher than the
+requested 40% ceilings (`policy0=1451520`,
+`policy6=1896960` kHz). **Those lines did NOT contain boot ID or
+generation**, so they cannot conclusively be attributed to this
+aborted session; earlier statements calling them concurrent were
+overstated. OneOS now appends `boot` and `generation` to future cap
+floor messages. A high active Samsung minimum is a plausible
+contributor to overheating, not an established cause. The switch
+recorded `MemAvailable: 8828480 kB` after Framework stop, so the
+earlier low-RAM hypothesis is refuted. The 95 C reading was reported
+by the kernel sensor; corroborating sensor evidence was not captured.
+Treat it as a real safety event until shown otherwise.
+
+### Physical wake CPU-frequency vote (read-only experiment)
+
+With One UI healthy, a single `input keyevent KEYCODE_WAKEUP`
+produced a transient `policy0 scaling_min_freq` rise from
+`384000` to `1228800` kHz and `policy6` from `768000` to
+`883200` kHz for about 7-8 seconds, then both returned to baseline.
+Instantaneous observed CPU frequencies reached
+`3628800` / `3648000` kHz, and thermal_zone25 rose from
+`32800` to `40900` milli-C before cooling.
+**This experiment did not reproduce 2.112 GHz minimum votes or
+the 95 C abort**, so it does not prove causation.
+
+OneOS previously sent wake only 0.5 s before stopping `system_server`,
+during the performance boost window. The updated source sends exactly
+one wake **after the root thermal guard is armed but BEFORE** the
+45-second Framework-stop cutoff starts. It then waits at least
+8 seconds and requires three consecutive fresh guard-healthy samples
+with `policy0/policy6` minimums at their hardware floors and
+CPU/GPU/DDR peak readings below 60 C. If not settled within
+20 seconds, the switch requests an ordinary pre-stop refusal, leaving
+the Framework running. It never writes either CPU minimum, relaxes
+the thermal trip, or overrides a fault. The single wake remains
+unproven for panel/TSP behavior until an actual iOS gesture test.
+
+This addresses one avoidable race but **does not establish why
+thermal_zone25 reached 95 C**. Do not certify or rerun live takeover
+solely because the local tests of the mitigation pass.
 
 **No more live takeover runs with this thermal configuration.** Do
 not lower the 90 C guard threshold, silence the guard, or force down
