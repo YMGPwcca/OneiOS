@@ -8,7 +8,7 @@ static int checks, failures;
 #define CHECK(ok) do { \
   checks++; \
   if (!(ok)) { \
-    fprintf(stderr, "FAIL %s:%d: %s\\n", __FILE__, __LINE__, #ok); \
+    fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #ok); \
     failures++; \
   } \
 } while (0)
@@ -54,6 +54,6 @@ int main(void)
   CHECK(PROFILE(g, "disabled-180s", "180", g, "5236x", NULL, NULL) == XH_SM8850_STAGE_REFUSED);
   CHECK(PROFILE(g, "disabled-180s", "180", g, "999999999999999999999999", NULL, NULL) == XH_SM8850_STAGE_REFUSED);
 
-  printf("SM8850 admission policy: %d checks, %d failures\\n", checks, failures);
+  printf("SM8850 admission policy: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }
