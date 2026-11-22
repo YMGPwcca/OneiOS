@@ -395,7 +395,8 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
 
     if not args.no_rearm:
         console.say("===== PREPARE: REARM FRESH ONE-SHOT APFS DATA CLONE =====")
-        rc = run_existing(repo, ["bash", str(WRAPPER), "rearm", args.serial], console,
+        rc = run_existing(repo, ["bash", str(WRAPPER), "rearm", args.serial,
+                                 "--duration", str(duration)], console,
                           out / "rearm.log")
         if rc:
             console.say("BLOCKED=REARM_FAILED; NO_LIVE_TAKEOVER_ATTEMPTED")
@@ -584,6 +585,16 @@ def main() -> int:
     if not args.preflight_only and not args.i_accept_10_minute_legacy_watchdog_risk:
         ap.error("Live run requires --i-accept-10-minute-legacy-watchdog-risk")
     repo = args.repo.expanduser().resolve()
+    # On the experimental full-bridges branch the operator explicitly chose
+    # 180 seconds. Reject mismatched durations before creating a new Data
+    # clone or touching the live Framework.
+    branch = subprocess.check_output(
+        ["git", "-C", str(repo), "branch", "--show-current"],
+        text=True, timeout=10,
+    ).strip()
+    if (branch == "feat/sm8850-full-bridges-takeover"
+            and not args.preflight_only and args.duration != 180):
+        ap.error("SM8850 full bridges live trial requires --duration 180")
     if not (repo / WRAPPER).is_file():
         ap.error(f"Missing existing OneiOS wrapper: {repo / WRAPPER}")
     if not Path(args.adb).is_file():
