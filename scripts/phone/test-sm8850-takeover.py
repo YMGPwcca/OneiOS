@@ -42,6 +42,31 @@ class TakeoverTest(unittest.TestCase):
         self.assertIn('--no-userspace-thermal-180', src)
         self.assertIn('I_ACCEPT_SOFT_GUARD_OFF_180S', src)
 
+    def test_xnuhost_and_oneos_agree_on_no_thermal_guard_stage_proof(self):
+        # The 2026-11-23 failed physical run exposed a cross-repo mismatch:
+        # OneOS deliberately removed the required thermal worker markers,
+        # while xnuhost still rejected the missing markers unconditionally.
+        root = TAKEOVER.REPO
+        main = (root / "runtime/xnuhost/src/main.c").read_text()
+        policy = (root / "runtime/xnuhost/src/sm8850_stage_admission.h").read_text()
+        switch = (root / "app/switcher/assets/oneios_switch.sh").read_text()
+        self.assertIn('sm8850_stage_line("/data/control/framework.soft-thermal"', main)
+        self.assertIn('sm8850_stage_line("/data/control/framework.duration"', main)
+        self.assertIn('sm8850_stage_line("/data/control/framework.takeover-confirmed"', main)
+        self.assertIn('sm8850_stage_line("/data/control/framework.deadline"', main)
+        self.assertIn('xh_sm8850_classify_stage(', main)
+        self.assertIn('XH_SM8850_STAGE_REFUSED', main)
+        self.assertIn('XH_SM8850_STAGE_NO_USERSPACE_THERMAL_180S', main)
+        self.assertIn('disabled-180s', policy)
+        self.assertIn('strcmp(framework_stop_confirmed, generation)', policy)
+        self.assertIn('!xh_sm8850_positive_decimal(reboot_deadline)', policy)
+        self.assertIn("printf 'disabled-180s\\n'", switch)
+        self.assertIn('> "$CTL/framework.takeover-confirmed"', switch)
+        self.assertIn('> "$CTL/framework.deadline.tmp"', switch)
+        self.assertIn('! sm8850_no_userspace_thermal', switch)
+        self.assertIn('THERMAL_GUARD=OFF_NO_PROCESS_NO_HEARTBEAT_NO_SOFT_RETURN', switch)
+        self.assertIn('CPU_THROTTLE=POST_STOP_BEST_EFFORT_28_PERCENT_NO_FATAL_CAP_ERROR', switch)
+
     def test_recovery_audit_refusal_precedes_staging_and_launch(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(TAKEOVER, "upload") as upload, \
                 patch.object(TAKEOVER, "Phone") as phone, contextlib.redirect_stdout(io.StringIO()):
