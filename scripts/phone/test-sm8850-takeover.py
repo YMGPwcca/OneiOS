@@ -38,7 +38,9 @@ class TakeoverTest(unittest.TestCase):
         self.assertIn('experimental_prefix = (', src)
         self.assertIn('f"{experimental_prefix}{shell} --framework-check', src)
         self.assertIn('{experimental_prefix}{shell} --framework-session', src)
-        self.assertIn('--passive-soft-thermal-180', src)
+        self.assertIn('--passive-soft-thermal-180', src)  # Backward-compatible alias
+        self.assertIn('--no-userspace-thermal-180', src)
+        self.assertIn('I_ACCEPT_SOFT_GUARD_OFF_180S', src)
 
     def test_recovery_audit_refusal_precedes_staging_and_launch(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(TAKEOVER, "upload") as upload, \
