@@ -23,8 +23,13 @@ ONEIOS_SM8850_FULL_BRIDGES_180S=I_ACCEPT_UNQUALIFIED_180S_LIVE_TEST.
 Both rearm and run require --duration 180, selected by the operator.
 Re-arming fresh one-shot Data and launching are separate steps; the
 180s software deadline is not an independently qualified recovery guarantee.
-Other historical full-run durations: 60..600 seconds, default 600, measured after
-verified Framework stop; the root watchdog and thermal monitor are required.
+For operator-selected 180s software-thermal-soft-trip-disable + lower clock
+experiment, additionally set:
+ONEIOS_SM8850_SOFT_THERMAL_OFF=I_ACCEPT_SOFT_GUARD_OFF_180S
+This disables ONLY OneOS software temperature-triggered abort, NOT kernel/
+firmware thermal safety, the CPU underclock worker or reboot watchdog.
+The floor-aware 28% requested CPU limit may be exceeded by Samsung minimum
+frequency votes. All other full-run durations: 60..600 seconds, default 600.
 The live run WILL stop Android Framework. Samsung USB + Volume Up+Down can
 enter Download Mode. DO NOT press both volume keys during this experiment.
 If frozen, Power/Side + Volume Down for >7 seconds forces a restart.
@@ -255,7 +260,15 @@ PY
     echo "WARNING=LEGACY_WATCHDOG_NOT_INDEPENDENTLY_QUALIFIED"
     echo "WARNING=UNASSISTED_NORMAL_ONEUI_REBOOT_NOT_VERIFIED"
     echo "WARNING=PRIOR_FULL_RUN_GUEST_READY_AND_KGSL_OBSERVED_BUT_PERFORMANCE_POOR"
-    echo "THERMAL_SAFETY=ROOT_GUARD_AND_MONOTONIC_THROTTLE_REQUIRED; 80C_THROTTLE; 90C_EMERGENCY_RETURN"
+    if [ "${ONEIOS_SM8850_SOFT_THERMAL_OFF:-}" = I_ACCEPT_SOFT_GUARD_OFF_180S ]; then
+      echo "SM8850_SOFT_THERMAL_GUARD=PASSIVE_MONITOR_ONLY_NO_OVERTEMP_SOFT_REBOOT"
+      echo "CPU_UNDERCLOCK=FLOOR_AWARE_28_PERCENT_REQUESTED_MAX"
+      echo "WARNING=CPU_MIN_VOTES_MAY_PREVENT_REQUESTED_CLOCK_CEILING"
+      echo "WARNING=HISTORIC_CPU_PEAK_101C_WITH_SOFTWARE_EARLY_RETURN_DISABLED"
+      echo "KERNEL_FIRMWARE_THERMAL_PROTECTION=UNCHANGED"
+    else
+      echo "THERMAL_SAFETY=ROOT_GUARD_AND_MONOTONIC_THROTTLE_REQUIRED; 80C_THROTTLE; 90C_EMERGENCY_RETURN"
+    fi
     if [ "$(git branch --show-current)" = feat/sm8850-full-bridges-takeover ]; then
       echo "SM8850_BRIDGES=1 CPU_PIN=1 CPU_AFFINITY_BENCH=0"
       echo "WARNING=HISTORIC_95C_101C_PEAKS; ${duration}S_DEADLINE_AND_WATCHDOG_RETURN_UNQUALIFIED"
@@ -266,9 +279,14 @@ PY
     echo "WARNING=ONE_SHOT_APFS_DATA_MUST_BE_FRESH_FOR_EACH_RUN"
     echo "PHYSICAL_KEYS=DO_NOT_PRESS_BOTH_VOLUME_KEYS"
     echo "RECOVERY=MANDATORY_REBOOT_AT_${duration}_SECONDS_OR_EARLIER_ON_FAILURE"
+    extra=()
+    if [ "${ONEIOS_SM8850_SOFT_THERMAL_OFF:-}" = I_ACCEPT_SOFT_GUARD_OFF_180S ]; then
+      [ "$duration" = 180 ] || { echo "BLOCKED: passive thermal mode requires 180s" >&2; exit 2; }
+      extra+=(--passive-soft-thermal-180)
+    fi
     python3 scripts/phone/sm8850-takeover.py \
       --run --confirm --accept-legacy-watchdog-risk \
-      --duration "$duration" --gpu 3d --serial "$serial"
+      --duration "$duration" --gpu 3d --serial "$serial" "${extra[@]}"
   fi
 } 2>&1 | tee "$LOG"
 exit "${PIPESTATUS[0]}"
