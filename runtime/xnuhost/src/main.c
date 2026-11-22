@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include "xnuhost.h"
 #include "gpu3d.h"
+#include "sm8850_stage_admission.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <dirent.h>
@@ -39,7 +40,8 @@ static xh_config config;
 // mount namespace. The stopped marker ALONE is insufficient: OneOS writes
 // it before it asks init to stop zygote. Never access Samsung backlight/TSP
 // until both services stopped, system_server disappeared, and the current
-// generation's independent thermal workers were required.
+// generation's recovery admission is verified (normal root thermal workers,
+// or an explicit 180s no-userspace-thermal session with reboot deadline).
 #ifdef __ANDROID__
 static bool sm8850_stage_line(const char *path, char *out, size_t size)
 {
@@ -86,7 +88,9 @@ static bool sm8850_full_bridge_admitted(void)
   return false;  // host-only unit/preview builds never touch the real panel
 #else
   char mode[32], handback[32], state[32], boot[96], current[96];
-  char generation[160], guard[160], cap[160], ns_self[64], ns_init[64];
+  char generation[160], guard[160] = {0}, cap[160] = {0}, ns_self[64], ns_init[64];
+  char software_thermal[32] = {0}, duration[32] = {0};
+  char confirmed[160] = {0}, deadline[32] = {0};
   struct stat st;
   if (geteuid() != 0 ||
       strcmp(config.runtime, "/data/runtime") ||
@@ -100,11 +104,25 @@ static bool sm8850_full_bridge_admitted(void)
       !sm8850_stage_line("/data/control/boot", boot, sizeof boot) ||
       !sm8850_stage_line("/proc/sys/kernel/random/boot_id", current, sizeof current) ||
       strcmp(boot, current) ||
-      !sm8850_stage_line("/data/control/watchdog.generation", generation, sizeof generation) ||
-      !sm8850_stage_line("/data/control/thermal.guard.required", guard, sizeof guard) ||
-      strcmp(generation, guard) ||
-      !sm8850_stage_line("/data/control/thermal.cap.required", cap, sizeof cap) ||
-      strcmp(generation, cap)) return false;
+      !sm8850_stage_line("/data/control/watchdog.generation", generation, sizeof generation))
+    return false;
+
+  // OneOS's 180s no-guard mode intentionally has neither thermal worker.
+  // Match its same-generation stop receipt and reboot deadline instead of
+  // fabricating thermal.guard.required / thermal.cap.required.
+  if (sm8850_stage_line("/data/control/framework.soft-thermal",
+                        software_thermal, sizeof software_thermal)) {
+    (void)sm8850_stage_line("/data/control/framework.duration", duration, sizeof duration);
+    (void)sm8850_stage_line("/data/control/framework.takeover-confirmed",
+                            confirmed, sizeof confirmed);
+    (void)sm8850_stage_line("/data/control/framework.deadline", deadline, sizeof deadline);
+  } else {
+    (void)sm8850_stage_line("/data/control/thermal.guard.required", guard, sizeof guard);
+    (void)sm8850_stage_line("/data/control/thermal.cap.required", cap, sizeof cap);
+  }
+  xh_sm8850_stage_profile stage_profile = xh_sm8850_classify_stage(
+      generation, software_thermal, duration, confirmed, deadline, guard, cap);
+  if (stage_profile == XH_SM8850_STAGE_REFUSED) return false;
   ssize_t a = readlink("/proc/self/ns/mnt", ns_self, sizeof ns_self - 1);
   ssize_t z = readlink("/proc/1/ns/mnt", ns_init, sizeof ns_init - 1);
   if (a <= 0 || z <= 0) return false;
@@ -114,6 +132,10 @@ static bool sm8850_full_bridge_admitted(void)
       !sm8850_prop_stopped("init.svc.zygote_next", false) ||
       !sm8850_prop_stopped("init.svc.zygote_secondary", true) ||
       !sm8850_server_absent()) return false;
+  if (stage_profile == XH_SM8850_STAGE_NO_USERSPACE_THERMAL_180S)
+    LOGI("SM8850_FULL_BRIDGES=ADMITTED_NO_USERSPACE_THERMAL_180S; "
+         "FRAMEWORK_STOP_GENERATION=VERIFIED; REBOOT_DEADLINE=PRESENT; "
+         "KERNEL_THERMAL_UNCHANGED; SOFTWARE_THERMAL_CUTOFF=OFF");
   return true;
 #endif
 }
@@ -670,7 +692,7 @@ static int boot(void)
 {
   // Verify the full-bridges experiment before touching guest RAM, KGSL,
   // /dev/input or any Samsung CPU/HAL/panel device. Android Framework must
-  // be down and both independent root thermal workers required on THIS boot.
+  // be down and its root-owned recovery admission match THIS boot.
   if (config.sm8850_full_bridges && !sm8850_full_bridge_admitted()) {
     LOGE("SM8850_FULL_BRIDGES=BLOCKED_FRAMEWORK_OR_STAGE_NOT_VERIFIED; no host hardware opened");
     return -1;
