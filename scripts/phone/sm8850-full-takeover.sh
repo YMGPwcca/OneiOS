@@ -210,6 +210,9 @@ PY
         exit 2
       }
       echo "STAGED_FULL_BRIDGES_XNUHOST_SHA256=$INSTALLED_SHA"
+      echo "===== REBIND ONEOS THERMAL SENSOR MANIFEST TO CURRENT BOOT ====="
+      python3 scripts/phone/sm8850-takeover.py \
+        --reboot-stage-check --confirm --serial "$serial"
       echo "===== FRESH ONE-SHOT APFS DATA CLONE; PRESERVE CONSUMED DATA ====="
       python3 scripts/phone/sm8850-takeover.py \
         --rearm-data --confirm --serial "$serial"
