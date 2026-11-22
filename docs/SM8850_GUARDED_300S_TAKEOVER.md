@@ -482,13 +482,13 @@ return remain hard blockers for another live takeover. A staged binary
 is not proof that the CPU/thermal/brightness/touch bridges work on the
 device.
 
-## 2026-11-23: Explicit 60-second full bridges=1 physical trial (not yet executed)
+## 2026-11-23: Operator-selected 180-second full bridges=1 trial (not yet executed)
 
 The operator explicitly requested a REAL hardware `bridges=1` trial, not
 more offline tests. The OneiOS wrapper on
-`feat/sm8850-full-bridges-takeover` now permits a **60-second-only**
+`feat/sm8850-full-bridges-takeover` now permits an explicit **180-second**
 live session when *both* the existing legacy-watchdog risk acknowledgement
-and `ONEIOS_SM8850_FULL_BRIDGES_60S=I_ACCEPT_UNQUALIFIED_60S_LIVE_TEST`
+and `ONEIOS_SM8850_FULL_BRIDGES_180S=I_ACCEPT_UNQUALIFIED_180S_LIVE_TEST`
 are supplied. This is **experimental, physically risky and not safety
 qualified**: prior SM8850 physical sessions saw 95-101.1 C CPU sensor
 peaks, a feeder-progress failure and unverified independent watchdog
@@ -503,9 +503,9 @@ The one-command monitored procedure on CachyOS is:
 ```bash
 cd ~/projects/OneiOS
 git pull --ff-only
-ONEIOS_SM8850_FULL_BRIDGES_60S=I_ACCEPT_UNQUALIFIED_60S_LIVE_TEST \
+ONEIOS_SM8850_FULL_BRIDGES_180S=I_ACCEPT_UNQUALIFIED_180S_LIVE_TEST \
   python3 -u scripts/phone/sm8850-600s-thermal-telemetry.py \
-    --duration 60 --i-accept-10-minute-legacy-watchdog-risk
+    --duration 180 --i-accept-10-minute-legacy-watchdog-risk
 ```
 
 Its default path first uses `rearm`: confirms the locally built ARM64
@@ -513,7 +513,7 @@ Its default path first uses `rearm`: confirms the locally built ARM64
 the boot-scoped OneOS thermal sensor manifest with the root-owned
 reboot-stage-check; archives the previous consumed APFS Data and
 creates a fresh isolated one-shot clone; and runs
-`--framework-check run 60` without stopping One UI. It skips redundant
+`--framework-check run 180` without stopping One UI. It skips redundant
 native compilation and previously passed CI. If any step refuses, do
 not forge a marker, disable thermal protection, or reuse consumed Data.
 
@@ -535,6 +535,34 @@ bridge or recovery acceptance. A thermal early abort before
 `SM8850_FULL_BRIDGES=ACTIVE` is a blocked trial, not proof that the
 hardware bridges themselves failed. The next session after a consumed
 one-shot clone always requires a fresh rearm.
+
+### 2026-11-23: Readiness refusal after Data rearm
+
+The operator deliberately selected `--duration 180`; a previous reply
+incorrectly treated the displayed 180-second telemetry duration as a
+configuration mismatch. The selected duration was correct, but the earlier
+OneiOS wrapper still hardcoded a 60-second rearm preflight and limited the
+full-bridges run to 60 seconds. This has been corrected in OneiOS so the
+explicit 180-second choice is propagated consistently to both phases.
+
+The actual 2026-11-22T184055Z operator log shows
+`APFS_DATA_REARMED=YES` and
+`PREVIOUS_DATA_ARCHIVED=/data/adb/oneios-m3q-framework/.retired-data/consumed.W87FR9gl`,
+then a root-owned, read-only check refused admission with
+`verified original smoke proof missing from current or archived session`.
+The telemetry process exited `2` and stated
+`NO_LIVE_TAKEOVER_ATTEMPTED`. This did **not** verify that live
+`bridges=1` works. The new APFS Data clone remains **fresh**, because
+the Framework was never stopped and no new session claimed the Data.
+Do not rearm it again just because the outer orchestration previously
+returned a nonzero status. To preserve it, use the existing
+`--no-rearm` option on a subsequent monitored invocation **only after**
+the unchanged smoke-proof/reboot admission gate can pass.
+
+The original-smoke proof and current Android boot-reason checks are
+implemented in OneOS and remain unchanged. No old session is fabricated
+or promoted to qualification; successful staging and a new APFS clone
+are not sufficient reason to bypass them.
 
 ## 2026-11-22: Full-bridges stage-only completed (no Framework stop)
 
