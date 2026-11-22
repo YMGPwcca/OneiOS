@@ -32,7 +32,7 @@ void xh_config_defaults(xh_config *c)
   c->input = true;
   c->touch_exclusive = false;  // optional bench-only touchscreen grab
   c->touch_sleep = true;
-  c->panel_bridge = false;     // never touch panel or TSP unless expressly opted in
+  c->sm8850_full_bridges = false; // do not relax the exclusive-touch/bridges gate by default
   c->tasks = true;
   c->task_uid = -1;
   c->log_level = XH_LOG_INFO;
@@ -155,7 +155,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "tasks")) return flag(value, &c->tasks);
   else if (!strcmp(key, "task-uid")) c->task_uid = atoi(value);
   else if (!strcmp(key, "touch-sleep")) return flag(value, &c->touch_sleep);
-  else if (!strcmp(key, "panel-bridge")) return flag(value, &c->panel_bridge);
+  else if (!strcmp(key, "sm8850-full-bridges")) return flag(value, &c->sm8850_full_bridges);
   else if (!strcmp(key, "pen")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->pen, value); }
   else if (!strcmp(key, "pen-rotate")) { ok = !strcmp(value, "auto") || !strcmp(value, "0") || !strcmp(value, "90") || !strcmp(value, "180") || !strcmp(value, "270"); if (ok) strcpy(c->pen_rotate, value); }
   else if (!strcmp(key, "pen-mirror")) return flag(value, &c->pen_mirror);
@@ -258,7 +258,7 @@ static void usage(void)
         "               [--hw-backend samsung|treble] [--hw-backend-BRIDGE samsung|treble] [--hw-backend-fallback 0|1]\n"
         "               [--haptics-native-impacts 0|1] (requires Treble haptics without fallback)\n"
         "               [--no-input] [--input-script FILE] [--set touch-exclusive=1] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n"
-        "               [--set panel-bridge=1 --set touch-sleep=0] (SM8850 stopped-Framework bench ONLY; bridges=0)\n"
+        "               [--set bridges=1 --set sm8850-full-bridges=1] (SM8850 stopped-Framework bench ONLY)\n"
         "       xnuhost --selftest      checks of this host (trap layer, PAC, memory), no kernel\n"
         "docs/booter.md describes the image set's files, the session files and the exit codes.\n", stderr);
 }
@@ -314,11 +314,12 @@ int xh_config_finish(xh_config *c)
   if (strcmp(c->display, "shm") && strcmp(c->display, "drm") && strcmp(c->display, "none")) { fprintf(stderr, "xnuhost: display %s is not supported\n", c->display); return -1; }
   // The host bridges change the phone's state (a tap, routing rules, the motor): on in a session.
   if (c->bridges < 0) c->bridges = !strcmp(c->mode, "takeover");
-  // Physical touchscreen exclusivity is a bounded non-takeover diagnostic only.
-  // Never let an input-grabbing guest take control of Android outside a SHM bench.
+  // Normally raw touchscreen exclusivity and bridges=1 are incompatible.
+  // One explicit, separately admitted SM8850 stopped-Framework research
+  // profile allows BOTH, never a normal Android preview or takeover mode.
   if (c->touch_exclusive && (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
-                            !c->input || c->bridges)) {
-    fprintf(stderr, "xnuhost: touch-exclusive=1 requires mode=bench, display=shm, input=1, bridges=0\n");
+                            !c->input || (c->bridges && !c->sm8850_full_bridges))) {
+    fprintf(stderr, "xnuhost: touch-exclusive=1 requires bench/shm/input, bridges=0 unless sm8850-full-bridges=1\n");
     return -1;
   }
   if (c->selftest) return 0;
@@ -351,21 +352,25 @@ int xh_config_finish(xh_config *c)
     fprintf(stderr, "xnuhost: cpu-affinity-bench=1 requires bench/shm, exclusive touch, tasks, bridges=0, cpu-pin=1\n");
     return -1;
   }
-  // This is NOT bridges=1. Only the brightness/TSP channel may be
-  // initialized, with Samsung's Framework already down and OneOS's
-  // reboot-only return path armed. Runtime stage checks enforce that.
-  // Reject normal One UI preview, generic bench and other host bridges.
-  if (c->panel_bridge &&
+  // FULL bridges=1 for this one explicit SM8850 reboot-only research run.
+  // Generic bridges initialize the host CPU topology, cpufreq virtio MMIO,
+  // brightness/TSP, battery, thermal and optional devices. For this first
+  // integration profile keep radios/haptics/encoder disabled individually,
+  // but DO NOT fake bridges=1 by instantiating only OB_CH_BRIGHTNESS.
+  // cpu-affinity-bench is separate and INCOMPATIBLE with the full CPU bridge;
+  // the generic CPU bridge owns CPU placement with cpu-pin=1 instead.
+  if (c->sm8850_full_bridges &&
       (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
-       !c->touch_exclusive || !c->input || c->bridges || !c->tasks ||
-       !c->cpu_affinity_bench || c->cpu_pin != 1 || c->touch_sleep ||
-       strcmp(c->gpu, "3d") || strcmp(c->wifi, "off") ||
+       !c->touch_exclusive || !c->input || !c->bridges || !c->tasks ||
+       c->cpu_affinity_bench || c->cpu_pin != 1 || c->touch_sleep ||
+       c->ncpu != 8 || strcmp(c->gpu, "3d") ||
+       strcmp(c->wifi, "off") ||
        strcmp(c->bluetooth, "virtual") || strcmp(c->haptics, "off") ||
        strcmp(c->encoder, "off") ||
        strcmp(c->runtime, "/data/runtime") ||
        strcmp(c->session, "/data/session") ||
        strcmp(c->data, "/data/data"))) {
-    fprintf(stderr, "xnuhost: panel-bridge=1 requires stopped-Framework SM8850 bench, GPU 3d, SHM, exclusive touch, 8-core affinity bench, bridges=0, touch-sleep=0, no other hardware bridges, and OneOS stage paths\n");
+    fprintf(stderr, "xnuhost: sm8850-full-bridges=1 requires bench/shm/8cpus/GPU3d, bridges=1, exclusive touch, CPU pinning via full CPU bridge (cpu-affinity-bench=0), touch-sleep=0, no radios/haptics, and OneOS stage paths\n");
     return -1;
   }
   br_hw_settings_merge(&c->hw, &from_image.hw);     // each hw-backend setting: the command line's, else the image set's
