@@ -1837,17 +1837,17 @@ static void test_config(const char *dir)
                             "--set", "bridges=1", "--set", "touch-exclusive=1" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 11, touch_bridges) == 0 && xh_config_finish(&c) != 0);
-  // SM8850 full-run is mode=bench because of exclusive raw touch, but
-  // still needs iOS brightness/panel power after Android Framework stops.
-  // Explicit panel-bridge=1 exposes ONLY OB_CH_BRIGHTNESS, with the generic
-  // host bridges remaining off. Stage/thermal/zygote checks are independent
-  // runtime checks made BEFORE any panel or TSP sysfs write.
+  // Actual full-bridges=1 on SM8850. This is NOT a brightness-only
+  // stand-in: native CPU topology/MMIO, battery, thermal, brightness and
+  // TSP all follow the generic bridges=1 path. The opt-in only relaxes
+  // exclusive touch for the exact guarded OneOS 8-vCPU bench profile.
   xh_config_defaults(&c);
-  CHECK(xh_config_set(&c, "panel-bridge", "garbage") != 0);
-  CHECK(xh_config_args(&c, 11, touch_ok) == 0);
-  CHECK(xh_config_set(&c, "panel-bridge", "1") == 0);
+  CHECK(xh_config_set(&c, "sm8850-full-bridges", "garbage") != 0);
+  CHECK(xh_config_args(&c, 11, touch_bridges) == 0);
+  CHECK(xh_config_set(&c, "sm8850-full-bridges", "1") == 0);
   CHECK(xh_config_set(&c, "touch-sleep", "0") == 0);
-  CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "0") == 0);
+  CHECK(xh_config_set(&c, "cpus", "8") == 0);
   CHECK(xh_config_set(&c, "gpu", "3d") == 0);
   CHECK(xh_config_set(&c, "wifi", "off") == 0);
   CHECK(xh_config_set(&c, "bluetooth", "virtual") == 0);
@@ -1856,13 +1856,16 @@ static void test_config(const char *dir)
   CHECK(xh_config_set(&c, "session", "/data/session") == 0);
   CHECK(xh_config_set(&c, "data", "/data/data") == 0);
   CHECK(xh_config_finish(&c) == 0 &&
-        c.panel_bridge && !c.bridges && !c.touch_sleep && c.cpu_affinity_bench);
+        c.sm8850_full_bridges && c.bridges == 1 && c.touch_exclusive &&
+        !c.touch_sleep && !c.cpu_affinity_bench && c.cpu_pin == 1 &&
+        c.ncpu == 8);
 
-  struct { const char *key, *value; } panel_bad[] = {
-    { "bridges", "1" },
+  struct { const char *key, *value; } full_bridge_bad[] = {
+    { "bridges", "0" },
     { "touch-sleep", "1" },
-    { "cpu-affinity-bench", "0" },
+    { "cpu-affinity-bench", "1" },
     { "touch-exclusive", "0" },
+    { "cpus", "4" },
     { "gpu", "2d" },
     { "wifi", "auto" },
     { "bluetooth", "hidl" },
@@ -1872,12 +1875,13 @@ static void test_config(const char *dir)
     { "session", "/tmp/session" },
     { "data", "/tmp/data" },
   };
-  for (unsigned i = 0; i < sizeof panel_bad / sizeof *panel_bad; i++) {
+  for (unsigned i = 0; i < sizeof full_bridge_bad / sizeof *full_bridge_bad; i++) {
     xh_config_defaults(&c);
-    CHECK(xh_config_args(&c, 11, touch_ok) == 0);
-    CHECK(xh_config_set(&c, "panel-bridge", "1") == 0);
+    CHECK(xh_config_args(&c, 11, touch_bridges) == 0);
+    CHECK(xh_config_set(&c, "sm8850-full-bridges", "1") == 0);
     CHECK(xh_config_set(&c, "touch-sleep", "0") == 0);
-    CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0);
+    CHECK(xh_config_set(&c, "cpu-affinity-bench", "0") == 0);
+    CHECK(xh_config_set(&c, "cpus", "8") == 0);
     CHECK(xh_config_set(&c, "gpu", "3d") == 0);
     CHECK(xh_config_set(&c, "wifi", "off") == 0);
     CHECK(xh_config_set(&c, "bluetooth", "virtual") == 0);
@@ -1885,7 +1889,7 @@ static void test_config(const char *dir)
     CHECK(xh_config_set(&c, "runtime", "/data/runtime") == 0);
     CHECK(xh_config_set(&c, "session", "/data/session") == 0);
     CHECK(xh_config_set(&c, "data", "/data/data") == 0);
-    CHECK(xh_config_set(&c, panel_bad[i].key, panel_bad[i].value) == 0);
+    CHECK(xh_config_set(&c, full_bridge_bad[i].key, full_bridge_bad[i].value) == 0);
     CHECK(xh_config_finish(&c) != 0);
   }
 
