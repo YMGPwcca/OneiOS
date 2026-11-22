@@ -482,6 +482,41 @@ return remain hard blockers for another live takeover. A staged binary
 is not proof that the CPU/thermal/brightness/touch bridges work on the
 device.
 
+## 2026-11-23: Short lockscreen auto-sleep and bounded pre-Framework WAKEUP
+
+Operator reports Samsung One UI lockscreen darkens ~5 seconds after a
+`KEYCODE_WAKEUP`. Previously, the no-userspace-thermal run sent one
+`input keyevent KEYCODE_WAKEUP`, slept 8 seconds, and then proceeded
+through additional recovery gates before stopping zygote: the panel
+could be asleep by the time XNUHost started.
+
+For this **opt-in 180s experimental profile only** OneOS now sends
+four `KEYCODE_WAKEUP` events at 2-second intervals while
+`system_server` and zygote are still running, plus a **final** event
+immediately before writing `control/stopped` and requesting
+`ctl.stop zygote`. If Android input refuses a pulse it fails the
+session rather than claiming the panel was woken. The standard
+thermal-guarded profile retains its own single wake and strict
+thermal/cpufreq checks.
+
+The extra wakeups may temporarily elevate Samsung's CPU minimum votes;
+the opt-in cap remains **28% best effort only**. This change does NOT
+spam Android's `input` for the full 180 seconds: after
+`system_server` stops, Android InputManager can no longer reliably
+accept `input keyevent`. There is **no proof** the physical panel
+will remain powered on for all 180 seconds under Keyguard. If a
+screen-off timeout is temporarily changed on Android to help the
+panel remain on, restore the original setting after return to One UI.
+Do not disable kernel/firmware thermal policy.
+
+Next action after pulling updated OneOS submodule: run local shell
+syntax and OneOS tests, then run `stage-runtime` again to install
+the OneOS-only switch change (it does NOT rearm consumed APFS Data).
+The XNUHost binary from the previous successful build remains valid
+and need NOT be rebuilt. The bounded telemetry live runner automatically
+rearms fresh APFS Data (do not pass `--no-rearm`). Never interpret
+WAKEUP success as guest first-frame proof.
+
 ## 2026-11-23: Actual 180s physical outcome and XNUHost admission mismatch (FIXED IN SOURCE, NOT RETESTED ON PHONE)
 
 Run `20261122T202736Z-b9f152a4`, boot
