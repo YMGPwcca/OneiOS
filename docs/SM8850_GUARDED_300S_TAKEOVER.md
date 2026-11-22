@@ -559,10 +559,28 @@ returned a nonzero status. To preserve it, use the existing
 `--no-rearm` option on a subsequent monitored invocation **only after**
 the unchanged smoke-proof/reboot admission gate can pass.
 
-The original-smoke proof and current Android boot-reason checks are
-implemented in OneOS and remain unchanged. No old session is fabricated
-or promoted to qualification; successful staging and a new APFS clone
-are not sufficient reason to bypass them.
+**Corrected 2026-11-23:** The operator restarted Android manually and
+observed `ro.boot.bootreason=reboot`,
+`sys.boot.reason=reboot`, `sys.boot.reason.last=reboot`. The former
+OneOS gate erroneously required the CURRENT boot to retain
+`reboot,oneios-sm8850-reboot-return`, conflating a historical
+Framework-only smoke event with an unrelated later manual restart.
+The OneOS source on this feature branch now checks the original smoke
+proof using its original session boot ID, framework confirmation,
+mode, return action and deadline outcome, regardless of current boot
+reason. It still refuses if no genuine root-owned archived/current
+smoke record matches. Current boot reason is informational, not proof
+of successful recovery. Independent watchdog qualification remains
+unverified; no safety sensor or thermal threshold is bypassed.
+
+**Do not rearm Data again after the refused attempt.** Sync the newly
+pinned OneOS submodule, update only the root-owned OneOS scripts using
+`--reboot-stage-check --confirm` while One UI is running, and run
+the `--framework-check run 180` admission again. If it passes, use
+the telemetry launcher with **`--no-rearm`** to preserve the already
+fresh and unconsumed APFS Data. If it still fails, inspect the
+differentiated smoke-proof refusal rather than generating a fake
+session marker or invoking live takeover.
 
 ## 2026-11-22: Full-bridges stage-only completed (no Framework stop)
 
