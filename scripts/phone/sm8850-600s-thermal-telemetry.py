@@ -385,6 +385,9 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
     console.say(f"DEVICE={identity['model']} FIRMWARE={identity['firmware']} BOOT={identity['boot_id']}")
     console.say("THERMAL_LOGGER=PASSIVE_READ_ONLY; SCRIPT_THERMAL_FORCESHUTDOWN=NONE")
     console.say("KERNEL_FIRMWARE_THERMAL_PROTECTION=UNCHANGED")
+    if os.environ.get("ONEIOS_SM8850_SOFT_THERMAL_OFF") == "I_ACCEPT_SOFT_GUARD_OFF_180S":
+        console.say("SOFTWARE_THERMAL_GUARD=PASSIVE_NO_OVERHEAT_RETURN; WARNING=NO_USERSPACE_TEMP_CUTOFF")
+        console.say("CPU_UNDERCLOCK=FLOOR_AWARE_REQUEST_28_PERCENT; HARDWARE_EFFECTIVE_CAP_NOT_GUARANTEED")
     console.say("GPU_3D=REQUIRED_NO_2D_FALLBACK; BACKEND_PROOF=CHECK_XNUHOST_KGSL_LOG")
     duration = args.duration
     console.say(f"RECOVERY=DEVICE_SIDE_DEADLINE_{duration}S_FROM_FRAMEWORK_STOP_MAX_600S")
