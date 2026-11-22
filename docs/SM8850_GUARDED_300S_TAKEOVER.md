@@ -482,6 +482,96 @@ return remain hard blockers for another live takeover. A staged binary
 is not proof that the CPU/thermal/brightness/touch bridges work on the
 device.
 
+## 2026-11-23: Actual 180s physical outcome and XNUHost admission mismatch (FIXED IN SOURCE, NOT RETESTED ON PHONE)
+
+Run `20261122T202736Z-b9f152a4`, boot
+`dc38c332-7223-48e6-bdcf-672f3cf99ed4`, launch token
+`dfb7a37d782e432c98e2c4153e2af62a`:
+
+- Local 47/47 initial Python contracts passed; stage/rearm/preflight
+  succeeded. APFS Data was marked consumed before Framework stop.
+- Actual switch log confirms `THERMAL_GUARD=OFF_NO_PROCESS_NO_HEARTBEAT_NO_SOFT_RETURN`,
+  no mandatory CPU cap worker, `framework.soft-thermal=disabled-180s`.
+  The independent best-effort CPU cap wrote
+  `cpu.best-effort.status=... pct=28 status=APPLIED_OR_ALREADY_TIGHTER`;
+  this is a single successful initial application, NOT proof of sustained
+  28% maximum or safe operating temperatures.
+- The Framework actually stopped: `MemAvailable: 8856520 kB`, zygote
+  `stopped`, system_server gone, 180s deadline `5236` established
+  after verified stop at uptime `5056`. Thus the previous RAM 5.5GB
+  hypothesis is excluded for this session.
+- XNUHost exited before opening physical hardware:
+  `SM8850_FULL_BRIDGES=BLOCKED_FRAMEWORK_OR_STAGE_NOT_VERIFIED; no host hardware opened`.
+  The switch wrote `control/state=failed`; `oneios_return.sh`
+  requested `reboot,oneios-sm8850-reboot-return` immediately, watcher
+  subsequently observed the failure. This was not a 180s deadline expiry.
+  `return.outcome=... who=watcher reason=` is not a reliable first-caller
+  record because two return paths raced after the failure. Guest
+  `bridges=1`, KGSL3D backend, boot, first frame and 8-core affinity
+  remain UNVERIFIED.
+- **Root cause (verified by source):** XNUHost's
+  `runtime/xnuhost/src/main.c::sm8850_full_bridge_admitted()`
+  unconditionally required `thermal.guard.required` and
+  `thermal.cap.required`, although OneOS had deliberately removed
+  both markers for the explicit no-software-guard mode. The previously
+  staged binary passed only the generic
+  `SM8850_FULL_BRIDGES=ACTIVE` presence check, not protocol
+  compatibility.
+
+New source contract:
+
+- XNUHost classifies stage proof via `sm8850_stage_admission.h`.
+  Default full takeover still requires both thermal workers' matching
+  generation. The exceptional `disabled-180s` profile requires:
+  exact `framework.mode=run`, `framework.return=reboot`,
+  `framework.duration=180`, same-boot `control/boot`,
+  exact `framework.takeover-confirmed == watchdog.generation`,
+  a nonzero numeric `framework.deadline`, root euid, isolated
+  mount namespace, stopped zygotes and absent system_server.
+  A different or incomplete token fails closed.
+- A matching native binary includes
+  `SM8850_FULL_BRIDGES=ADMITTED_NO_USERSPACE_THERMAL_180S`.
+  OneOS now REFUSES the old binary during root preflight BEFORE APFS
+  consumption; `sm8850-full-takeover.sh stage-runtime` also refuses
+  it before staging. The old generic `ACTIVE` marker alone is
+  insufficient for this mode.
+- Host-only `runtime/xnuhost/tests/test_sm8850_stage_admission.c`
+  checks good and bad generation, duration, deadline and markers;
+  `scripts/phone/test-sm8850-takeover.py` also checks the cross-repo
+  source protocol. Neither test substitutes for hardware qualification.
+
+**Next required operation is build+stage, NOT another live run:**
+
+```bash
+cd ~/projects/OneiOS
+git pull --ff-only
+git submodule update --init --checkout app
+make -C runtime/xnuhost build/host/test_sm8850_stage_admission
+runtime/xnuhost/build/host/test_sm8850_stage_admission
+python3 app/tests/test_sm8850_guarded_full.py -q
+python3 scripts/phone/test-sm8850-takeover.py -q
+make -C runtime/xnuhost -j8 build/android/xnuhost
+grep -aFq 'SM8850_FULL_BRIDGES=ADMITTED_NO_USERSPACE_THERMAL_180S' runtime/xnuhost/build/android/xnuhost
+bash scripts/phone/sm8850-full-takeover.sh stage-runtime R5GL64LZ9HA
+```
+
+The stage-runtime operation updates scripts/native binaries with backups,
+**without APFS Data rearm and without Framework stop**. Display binaries
+from the earlier locally validated runtime are reused unchanged.
+Because the last physical attempt already consumed Data, any subsequent
+physical trial must fresh-rearm Data once before launching (the bounded
+telemetry runner does that by default). Do NOT rerun the old staged
+binary and do not claim a guest success before independent runtime logs
+show the current session's actual bridges=1 activity.
+
+**High risk:** the operator-selected mode has NO OneOS software thermal
+cutoff on a device that previously reached 95-101.1C. The 28% cap is
+best-effort; kernel and firmware limits are not a guarantee against
+hardware damage. Recovery watchdog and unassisted return have not been
+fully qualified. Only the device owner, present at the hardware and
+prepared for manual recovery, can decide whether to run another live
+trial. No new physical test is claimed by the source patch.
+
 ## 2026-11-23: Requested exact 180s **NO OneOS thermal guard** and nonfatal CPU cap
 
 The 2026-11-22T190445Z physical 180s attempt aborted after
