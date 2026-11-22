@@ -138,6 +138,13 @@ PY
     echo "===== UPGRADE ON-DEVICE ONEOS SCRIPTS (NO FRAMEWORK STOP) ====="
     python3 scripts/phone/sm8850-takeover.py \
       --reboot-stage-check --confirm --serial "$serial"
+    echo "===== REBUILD LATEST NATIVE 3D/TOUCH RUNTIME ON LOCAL CACHYOS ====="
+    jobs=$(nproc)
+    make -C runtime/xnuhost -j"$jobs" build/android/xnuhost
+    make -C runtime/display -j"$jobs" all
+    echo "===== REPLACE NATIVE 3D RUNTIME WITH HASHED ROLLBACK (NO FRAMEWORK STOP) ====="
+    python3 scripts/phone/sm8850-takeover.py \
+      --upgrade-runtime --confirm --serial "$serial"
     echo "===== FRESH APFS DATA CLONE ONLY; PRESERVE CONSUMED SNAPSHOT ====="
     python3 scripts/phone/sm8850-takeover.py \
       --rearm-data --confirm --serial "$serial"
