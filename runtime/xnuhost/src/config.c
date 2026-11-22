@@ -32,6 +32,7 @@ void xh_config_defaults(xh_config *c)
   c->input = true;
   c->touch_exclusive = false;  // optional bench-only touchscreen grab
   c->touch_sleep = true;
+  c->panel_bridge = false;     // never touch panel or TSP unless expressly opted in
   c->tasks = true;
   c->task_uid = -1;
   c->log_level = XH_LOG_INFO;
@@ -154,6 +155,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "tasks")) return flag(value, &c->tasks);
   else if (!strcmp(key, "task-uid")) c->task_uid = atoi(value);
   else if (!strcmp(key, "touch-sleep")) return flag(value, &c->touch_sleep);
+  else if (!strcmp(key, "panel-bridge")) return flag(value, &c->panel_bridge);
   else if (!strcmp(key, "pen")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->pen, value); }
   else if (!strcmp(key, "pen-rotate")) { ok = !strcmp(value, "auto") || !strcmp(value, "0") || !strcmp(value, "90") || !strcmp(value, "180") || !strcmp(value, "270"); if (ok) strcpy(c->pen_rotate, value); }
   else if (!strcmp(key, "pen-mirror")) return flag(value, &c->pen_mirror);
@@ -346,6 +348,23 @@ int xh_config_finish(xh_config *c)
        !c->touch_exclusive || !c->input || c->bridges || !c->tasks ||
        c->cpu_pin != 1)) {
     fprintf(stderr, "xnuhost: cpu-affinity-bench=1 requires bench/shm, exclusive touch, tasks, bridges=0, cpu-pin=1\n");
+    return -1;
+  }
+  // This is NOT bridges=1. Only the brightness/TSP channel may be
+  // initialized, with Samsung's Framework already down and OneOS's
+  // reboot-only return path armed. Runtime stage checks enforce that.
+  // Reject normal One UI preview, generic bench and other host bridges.
+  if (c->panel_bridge &&
+      (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
+       !c->touch_exclusive || !c->input || c->bridges || !c->tasks ||
+       !c->cpu_affinity_bench || c->cpu_pin != 1 || c->touch_sleep ||
+       strcmp(c->gpu, "3d") || strcmp(c->wifi, "off") ||
+       strcmp(c->bluetooth, "virtual") || strcmp(c->haptics, "off") ||
+       strcmp(c->encoder, "off") ||
+       strcmp(c->runtime, "/data/runtime") ||
+       strcmp(c->session, "/data/session") ||
+       strcmp(c->data, "/data/data"))) {
+    fprintf(stderr, "xnuhost: panel-bridge=1 requires stopped-Framework SM8850 bench, GPU 3d, SHM, exclusive touch, 8-core affinity bench, bridges=0, touch-sleep=0, no other hardware bridges, and OneOS stage paths\n");
     return -1;
   }
   br_hw_settings_merge(&c->hw, &from_image.hw);     // each hw-backend setting: the command line's, else the image set's
