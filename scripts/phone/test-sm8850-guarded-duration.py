@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -54,6 +55,58 @@ class BoundedTimingTest(unittest.TestCase):
                     self.assertEqual(0, mod.main())
             self.assertIn("NO_FRAMEWORK_STOP", stdout.getvalue())
             self.assertIn("--framework-check run 300", root.call_args.args[2])
+
+    def test_previous_boot_session_markers_are_never_current_boot_proof(self):
+        mod = load("sm8850_tel_stale_test", TELEMETRY)
+        self.assertIn('[ "$ctl_boot" = "$current_boot" ]', mod.PROBE)
+        self.assertIn('meta stale_session_markers_ignored 1', mod.PROBE)
+        self.assertIn('[ "$(cat "$ST/control/boot" 2>/dev/null)" = "$(cat /proc/sys/kernel/random/boot_id)" ]',
+                      mod.MARKERS)
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            c = mod.Console(directory / "console.txt")
+            try:
+                old = {"boot_id": "new-boot", "ctl/boot": "old-boot",
+                       "ctl/state": "running", "guest_ready": "1",
+                       "first_frame": "1", "backboardd_log": "1",
+                       "springboard_log": "1", "kgsl_3d_backend_log": "1",
+                       "framework_stop_log": "old launch"}
+                with (directory / "telemetry.jsonl").open("w") as j:
+                    with patch.object(mod, "remote_probe", return_value=(old, {})):
+                        result = mod.sample("adb", "fake", "PRE_ONEUI", directory,
+                                            c, j, "new-boot", None)
+                self.assertIsNotNone(result)
+                self.assertEqual("1", result["meta"]["stale_session_markers_ignored"])
+                for key in ("guest_ready", "first_frame", "backboardd_log",
+                            "springboard_log", "kgsl_3d_backend_log",
+                            "framework_stop_log"):
+                    self.assertNotIn(key, result["meta"])
+            finally:
+                c.close()
+
+    def test_post_reboot_host_wait_is_bounded_and_local_only(self):
+        mod = load("sm8850_tel_runner_test", TELEMETRY)
+        class FakeRunner:
+            pid = 123456
+            def poll(self):
+                return None
+            def wait(self, timeout):
+                if timeout == 8:
+                    raise subprocess.TimeoutExpired("host-side runner", timeout)
+                self.assert_timeout = timeout
+                return -signal.SIGTERM
+        with tempfile.TemporaryDirectory() as temp:
+            c = mod.Console(Path(temp) / "console.txt")
+            try:
+                proc = FakeRunner()
+                with patch.object(mod.os, "killpg") as killpg:
+                    rc = mod.finish_local_runner(proc, reboot_observed=True,
+                                                 console=c)
+                    self.assertEqual(-signal.SIGTERM, rc)
+                    killpg.assert_called_once_with(proc.pid, signal.SIGTERM)
+                    self.assertEqual(5, proc.assert_timeout)
+            finally:
+                c.close()
 
     def test_sample_300s_clocks_and_pre_oneui_not_stale(self):
         mod = load("sm8850_tel_test", TELEMETRY)
