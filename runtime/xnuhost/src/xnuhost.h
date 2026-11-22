@@ -667,7 +667,7 @@ typedef struct {
 typedef struct xh_input_source {
   xh_virtio *dev;
   char       name[24];
-  bool       touch, dropping, power_only;        // exclusive bench: key-only source forwards Power, never Volume
+  bool       touch, dropping, power_only, suppress_volume; // exclusive bench: Power only; Volume stays with recovery
   int        fd;
   int      (*read_state)(struct xh_input_source *s, xh_input_state *state);   // 0 when read
   unsigned   slot, sent_keys, began, frame_began, drops;
