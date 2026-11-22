@@ -187,6 +187,11 @@ PY
         echo "BLOCKED: local ARM64 xnuhost lacks full-bridges marker; no staging attempted" >&2
         exit 2
     }
+    grep -aFq 'SM8850_FULL_BRIDGES=ADMITTED_NO_USERSPACE_THERMAL_180S' "$XNUHOST" || {
+      echo "BLOCKED: stale ARM64 XNUHost does not recognize the 180s no-thermal-guard stage proof; rebuild native xnuhost before staging" >&2
+      exit 2
+    }
+    echo "STAGED_NO_GUARD_RUNTIME_PROTOCOL=ADMISSION_180S_SUPPORTED"
     for native in oneios-display oneios-display.dex liboneios-display.so; do
       [ -s "runtime/display/build/android/$native" ] || {
         echo "BLOCKED: missing prebuilt runtime/display/build/android/$native" >&2
