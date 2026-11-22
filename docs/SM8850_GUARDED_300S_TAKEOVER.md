@@ -482,80 +482,73 @@ return remain hard blockers for another live takeover. A staged binary
 is not proof that the CPU/thermal/brightness/touch bridges work on the
 device.
 
-## 2026-11-23: Operator-requested passive soft-thermal / lower CPU clocks profile
+## 2026-11-23: Requested exact 180s **NO OneOS thermal guard** and nonfatal CPU cap
 
-The 2026-11-22T190445Z 180s live attempt reached root-owned control
-`framework.launch=02f52dfe574a4d9ca67f06443b2090d4`, then reported
-`thermal.cap.fault=unachievable_cpu_cap_floor level=2 pct=40` and
-`return.outcome=reboot-deadline-or-manual ... who=framework-deadline
-reason=independent thermal monitor/cap missing, stale, or exceeded emergency
-threshold`. The **thermal guard itself did not fault**. The root CPU-cap
-worker aborted because Samsung's active minimum-frequency vote was above
-its requested 40% maximum. The returner then requested
-`reboot,oneios-sm8850-reboot-return`. The guest never generated
-current-session `SM8850_FULL_BRIDGES=ACTIVE` evidence.
+The 2026-11-22T190445Z physical 180s attempt aborted after
+`thermal.cap.fault=unachievable_cpu_cap_floor level=2 pct=40`.
+Root `thermal.guard.fault` was missing: this was a **CPU cap vote conflict**,
+not evidence of a 90C sensor cutoff. The returner requested
+`reboot,oneios-sm8850-reboot-return` while state was `starting`.
+No current-session `SM8850_FULL_BRIDGES=ACTIVE` proof was captured.
 
-The operator explicitly requested disabling *OneOS software thermal
-abort* and reducing CPU frequency to test real `bridges=1`. A
-**separately opted-in, exact-180-second** profile now exists:
+The operator rejected the earlier “passive thermal guard” version because
+that version still ran `--run-passive` and still treated a CPU-cap fault as
+a mandatory reboot. The exact request is now implemented as a **distinct
+one-session experiment**, enabled only for `--run --duration 180` through
+`ONEIOS_SM8850_SOFT_THERMAL_OFF=I_ACCEPT_SOFT_GUARD_OFF_180S`.
 
-- Host opt-in:
-  `ONEIOS_SM8850_SOFT_THERMAL_OFF=I_ACCEPT_SOFT_GUARD_OFF_180S`.
-- The host's existing `ONEIOS_SM8850_FULL_BRIDGES_180S` acknowledgement
-  and `--i-accept-10-minute-legacy-watchdog-risk` remain required.
-- Device launch sets a temporary process environment token for
-  `oneios_switch.sh`, both for root-owned preflight and full session;
-  the token is never written to a persistent system property.
-- OneOS starts `oneios_sm8850_thermal_takeover_guard.sh --run-passive`:
-  the watchdog generation, root sensor manifest, validity and heartbeat
-  continue, but **software overtemperature readings no longer publish
-  `soft_temperature_abort` or request reboot**. Unavailable/invalid
-  sensors and missing heartbeat still fail closed. The kernel/firmware
-  thermal governors, hardware thermal trips and battery protections are
-  unchanged.
-- OneOS starts CPU-cap worker `--run-prearmed-floor`: initially
-  requests 28% of each policy's `cpuinfo_max_freq` through
-  `scaling_max_freq`, stepping monotonically down to 18/12/8% as
-  sensor temperature rises. When Samsung raises `scaling_min_freq`
-  above the desired maximum, the worker logs
-  `P0_CPU_CAP=MIN_FLOOR_LIMITED` and uses the lowest **achievable**
-  ceiling rather than falsely claiming 28% or rebooting on the
-  unavoidable min-vote conflict. It neither raises CPU clocks nor writes
-  `scaling_min_freq`. Therefore **28% is a request, not an enforced
-  ceiling under vendor min votes**. GPU clocks are unchanged.
-- The existing reboot-only session deadline, independent watcher,
-  legacy watchdog progress checks, physical key path, RAM and guest
-  readiness checks are unchanged. These have **not** been qualified as
-  foolproof independent recovery.
-- The mode is NOT enabled by default and is rejected at other
-  durations. Default strict-cap and overtemperature-abort behavior is
-  unchanged when the extra opt-in is absent.
+- OneOS `oneios_switch.sh` launches **NO
+  `oneios_sm8850_thermal_takeover_guard.sh`** process in this profile.
+  No on-phone software thermal heartbeat, invalid-sensor fail-closed
+  return or software emergency-temperature abort is present.
+- `framework.soft-thermal=disabled-180s` is written into root-owned,
+  current-session control after a fresh boot/session setup. Only this marker,
+  `framework.mode=run`, `framework.duration=180`, and matching current
+  boot are allowed to bypass the software guard/cap health dependencies
+  in `framework_recovery_ready()` and `framework_deadline()`.
+- CPU cap is instead **optional and nonfatal**. Only after verified
+  Android Framework stop, the independent `--run-best-effort` helper
+  requests a static max frequency of `28%` of `cpuinfo_max_freq`
+  per cpufreq policy, through `scaling_max_freq` only. It repeats
+  every second. A Samsung `scaling_min_freq` vote above the request
+  is handled by the lowest achievable ceiling and logged as
+  `P0_CPU_CAP=MIN_FLOOR_LIMITED`. Any sysfs error is logged as
+  `P0_CPU_CAP=BEST_EFFORT_APPLY_FAILED_NO_RETURN` and **does not
+  trigger a software reboot**.
+- This best-effort request is **NOT** a certified/guaranteed cap.
+  An active Samsung min-vote may hold CPU frequency high; if the helper
+  exits, there is no cap-health watchdog. GPU frequencies are not changed.
+- The panel is woken before Framework stop, followed by 8 seconds for
+  Samsung's wake-boost vote to settle, but there is no temperature-based
+  pre-stop admission gate in this experimental profile.
+- Independent return deadline (180s after verified Framework stop),
+  legacy watchdog/reboot return, physical keys, and generic resource and
+  guest checks remain. The independent watchdog and unattended return are
+  **NOT fully qualified**. The OneOS kernel/firmware thermal governors,
+  hardware trips, and battery protections remain untouched.
+- The default mode, when the extra flag is absent, still runs the root
+  thermal guard, strict CPU cap and fail-closed watch dependencies.
 
-**Risk:** earlier SM8850 sessions measured CPU sensor peaks of
-95–101.1 C. This opt-in removes the OneOS software early-temperature
-escape, so a new runaway could reach those levels or worse even with
-lower frequency requests; a floor-limited CPU may not underclock
-sufficiently. Only an operator at the device, aware that manual reboot
-or hardware damage may occur, should choose it. Do not disable kernel
-thermal drivers, firmware throttling, watchdog hardware, or battery
-protective limits.
+**High hardware risk:** prior physical OneiOS sessions reached CPU peaks
+of 95–101.1C. With no software temperature abort, thermal runaway can
+cause device damage even if the CPU cap requests 28%. Run only with
+operator present at the phone and prepared for manual recovery; do not
+disable firmware/kernel/battery protection. A guest run is **not yet
+validated** by this source change.
 
-This latest attempted full-run already marked the APFS Data clone
-`data.consumed`, **even though the guest did not boot**. The next
-physical attempt must fresh-rearm Data **once**, with previous
-Data archived. It must also restage the updated OneOS scripts and
-current-boot thermal sensor manifest. A local no-device contract run is:
+The previous attempt consumed its one-shot APFS Data clone, so fresh
+Data must be prepared once before another physical test. The preexisting
+bounded telemetry runner does this by default; **do not use
+`--no-rearm`** after a consumed clone. The Linux host telemetry is
+read-only and still collects USB sysfs snapshots whenever ADB is
+available; it is **not an on-device thermal guard**.
+
+Quick host-only tests on CachyOS after pulling the updated submodule:
 
 ```bash
 python3 app/tests/test_sm8850_guarded_full.py -v
 python3 scripts/phone/test-sm8850-takeover.py -v
 ```
-
-The actual experiment is launched via the preexisting bounded
-`sm8850-600s-thermal-telemetry.py --duration 180` runner with
-both environment acknowledgements and **without `--no-rearm`**.
-No evidence of a new successful physical `bridges=1` session is claimed
-by this code-only change.
 
 ## 2026-11-23: Operator-selected 180-second full bridges=1 trial (not yet executed)
 
