@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Strict offline tests: bounded takeover timing and noncausal stall reporter."""
 import importlib.util
+import contextlib
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -36,6 +38,22 @@ class BoundedTimingTest(unittest.TestCase):
                                 "--duration", str(duration)],
                                capture_output=True, text=True, timeout=10)
             self.assertEqual(2, p.returncode)
+
+    def test_preflight_only_never_invokes_takeover_or_rearm(self):
+        mod = load("sm8850_tel_preflight_test", TELEMETRY)
+        with tempfile.TemporaryDirectory() as td:
+            adb = Path(td) / "fake-adb"
+            adb.write_text("# no executable needed for isolated mocks")
+            argv = ["sm8850-600s-thermal-telemetry.py", "--repo", str(ROOT),
+                    "--adb", str(adb), "--preflight-only", "--duration", "300"]
+            with patch("sys.argv", argv), \
+                 patch.object(mod, "stock_identity", return_value={"boot_id": "test"}), \
+                 patch.object(mod, "adb_shell", return_value="PREFLIGHT OK\\n") as root, \
+                 patch.object(mod, "run_monitor", side_effect=AssertionError("live call")):
+                with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    self.assertEqual(0, mod.main())
+            self.assertIn("NO_FRAMEWORK_STOP", stdout.getvalue())
+            self.assertIn("--framework-check run 300", root.call_args.args[2])
 
     def test_sample_300s_clocks_and_pre_oneui_not_stale(self):
         mod = load("sm8850_tel_test", TELEMETRY)
