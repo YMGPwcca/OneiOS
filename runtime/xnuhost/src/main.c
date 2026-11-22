@@ -5,6 +5,7 @@
 #include "gpu3d.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
@@ -23,6 +24,9 @@
 #include "xnuloader/boot.h"
 #include "xnuloader/machine.h"
 #include "xnuloader/macho.h"
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 
 #define EXIT_GUEST_OFF 0
 #define EXIT_SETUP 2
@@ -30,6 +34,90 @@
 #define EXIT_PANIC 4
 
 static xh_config config;
+
+// Explicitly bound to the SM8850 OneOS reboot-only run in an isolated
+// mount namespace. The stopped marker ALONE is insufficient: OneOS writes
+// it before it asks init to stop zygote. Never access Samsung backlight/TSP
+// until both services stopped, system_server disappeared, and the current
+// generation's independent thermal workers were required.
+static bool panel_stage_line(const char *path, char *out, size_t size)
+{
+  int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) return false;
+  ssize_t n = read(fd, out, size - 1);
+  close(fd);
+  if (n < 1 || (size_t)n >= size - 1) return false;
+  out[n] = 0;
+  out[strcspn(out, "\r\n")] = 0;
+  return out[0] != 0;
+}
+
+#ifdef __ANDROID__
+static bool panel_server_absent(void)
+{
+  DIR *dir = opendir("/proc");
+  if (!dir) return false;
+  struct dirent *ent;
+  bool absent = true;
+  while ((ent = readdir(dir))) {
+    if (!*ent->d_name || strspn(ent->d_name, "0123456789") != strlen(ent->d_name)) continue;
+    char path[80], comm[40];
+    if (snprintf(path, sizeof path, "/proc/%s/comm", ent->d_name) >= (int)sizeof path) continue;
+    if (panel_stage_line(path, comm, sizeof comm) && !strcmp(comm, "system_server")) {
+      absent = false;
+      break;
+    }
+  }
+  closedir(dir);
+  return absent;
+}
+
+static bool panel_prop_stopped(const char *name, bool optional)
+{
+  char value[PROP_VALUE_MAX] = { 0 };
+  int count = __system_property_get(name, value);
+  return (optional && count == 0) || (count > 0 && !strcmp(value, "stopped"));
+}
+#endif
+
+static bool panel_stage_admitted(void)
+{
+#ifndef __ANDROID__
+  return false;  // host-only unit/preview builds never touch the real panel
+#else
+  char mode[32], handback[32], state[32], boot[96], current[96];
+  char generation[160], guard[160], cap[160], ns_self[64], ns_init[64];
+  struct stat st;
+  if (geteuid() != 0 ||
+      strcmp(config.runtime, "/data/runtime") ||
+      strcmp(config.session, "/data/session") ||
+      strcmp(config.data, "/data/data")) return false;
+  if (lstat("/data/control/stopped", &st) || !S_ISREG(st.st_mode) ||
+      !panel_stage_line("/data/control/framework.mode", mode, sizeof mode) || strcmp(mode, "run") ||
+      !panel_stage_line("/data/control/framework.return", handback, sizeof handback) || strcmp(handback, "reboot") ||
+      !panel_stage_line("/data/control/state", state, sizeof state) ||
+      (strcmp(state, "starting") && strcmp(state, "running")) ||
+      !panel_stage_line("/data/control/boot", boot, sizeof boot) ||
+      !panel_stage_line("/proc/sys/kernel/random/boot_id", current, sizeof current) ||
+      strcmp(boot, current) ||
+      !panel_stage_line("/data/control/watchdog.generation", generation, sizeof generation) ||
+      !panel_stage_line("/data/control/thermal.guard.required", guard, sizeof guard) ||
+      strcmp(generation, guard) ||
+      !panel_stage_line("/data/control/thermal.cap.required", cap, sizeof cap) ||
+      strcmp(generation, cap)) return false;
+  ssize_t a = readlink("/proc/self/ns/mnt", ns_self, sizeof ns_self - 1);
+  ssize_t z = readlink("/proc/1/ns/mnt", ns_init, sizeof ns_init - 1);
+  if (a <= 0 || z <= 0) return false;
+  ns_self[a] = ns_init[z] = 0;
+  if (!strcmp(ns_self, ns_init) ||
+      !panel_prop_stopped("init.svc.zygote", false) ||
+      !panel_prop_stopped("init.svc.zygote_next", false) ||
+      !panel_prop_stopped("init.svc.zygote_secondary", true) ||
+      !panel_server_absent()) return false;
+  return true;
+#endif
+}
+
 static struct { uint32_t requested, reason, code; char why[96]; } stop_state;
 static pthread_mutex_t stop_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool guest_ready;
@@ -883,6 +971,50 @@ static int boot(void)
     br_net_open_fn sim = br_wifi_sim_prepare(net.guest_mac);
     if (sim && br_virtio_net_create_backend(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, &net, sim, br_wifi_sim_send))
       kinds[ndev++] = XL_DEV_NET;
+  }
+
+  // SM8850 panel bridge: the ONE explicitly permitted guest-visible
+  // hardware channel when bridges=0. The stage gate MUST be evaluated
+  // before br_bright_open: open can write brightness and wake TSP.
+  // No HCI, battery, haptic, thermal, cpufreq or network bridge is added.
+  if (config.panel_bridge) {
+    if (!panel_stage_admitted()) {
+      LOGE("PANEL_BRIDGE=BLOCKED_FRAMEWORK_OR_STAGE_NOT_VERIFIED; no panel/TSP write attempted");
+      return -1;
+    }
+    if (ndev >= XL_MAX_DEVICES) {
+      LOGE("PANEL_BRIDGE=BLOCKED_NO_VIRTIO_SLOT");
+      return -1;
+    }
+    br_log_sink = bridge_log;
+    br_bright_options options = { .backend = BR_HW_SAMSUNG, .no_als = true,
+                                  .no_touch_off = true };
+    brightness = br_bright_open(&options);
+    if (!brightness) {
+      LOGE("PANEL_BRIDGE=BLOCKED_PANEL_UNAVAILABLE");
+      return -1;
+    }
+    br_bright_info info;
+    br_bright_info_get(brightness, &info);
+    if (!info.panel || info.touch_nodes == 0) {
+      LOGE("PANEL_BRIDGE=BLOCKED_PANEL_OR_SEC_TOUCHSCREEN_UNAVAILABLE panel=%d tsp_nodes=%u",
+           (int)info.panel, info.touch_nodes);
+      br_bright_close(brightness);
+      brightness = NULL;
+      return -1;
+    }
+    br_bridge_config bridge = { .brightness = brightness };
+    if (!br_bridge_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE,
+                          XL_BOARD_VIRTIO_SPI + ndev, &bridge)) {
+      LOGE("PANEL_BRIDGE=BLOCKED_VIRTIO_CREATE");
+      br_bright_close(brightness);
+      brightness = NULL;
+      return -1;
+    }
+    kinds[ndev++] = XL_DEV_BRIDGE;
+    xh_input_power_key = power_key_pressed;
+    LOGI("PANEL_BRIDGE=ACTIVE_ONLY_BRIGHTNESS_TSP; bridges=0, ALS=OFF, TSP_SLEEP=OFF, panel=%s, tsp_nodes=%u",
+         info.node, info.touch_nodes);
   }
 
   // bluetooth=sim and/or haptics=sim with the bridges off (a PC boot): a bridge device that serves only the stand-ins.
