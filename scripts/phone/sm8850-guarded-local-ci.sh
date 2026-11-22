@@ -34,6 +34,7 @@ for suite in \
     scripts/phone/test-sm8850-full-takeover.py \
     scripts/phone/test-sm8850-oneos-legacy-feeder.py \
     scripts/phone/test-sm8850-stage-upgrade.py \
+    scripts/phone/test-sm8850-native-runtime-upgrade.py \
     scripts/phone/test-sm8850-guarded-duration.py; do
     python3 "$suite" -v
 done
