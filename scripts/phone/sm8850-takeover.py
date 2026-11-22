@@ -168,6 +168,14 @@ def upload(phone, operation, manifest=None):
                     data = source.read_bytes()
                     if b"vgpu-3d=1" not in data or b"touch-exclusive=1 requires" not in data:
                         raise ValueError("xnuhost lacks validated GPU-3D/touch-exclusion markers")
+                    # Full-bridges sessions must never stage an old bench-only
+                    # xnuhost. Refuse before transmitting any package to ADB.
+                    if (operation == "upgrade-runtime" and
+                            subprocess.check_output(
+                                ["git", "-C", str(REPO), "branch", "--show-current"],
+                                text=True).strip() == "feat/sm8850-full-bridges-takeover" and
+                            b"SM8850_FULL_BRIDGES=ACTIVE" not in data):
+                        raise ValueError("xnuhost lacks SM8850 full-bridges marker; refusing stage")
                 files["native/" + name] = source
                 native_hashes.append((hashlib.sha256(source.read_bytes()).hexdigest(), name))
             files["native.sha256"] = Path(folder) / "native.sha256"
