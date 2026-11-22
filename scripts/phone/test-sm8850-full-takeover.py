@@ -57,6 +57,28 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         )
         self.assertNotIn('/proc/$/status)', source)
 
+    def test_exclusive_interactive_wake_and_power_key_without_volume_leak(self):
+        switch = ONEOS_SWITCH.read_text()
+        input_source = (ROOT / 'runtime/xnuhost/src/input.c').read_text()
+        input_header = (ROOT / 'runtime/xnuhost/src/xnuhost.h').read_text()
+        native_test = (ROOT / 'runtime/xnuhost/tests/test_xnuhost.c').read_text()
+        # Android's healthy input service gets exactly one WAKEUP BEFORE
+        # stopping the Framework. No unsafe sysfs or watchdog write.
+        before = switch.index('input keyevent KEYCODE_WAKEUP')
+        stop = switch.index('if ! stop_android_framework; then')
+        self.assertLess(before, stop)
+        self.assertIn('FRAMEWORK_PANEL_WAKE=ANDROID_KEYCODE_WAKEUP_PRE_STOP', switch)
+        self.assertIn('switch-panel-wake-refused', switch)
+        self.assertIn('--set bridges=0', switch)
+        self.assertIn('bool have_touch = false, have_power = false;', input_source)
+        self.assertIn('keys = !have_power && bit(key, KEY_POWER);', input_source)
+        self.assertIn('sources[nfds].power_only = true;', input_source)
+        self.assertIn('sources[nfds].suppress_volume = touch_exclusive;', input_source)
+        self.assertIn('bool       touch, dropping, power_only, suppress_volume;', input_header)
+        self.assertIn('(!s->suppress_volume || side_keys[k] == KEY_POWER_)', input_source)
+        self.assertIn('bench_keys.power_only = true;', native_test)
+        self.assertIn('bench_keys.suppress_volume = true;', native_test)
+
     def test_reboot_return_is_still_native_oneos_without_inplace_handback(self):
         switch = ONEOS_SWITCH.read_text()
         returner = ONEOS_RETURN.read_text()
