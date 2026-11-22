@@ -95,6 +95,48 @@ earlier low-RAM hypothesis is refuted. The 95 C reading was reported
 by the kernel sensor; corroborating sensor evidence was not captured.
 Treat it as a real safety event until shown otherwise.
 
+### 2026-11-22: Close the Framework-stop / CPU-cap activation gap (offline only)
+
+Before this change, the independent root CPU-cap process was created only
+AFTER `stop_android_framework()`, the legacy watchdog FD handoff, the
+watchdog feeder, app cgroup drain, Android input service checks and
+`vm.max_map_count` setup. The 2026-11-22 physical incident showed a
+95 C CPU guard fault during this window, BEFORE xnuhost launched.
+Even the later strict cap could not protect CPU clocks before its worker
+existed.
+
+OneOS now **prearms** the CPU cap worker in the root context
+before `KEYCODE_WAKEUP` and the 45-second Framework cutoff. It
+publishes generation-bound PID/birth metadata and remains **read-only**
+while the Android Framework is alive. The switch verifies that the
+prearmed worker is alive before stopping One UI. The independent
+framework-deadline guard also checks that the worker stays alive.
+
+The worker does **not** call `apply_cap` until all these conditions
+hold together: the same session's `control/stopped` marker exists,
+`init.svc.zygote` and `init.svc.zygote_next` are stopped,
+any secondary zygote is stopped, and `pidof system_server` fails.
+Only THEN does it start applying strict thermal ceilings using the
+existing fresh, boot/generation-matched root thermal heartbeat. On an
+unachievable minimum-frequency vote it emits
+`P0_CPU_CAP=UNENFORCEABLE_MIN_VOTE`, sets
+`thermal.cap.fault`, and the existing return path fails closed.
+On a pre-stop refusal/return it exits without any cpufreq sysfs write.
+The switch still requires a current active CPU-cap heartbeat before
+allowing a guest boot, and its watchdog guard observes worker/fault state.
+
+Host-only synthetic tests exercise the actual framework-down gate
+with absent marker, running zygote, running `system_server`, and
+verified-down cases; other regression tests assert the worker is
+started before Framework stop and strict cap is enforced only after.
+
+**Safety status:** Not yet validated in a live takeover on the SM-S948B.
+A transient CPU thermal peak can still occur despite quicker capping,
+and independent watchdog/unassisted return qualification remains
+UNVERIFIED. Do not rearm Data or run a new 300-second session merely
+because local tests pass. Stage-only updates are the permitted next step
+after clean CachyOS CI.
+
 ### 2026-11-22: Passive 30-s One UI CPU-floor experiment (no wake sent)
 
 On fresh boot `2206c054-cc72-4e47-9598-3a17fe872b25`,
