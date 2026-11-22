@@ -216,9 +216,9 @@ void xh_input_feed(xh_input_source *s, const xh_input_ev *ev, unsigned n, int64_
     } else if (v->type == EV_KEY_) {
       // The side keys, and the two the guest also takes from a host that has them (OneiOSSideKeys.inc): Home, the ringer.
       bool side = v->code == KEY_VOLUMEDOWN_ || v->code == KEY_VOLUMEUP_ || v->code == KEY_POWER_ || v->code == KEY_MUTE_ || v->code == KEY_HOMEPAGE_;
-      if (((!s->power_only && side) ||
-           (s->power_only && v->code == KEY_POWER_)) &&
-          (!s->suppress_volume || (v->code != KEY_VOLUMEUP_ && v->code != KEY_VOLUMEDOWN_)) ||
+      if ((((!s->power_only && side) ||
+            (s->power_only && v->code == KEY_POWER_)) &&
+           (!s->suppress_volume || (v->code != KEY_VOLUMEUP_ && v->code != KEY_VOLUMEDOWN_))) ||
           (s->touch && v->code == BTN_TOUCH_))
         send_event(s, EV_KEY_, v->code, v->value);
       if (v->code == KEY_POWER_ && v->value == 1 && xh_input_power_key) xh_input_power_key();
