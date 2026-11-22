@@ -482,6 +482,60 @@ return remain hard blockers for another live takeover. A staged binary
 is not proof that the CPU/thermal/brightness/touch bridges work on the
 device.
 
+## 2026-11-23: Explicit 60-second full bridges=1 physical trial (not yet executed)
+
+The operator explicitly requested a REAL hardware `bridges=1` trial, not
+more offline tests. The OneiOS wrapper on
+`feat/sm8850-full-bridges-takeover` now permits a **60-second-only**
+live session when *both* the existing legacy-watchdog risk acknowledgement
+and `ONEIOS_SM8850_FULL_BRIDGES_60S=I_ACCEPT_UNQUALIFIED_60S_LIVE_TEST`
+are supplied. This is **experimental, physically risky and not safety
+qualified**: prior SM8850 physical sessions saw 95-101.1 C CPU sensor
+peaks, a feeder-progress failure and unverified independent watchdog
+/ unattended recovery. The software deadline is measured from verified
+Framework stop; **it is not an independently proven hardware reset
+guarantee**. The user must be physically present, able to force a Samsung
+restart with Side/Power + Volume Down, and prepared for the Android UI
+to become unavailable. Do not press both volume keys with USB attached.
+
+The one-command monitored procedure on CachyOS is:
+
+```bash
+cd ~/projects/OneiOS
+git pull --ff-only
+ONEIOS_SM8850_FULL_BRIDGES_60S=I_ACCEPT_UNQUALIFIED_60S_LIVE_TEST \
+  python3 -u scripts/phone/sm8850-600s-thermal-telemetry.py \
+    --duration 60 --i-accept-10-minute-legacy-watchdog-risk
+```
+
+Its default path first uses `rearm`: confirms the locally built ARM64
+`xnuhost` SHA-256 matches the previously installed binary; refreshes
+the boot-scoped OneOS thermal sensor manifest with the root-owned
+reboot-stage-check; archives the previous consumed APFS Data and
+creates a fresh isolated one-shot clone; and runs
+`--framework-check run 60` without stopping One UI. It skips redundant
+native compilation and previously passed CI. If any step refuses, do
+not forge a marker, disable thermal protection, or reuse consumed Data.
+
+Only after the preflight passes does the telemetry wrapper launch the
+already-existing `--run` path. The session enforces the same native
+independent root thermal guard, strict CPU cap, GPU3D, exclusive touch,
+reboot-only deadline watcher, exact SM8850 identity and OneOS current-boot
+and generation admission gates; no safety threshold is relaxed.
+It does **not** make the OneOS app switch production eligible.
+
+**Evidence to seek** (not pre-certified PASS): a live,
+current-launch `SM8850_FULL_BRIDGES=ACTIVE_RUNTIME_LOG` line
+from the native `xnuhost` log, with
+`SM8850_FULL_BRIDGES_RUNTIME_LOG_SEEN=True`, alongside guest-ready,
+KGSL3D and actual visible panel / Power / swipe responses.
+A static binary string, the stage-only PASS, a stale historic log,
+or a returned Android boot without exact return evidence is **not**
+bridge or recovery acceptance. A thermal early abort before
+`SM8850_FULL_BRIDGES=ACTIVE` is a blocked trial, not proof that the
+hardware bridges themselves failed. The next session after a consumed
+one-shot clone always requires a fresh rearm.
+
 ## 2026-11-22: Full-bridges stage-only completed (no Framework stop)
 
 The operator's CachyOS log confirms `stage-runtime` exited `0` on
