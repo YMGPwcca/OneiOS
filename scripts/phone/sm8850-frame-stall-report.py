@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 import tarfile
+import sys
 
 TS = re.compile(r'^\[\s*(\d+\.\d+)\]')
 KVS = re.compile(r'([a-z][a-z0-9_]*)=([0-9.]+)')
@@ -21,21 +22,42 @@ TOUCH = re.compile(r'input: touch: .*?(no guest frame after the touch-down|the g
 MAX_BYTES = 80 * 1024 * 1024
 
 
+class MissingTraceInputs(Exception):
+    """The archive is valid but cannot support a frame-stall analysis."""
+
+    def __init__(self, paths: list[str]):
+        self.paths = paths
+        super().__init__(", ".join(paths))
+
+
 def read_logs(archive: Path | None, folder: Path | None) -> tuple[str, str]:
     names = ('session/xnuhost.log', 'control/display.log')
     if archive:
         with tarfile.open(archive, 'r:*') as tf:
+            # A thermal abort can happen before xnuhost ever starts.
+            # Missing guest traces are an expected, non-fatal outcome
+            # of evidence collection and must not produce a traceback.
+            members = {member.name: member for member in tf.getmembers()}
+            missing = [name for name in names if name not in members]
+            if missing:
+                raise MissingTraceInputs(missing)
             parts = []
             for name in names:
-                member = tf.getmember(name)
+                member = members[name]
                 if not member.isfile() or member.size > MAX_BYTES:
                     raise ValueError(f'Invalid or oversized archive member: {name}')
                 stream = tf.extractfile(member)
                 if stream is None:
-                    raise ValueError(f'Missing member {name}')
-                parts.append(stream.read(MAX_BYTES + 1).decode('utf-8', 'replace'))
+                    raise ValueError(f'Cannot read archive member: {name}')
+                raw = stream.read(MAX_BYTES + 1)
+                if len(raw) > MAX_BYTES:
+                    raise ValueError(f'Oversized archive member: {name}')
+                parts.append(raw.decode('utf-8', 'replace'))
             return parts[0], parts[1]
     assert folder is not None
+    missing = [name for name in names if not (folder / name).is_file()]
+    if missing:
+        raise MissingTraceInputs(missing)
     parts = []
     for name in names:
         path = folder / name
@@ -132,7 +154,16 @@ def main() -> int:
     p.add_argument('--thermal-csv', type=Path)
     p.add_argument('--output', type=Path)
     args = p.parse_args()
-    data = analyze(*read_logs(args.archive, args.folder), thermal_csv=args.thermal_csv)
+    try:
+        data = analyze(*read_logs(args.archive, args.folder), thermal_csv=args.thermal_csv)
+    except MissingTraceInputs as error:
+        print('FRAME_STALL_REPORT=SKIPPED_MISSING_GUEST_TRACE '
+              f'missing={",".join(error.paths)}', file=sys.stderr)
+        return 3
+    except (OSError, ValueError, tarfile.TarError, KeyError) as error:
+        print(f'FRAME_STALL_REPORT=ERROR {type(error).__name__}: {error}',
+              file=sys.stderr)
+        return 2
     result = json.dumps(data, indent=2, ensure_ascii=False) + '\n'
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
