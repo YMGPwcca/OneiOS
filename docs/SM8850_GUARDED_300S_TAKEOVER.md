@@ -64,6 +64,46 @@ The staged OneOS commit is pinned as the `app` submodule on this branch.
 Do not update only one repository; OneiOS's host stager must package the
 root workers from precisely the matching OneOS revision.
 
+## 2026-11-22: Physical thermal abort BEFORE xnuhost (session 6dd8f9d5)
+
+**Physical result: thermal FAIL-CLOSED / mandatory reboot, not an iOS guest
+crash and not a 300-second deadline return.** On boot
+`7c0491a7-38ba-4e65-8330-57e9844d9371` the OneOS switch entered
+Framework stop at 15:45:29 local. At 15:45:42 the independent thermal
+guard recorded `soft_temperature_abort crossed=cpu`:
+`cpu_mC=95000 cpu_zone=cpu-1-0-1@25`,
+`gpu_mC=50500`, `ddr_mC=50200`. Its preceding heartbeat had
+`cpu_mC=84500`. The watcher/return path requested
+`reboot,oneios-sm8850-reboot-return`, and the next Android boot completed.
+The `control/state=starting` record and absence of
+`control/framework.deadline`, `session/ready` and current display first
+frame mean **the guest did not start**. Do not attribute this run to
+Power/HID/Metal or call it a successful 300-second takeover.
+
+A concurrent cap log repeatedly reported
+`P0_CPU_CAP=MIN_FLOOR_LIMITED`: both CPU policies had an active
+`scaling_min_freq=2112000 kHz`, higher than the requested 40% caps
+(`policy0=1451520`, `policy6=1896960` kHz). The cap correctly
+**did not override Samsung's active minimum vote**, so it could not
+enforce the requested 40% ceiling. This is a plausible contributor,
+not an established cause of the spike. The switch recorded
+`MemAvailable: 8828480 kB` after Framework stop, so the earlier
+pre-launch low-RAM hypothesis is refuted. The 95 C reading is from a
+kernel thermal sensor; sensor correctness versus a transient must not
+be assumed without corroborating logs. Treat it as hazardous pending
+evidence.
+
+**No more live takeover runs with this thermal configuration.** Do
+not lower the 90 C guard threshold, silence the guard, or force down
+Samsung's `scaling_min_freq` by an unqualified sysfs write.
+
+Host-only telemetry bugs repaired for future analyses:
+`PRE_ONEUI` now suppresses `guest_ready`, display and SpringBoard
+markers from a different boot; after an observed Android reboot, the
+host telemetry wrapper bounds the waiting time and terminates ONLY its
+isolated local process group. It never signals the phone. Both fixes
+have offline tests; they do not address thermal overheating.
+
 ## 2026-11-22: Rebuild existing runtime without reusing consumed APFS Data
 
 The local NDK build and all native tests passed after the touch/Power
