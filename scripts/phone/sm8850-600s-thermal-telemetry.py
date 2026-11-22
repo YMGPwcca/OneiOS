@@ -604,13 +604,24 @@ def main() -> int:
         ap.error(f"ADB not found: {args.adb}")
     if args.preflight_only:
         stock_identity(args.adb, args.serial)
+        no_guard = (
+            os.environ.get("ONEIOS_SM8850_SOFT_THERMAL_OFF") ==
+            "I_ACCEPT_SOFT_GUARD_OFF_180S"
+        )
+        if no_guard and args.duration != 180:
+            ap.error("no-userspace-thermal preflight requires --duration 180")
+        prefix = ("ONEIOS_SM8850_EXPERIMENT_NO_SOFT_THERMAL=I_ACCEPT_SOFT_GUARD_OFF_180S "
+                  if no_guard else "")
         result = adb_shell(
             args.adb, args.serial,
-            "/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run " + str(args.duration),
+            prefix + "/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run " + str(args.duration),
             root=True, timeout=120,
         )
         print(result, end="" if result.endswith("\n") else "\n")
-        print("GUARDED_PREFLIGHT=PASS_NO_FRAMEWORK_STOP_NO_DATA_CONSUMPTION")
+        if no_guard:
+            print("NO_USERSPACE_THERMAL_180S_PREFLIGHT=PASS_NO_FRAMEWORK_STOP_NO_DATA_CONSUMPTION")
+        else:
+            print("GUARDED_PREFLIGHT=PASS_NO_FRAMEWORK_STOP_NO_DATA_CONSUMPTION")
         print("PHYSICAL_THERMAL_WATCHDOG_QUALIFICATION=NOT_VERIFIED")
         return 0
     out = repo / "out/sm8850/thermal-bounded" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
