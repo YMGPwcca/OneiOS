@@ -504,6 +504,8 @@ def main() -> int:
                     help="Seconds after verified Framework stop, 60..600 (default 600)")
     ap.add_argument("--no-rearm", action="store_true", help="skip rearm; preflight must still admit a fresh Data clone")
     ap.add_argument("--self-test", action="store_true", help="parse/unit checks only, never connects to a phone")
+    ap.add_argument("--preflight-only", action="store_true",
+                    help="read-only exact-duration root admission; never rearm or stop Framework")
     args = ap.parse_args()
     if not 60 <= args.duration <= 600:
         ap.error("--duration must be between 60 and 600 seconds")
@@ -515,13 +517,24 @@ def main() -> int:
         assert "42.0 C" in raw_metric_human("/sys/class/power_supply/battery/temp", "420")
         print("SELF_TEST=PASS NO_DEVICE_ACCESS")
         return 0
-    if not args.i_accept_10_minute_legacy_watchdog_risk:
+    if not args.preflight_only and not args.i_accept_10_minute_legacy_watchdog_risk:
         ap.error("Live run requires --i-accept-10-minute-legacy-watchdog-risk")
     repo = args.repo.expanduser().resolve()
     if not (repo / WRAPPER).is_file():
         ap.error(f"Missing existing OneiOS wrapper: {repo / WRAPPER}")
     if not Path(args.adb).is_file():
         ap.error(f"ADB not found: {args.adb}")
+    if args.preflight_only:
+        stock_identity(args.adb, args.serial)
+        result = adb_shell(
+            args.adb, args.serial,
+            "/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run " + str(args.duration),
+            root=True, timeout=120,
+        )
+        print(result, end="" if result.endswith("\n") else "\n")
+        print("GUARDED_PREFLIGHT=PASS_NO_FRAMEWORK_STOP_NO_DATA_CONSUMPTION")
+        print("PHYSICAL_THERMAL_WATCHDOG_QUALIFICATION=NOT_VERIFIED")
+        return 0
     out = repo / "out/sm8850/thermal-bounded" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
     out.mkdir(parents=True, exist_ok=False, mode=0o700)
     console = Console(out / "console.txt")
