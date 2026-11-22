@@ -1837,6 +1837,58 @@ static void test_config(const char *dir)
                             "--set", "bridges=1", "--set", "touch-exclusive=1" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 11, touch_bridges) == 0 && xh_config_finish(&c) != 0);
+  // SM8850 full-run is mode=bench because of exclusive raw touch, but
+  // still needs iOS brightness/panel power after Android Framework stops.
+  // Explicit panel-bridge=1 exposes ONLY OB_CH_BRIGHTNESS, with the generic
+  // host bridges remaining off. Stage/thermal/zygote checks are independent
+  // runtime checks made BEFORE any panel or TSP sysfs write.
+  xh_config_defaults(&c);
+  CHECK(xh_config_set(&c, "panel-bridge", "garbage") != 0);
+  CHECK(xh_config_args(&c, 11, touch_ok) == 0);
+  CHECK(xh_config_set(&c, "panel-bridge", "1") == 0);
+  CHECK(xh_config_set(&c, "touch-sleep", "0") == 0);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0);
+  CHECK(xh_config_set(&c, "gpu", "3d") == 0);
+  CHECK(xh_config_set(&c, "wifi", "off") == 0);
+  CHECK(xh_config_set(&c, "bluetooth", "virtual") == 0);
+  CHECK(xh_config_set(&c, "haptics", "off") == 0);
+  CHECK(xh_config_set(&c, "runtime", "/data/runtime") == 0);
+  CHECK(xh_config_set(&c, "session", "/data/session") == 0);
+  CHECK(xh_config_set(&c, "data", "/data/data") == 0);
+  CHECK(xh_config_finish(&c) == 0 &&
+        c.panel_bridge && !c.bridges && !c.touch_sleep && c.cpu_affinity_bench);
+
+  struct { const char *key, *value; } panel_bad[] = {
+    { "bridges", "1" },
+    { "touch-sleep", "1" },
+    { "cpu-affinity-bench", "0" },
+    { "touch-exclusive", "0" },
+    { "gpu", "2d" },
+    { "wifi", "auto" },
+    { "bluetooth", "hidl" },
+    { "haptics", "auto" },
+    { "encoder", "auto" },
+    { "runtime", "/tmp/runtime" },
+    { "session", "/tmp/session" },
+    { "data", "/tmp/data" },
+  };
+  for (unsigned i = 0; i < sizeof panel_bad / sizeof *panel_bad; i++) {
+    xh_config_defaults(&c);
+    CHECK(xh_config_args(&c, 11, touch_ok) == 0);
+    CHECK(xh_config_set(&c, "panel-bridge", "1") == 0);
+    CHECK(xh_config_set(&c, "touch-sleep", "0") == 0);
+    CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0);
+    CHECK(xh_config_set(&c, "gpu", "3d") == 0);
+    CHECK(xh_config_set(&c, "wifi", "off") == 0);
+    CHECK(xh_config_set(&c, "bluetooth", "virtual") == 0);
+    CHECK(xh_config_set(&c, "haptics", "off") == 0);
+    CHECK(xh_config_set(&c, "runtime", "/data/runtime") == 0);
+    CHECK(xh_config_set(&c, "session", "/data/session") == 0);
+    CHECK(xh_config_set(&c, "data", "/data/data") == 0);
+    CHECK(xh_config_set(&c, panel_bad[i].key, panel_bad[i].value) == 0);
+    CHECK(xh_config_finish(&c) != 0);
+  }
+
   // Reset before assertions for the original takeover fixture.
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0);
