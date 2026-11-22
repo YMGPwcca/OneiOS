@@ -99,7 +99,7 @@ typedef struct {
   bool  input;              // read /dev/input
   bool  touch_exclusive;    // bench/shm only: EVIOCGRAB the real sec_touchscreen; never grab side keys
   bool  touch_sleep;        // touch-sleep=0: the brightness bridge never puts the touch IC to sleep (ONEIOS_TSP_OFF=0)
-  bool  panel_bridge;       // opt-in SM8850 stopped-Framework bench: brightness + TSP only, never all hardware bridges
+  bool  sm8850_full_bridges; // explicit SM8850 stopped-Framework bench: bridges=1 + exclusive raw touch, under root admission
   char  input_script[512];  // a file of scripted touches and keys (input_script.c), "" = none
   char  pen[8];             // pen=off (the default until a phone session proves it) | auto: the host's pen digitizer (pen.c,
                             // xh_pen_lookup) or the script's pen as the guest's pen device /arm-io/input-1, and oneios-pen=1
