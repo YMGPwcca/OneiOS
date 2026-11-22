@@ -395,6 +395,52 @@ OneOS scripts without consuming or recloning the current one-shot
 APFS Data. Run the exact 300s read-only preflight again. Neither
 step qualifies unassisted recovery or authorizes the live run.
 
+## Experimental isolated panel/TSP bridge (source-only branch; NOT on phone)
+
+The prior non-takeover touch preview already delivered real physical
+sec_touchscreen gestures into iOS. The full 8-vCPU / GPU3D run instead
+used `bridges=0`, so `br_bright_open()` and the guest's
+`OB_CH_BRIGHTNESS` channel never existed; only the initial
+`KEYCODE_WAKEUP` was available. A dark screen or TSP powered off
+after the Framework stopped could not be corrected by iOS Power events.
+
+New isolated source branches: OneiOS and OneOS both
+`feat/sm8850-isolated-panel-bridge`. The OneOS full-run command
+passes `--set panel-bridge=1 --set touch-sleep=0` while retaining
+`--set bridges=0` and the existing 8-vCPU, KGSL 3D, exclusive
+touch and independent thermal/reboot recovery settings.
+The xnuhost flag defaults to **off** and is restricted to the exact
+SM8850 full-run bench profile (SHM, GPU3D, exclusive touch, host
+affinity, wifi/haptics off, virtual Bluetooth, non-sleeping TSP,
+OneOS's specific runtime/session/data paths).
+
+The host performs a second **run-time** admission BEFORE any panel
+or touch-power sysfs write. It requires root, the separate mount
+namespace, a current boot ID, the active `run`/reboot Framework
+session, stopped zygotes, absent `system_server`, the stopped
+marker and matching thermal guard/cap generations. A false result
+logs `PANEL_BRIDGE=BLOCKED_FRAMEWORK_OR_STAGE_NOT_VERIFIED` and
+refuses the guest. A missing real backlight or named
+`sec_touchscreen` TSP also fails closed. Only then does
+`br_bright_open` publish ONE virtio bridge with the brightness
+channel, disable ALS and keep the TSP awake even when the guest
+requests display-off. No haptic, thermal, battery, camera, HCI,
+network or CPU governor bridge is activated.
+
+The generic `bridges=1` path **remains rejected** with exclusive
+touch; enabling it would initialize unrelated hardware and is not a
+safe substitute for the missing display-power channel.
+
+**Deployment order:** run CachyOS offline tests, build the NEW
+arm64 `xnuhost`, verify exact new runtime artifact, then stage
+both source sets together. OneOS full-run preflight now checks for
+`PANEL_BRIDGE=ACTIVE_ONLY_BRIGHTNESS_TSP` in the staged native
+binary and refuses an older artifact **before** claiming APFS Data.
+A reboot-stage-check alone does NOT validate this new native binary.
+There is NO newly authorized live takeover, no APFS rearm, no
+change to the watchdog/thermal thresholds and no new physical
+touch/brightness acceptance yet.
+
 ## 2026-11-22 300s physical run: guest boots, panel/touch interaction fails
 
 The actual S26 Ultra run from the original 300s guest clone verified
