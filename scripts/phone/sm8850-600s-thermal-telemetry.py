@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
+import signal
 import shlex
 import subprocess
 import threading
@@ -35,24 +37,35 @@ meta uptime "$(cut -d' ' -f1 /proc/uptime)"
 for k in boot state framework.launch framework.mode framework.duration framework.deadline framework.takeover-confirmed watchdog.phase; do
     val "$ST/control/$k" "ctl/$k"
 done
-[ ! -e "$ST/session/ready" ] || meta guest_ready 1
-# The token and framework stop time come from this exact launch, never an old log.
-tok=$(cat "$ST/control/framework.launch" 2>/dev/null)
-case "$tok" in
-    ''|*[!0-9a-f]*) ;;
-    *) if [ "${#tok}" -eq 32 ] && [ -r "$ST/launches/$tok/switch.log" ]; then
-           stopline=$(grep -m1 'Framework stopped, app groups drained and Android input absent at uptime' "$ST/launches/$tok/switch.log" 2>/dev/null)
-           [ -z "$stopline" ] || meta framework_stop_log "$stopline"
-       fi ;;
-esac
-if [ -f "$ST/control/display.log" ] && grep -qm1 'first frame posted' "$ST/control/display.log" 2>/dev/null; then
-    meta first_frame 1
+# The previous session's stage is intentionally retained across a reboot.
+# Never advertise an old guest-ready/first-frame as proof on a NEW boot.
+ctl_boot=$(cat "$ST/control/boot" 2>/dev/null)
+current_boot=$(cat /proc/sys/kernel/random/boot_id)
+ctl_state=$(cat "$ST/control/state" 2>/dev/null)
+if [ "$ctl_boot" = "$current_boot" ] && [ "$ctl_state" = running ]; then
+    [ ! -e "$ST/session/ready" ] || meta guest_ready 1
+    # Framework stop must be from this boot's launch token.
+    tok=$(cat "$ST/control/framework.launch" 2>/dev/null)
+    case "$tok" in
+        ''|*[!0-9a-f]*) ;;
+        *) if [ "${#tok}" -eq 32 ] && [ -r "$ST/launches/$tok/switch.log" ]; then
+               stopline=$(grep -m1 'Framework stopped, app groups drained and Android input absent at uptime' "$ST/launches/$tok/switch.log" 2>/dev/null)
+               [ -z "$stopline" ] || meta framework_stop_log "$stopline"
+           fi ;;
+    esac
+    if [ -f "$ST/control/display.log" ] && grep -qm1 'first frame posted' "$ST/control/display.log" 2>/dev/null; then
+        meta first_frame 1
+    fi
+else
+    meta stale_session_markers_ignored 1
 fi
 '''
 
 MARKERS = r'''
 ST=/data/adb/oneios-m3q-framework
-if [ -f "$ST/session/xnuhost.log" ]; then
+if [ "$(cat "$ST/control/boot" 2>/dev/null)" = "$(cat /proc/sys/kernel/random/boot_id)" ] &&
+   [ "$(cat "$ST/control/state" 2>/dev/null)" = running ] &&
+   [ -f "$ST/session/xnuhost.log" ]; then
     if tail -c 1048576 "$ST/session/xnuhost.log" 2>/dev/null | grep -Eaq 'guest .*backboardd\['; then
         printf 'M\tbackboardd_log\t1\n'
     fi
@@ -247,6 +260,14 @@ def sample(adb: str, serial: str, kind: str, out: Path, console: Console,
         jsonl.flush()
         console.say(f"SAMPLE_REJECTED kind={kind}: {reason}")
         return None
+    # Defense in depth for old or mocked ADB probes that still surface
+    # stale PRE_ONEUI markers. Keep current control metadata for forensics,
+    # but never count a previous boot's guest or display as current.
+    if meta.get("ctl/boot") != boot:
+        for stale in ("guest_ready", "first_frame", "springboard_log",
+                      "backboardd_log", "kgsl_3d_backend_log", "framework_stop_log"):
+            meta.pop(stale, None)
+        meta["stale_session_markers_ignored"] = "1"
     elapsed = (round(duration - (deadline - uptime), 3)
                if deadline is not None and uptime is not None and duration is not None and expected_token else None)
     record = {"kind": kind, "utc": ts, "elapsed_from_framework_stop_s": elapsed,
@@ -312,7 +333,8 @@ def stream_subprocess(proc: subprocess.Popen, console: Console, logfile: Path, p
 def run_existing(repo: Path, command: list[str], console: Console, outfile: Path,
                  *, async_mode: bool = False):
     proc = subprocess.Popen(command, cwd=repo, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1)
+                            stderr=subprocess.STDOUT, text=True, errors="replace",
+                            bufsize=1, start_new_session=async_mode)
     thread = threading.Thread(target=stream_subprocess,
                               args=(proc, console, outfile, "TAKEOVER | " if async_mode else "PREPARE | "),
                               daemon=True)
@@ -323,6 +345,35 @@ def run_existing(repo: Path, command: list[str], console: Console, outfile: Path
     thread.join(timeout=10)
     console.say(f"WRAPPER_EXIT={code} FILE={outfile}")
     return code
+
+
+def finish_local_runner(proc: subprocess.Popen, *, reboot_observed: bool,
+                        console: Console) -> int:
+    """Bounded host-only cleanup. Never sends a signal or command to the phone.
+
+    When Android has already booted, the old ADB polling subprocess may
+    wait for root for minutes. Kill ONLY its separate LOCAL process group,
+    not a device-side return or guest process. Always retain session logs.
+    """
+    if proc.poll() is not None:
+        return proc.returncode
+    try:
+        return proc.wait(timeout=8 if reboot_observed else 15)
+    except subprocess.TimeoutExpired:
+        console.say("TAKEOVER_HOST_MONITOR=BOUNDED_WAIT_EXPIRED; LOCAL_ONLY_TERMINATION")
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            return proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            console.say("TAKEOVER_HOST_MONITOR=LOCAL_PROCESS_GROUP_FORCE_STOP")
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            return proc.wait(timeout=5)
 
 
 def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
@@ -487,8 +538,8 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
         console.say(f"TAKEOVER_LOG={out/'takeover.log'}")
         console.say(f"COMPARISON={out/'comparison.txt'}")
         if proc.poll() is None:
-            console.say("TAKEOVER_RUNNER_STILL_WAITING=YES; WAITING_FOR_EXISTING_RUNNER_ONLY")
-        code = proc.wait()
+            console.say("TAKEOVER_RUNNER_STILL_WAITING=YES; HOST_WAIT_BOUNDED")
+        code = finish_local_runner(proc, reboot_observed=post_reboot, console=console)
         thread.join(timeout=10)
         console.say(f"TAKEOVER_RUNNER_EXIT={code} (4 can mean reboot observed without recovery proof)")
         return code
