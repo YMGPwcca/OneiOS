@@ -95,6 +95,54 @@ earlier low-RAM hypothesis is refuted. The 95 C reading was reported
 by the kernel sensor; corroborating sensor evidence was not captured.
 Treat it as a real safety event until shown otherwise.
 
+### 2026-11-22: Passive 30-s One UI CPU-floor experiment (no wake sent)
+
+On fresh boot `2206c054-cc72-4e47-9598-3a17fe872b25`,
+the operator captured 30 one-second passive samples from thermal zones
+6/24/25/26/27, GPU43, DDR47 and cpufreq policies 0/6.
+There was no scripted `KEYCODE_WAKEUP`, no guest, no Framework stop,
+and no APFS rearm.
+
+* Background: policy0 min=384000, policy6 min=768000 kHz; CPU zones
+  around 33-38 C.
+* Sample 19: CPU zone6=68900 mC, zone25=55200 mC,
+  zone27=61400 mC; BOTH policy minima=2112000 kHz.
+  This is correlated multi-zone activity rather than an isolated
+  single-sensor spike.
+* Sample 23: policy0 minimum=maximum=3398400 kHz,
+  policy6 minimum=maximum=3763200 kHz.
+* Sample 28: policy0 minimum=maximum=3513600 kHz,
+  policy6 minimum=maximum=3974400 kHz.
+  These are high performance votes in normal One UI, not proven to be
+  caused by the previous wake event. The measured maximums also vary.
+* Sample 29: minimums fell to 1228800 / 883200 kHz.
+
+**Confirmed safety gap in the old independent cap worker**:
+`apply_cap` raised its requested ceiling to Samsung's higher
+`scaling_min_freq` and then still published heartbeat `OK`, even
+when the required 40% / 28% / lower thermal throttling could not be
+enforced. It did NOT change the vendor minimum, but it could give
+misleading assurance of a successful cap.
+
+The OneOS worker now uses a **strict mode in live --run only**:
+if a policy's observed minimum exceeds its requested ceiling
+(after clipping the request to the hardware minimum), it logs
+`P0_CPU_CAP=UNENFORCEABLE_MIN_VOTE` with boot and generation,
+fails its thermal-cap heartbeat, and publishes `thermal.cap.fault`.
+The existing independent return path can then abort instead of
+waiting for the last-resort 90 C thermal fault. The strict preflight
+checks both policies before writing either ceiling and rechecks
+immediately before a write to handle racing external votes.
+Synthetic fixture tests cover the observed 2.112 GHz and min=max
+cases and normal ceilings after votes release.
+
+This is **fail-closed, not permission to run live**. CPU minima may
+rise after the gate or before the worker starts; the earlier 95 C
+physical incident remains unproven as to initiating cause.
+No unconditional sleep/wake, session duration, or temperature
+threshold was relaxed. No new live takeover is authorized solely by
+passing the offline CI for this patch.
+
 ### Physical wake CPU-frequency vote (read-only experiment)
 
 With One UI healthy, a single `input keyevent KEYCODE_WAKEUP`
