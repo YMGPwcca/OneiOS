@@ -730,8 +730,9 @@ def main():
     parser.add_argument("--serial", help="ADB USB serial. Defaults to the sole authorized USB device.")
     parser.add_argument("--adb", type=Path, default=ADB_DEFAULT)
     parser.add_argument("--duration", type=int, help="Full run only: 60..600 seconds; default 600")
-    parser.add_argument("--passive-soft-thermal-180", action="store_true",
-                        help="180s full bridges: software thermal soft-trip disabled, floor-aware CPU underclock; kernel thermal remains")
+    parser.add_argument("--no-userspace-thermal-180", "--passive-soft-thermal-180",
+                        dest="passive_soft_thermal_180", action="store_true",
+                        help="exact 180s full-bridges: no on-device thermal guard, nonfatal best-effort 28pct CPU cap; kernel thermal unchanged")
     parser.add_argument("--gpu", choices=["3d"])
     parser.add_argument("--bench-manifest", type=Path)
     parser.add_argument("--output", type=Path, help="New local evidence directory")
@@ -746,7 +747,7 @@ def main():
     if args.mode != "run" and (args.duration is not None or args.gpu):
         parser.error("--duration and --gpu apply to --run")
     if args.passive_soft_thermal_180 and (args.mode != "run" or args.duration != 180):
-        parser.error("--passive-soft-thermal-180 requires --run --duration 180")
+        parser.error("--no-userspace-thermal-180 requires --run --duration 180")
     if (args.mode == "prepare") != bool(args.bench_manifest):
         parser.error("--prepare requires --bench-manifest with an independently verified benchmark SHA-256 list")
     manifest = manifest_bytes(args.bench_manifest) if args.bench_manifest else None
