@@ -95,6 +95,43 @@ earlier low-RAM hypothesis is refuted. The 95 C reading was reported
 by the kernel sensor; corroborating sensor evidence was not captured.
 Treat it as a real safety event until shown otherwise.
 
+### 2026-11-22: Conservative boot CPU ceiling (not disabling thermal guard)
+
+Operator reports repeated CPU kernel-zone readings around 90-100 C
+during iOS bring-up and proposes removing the script thermal guard to
+avoid early reboot. **Do not remove the emergency exit at 90 C on the
+present unqualified SM8850 firmware/watchdog setup.** The threshold is
+a conservative *experiment* cutoff, not a verified silicon critical
+temperature; nevertheless, a 95 C reading has already been observed
+before xnuhost starts, and the kernel/firmware thermal behavior during
+Framework takeover is not independently qualified.
+
+Instead, in the live `--run-prearmed` CPU cap, start at thermal
+policy **level 2 (40% of hardware max)** on the first successfully
+validated, post-Framework-stop thermal sample, even when all sensors
+are cool. Previously the initial level was 0 and idle samples selected
+level 1 (60%). Existing stricter transitions remain monotonic:
+65 C -> 28%, 72 C -> 18%, 77 C -> 12%, 80 C -> 8%.
+A stricter policy also applies based on GPU, DDR, battery, LRP and
+board sensors. At 90 C CPU or the other emergency cutoffs, the
+independent guard STILL returns via the same recovery chain.
+
+For the measured hardware max values 3,628,800 and 4,742,400 kHz,
+the initial 40% requested ceilings are 1,451,520 / 1,896,960 kHz.
+Samsung `scaling_min_freq` may rise to 2,112,000 kHz or more; when
+that makes the requested ceilings impossible, the cap correctly
+fails closed rather than lying about enforcement. It **never writes**
+`scaling_min_freq`, thermal trips or kernel temperature policies.
+No changes were made to 8-vCPU pinning, the GPU-3D requirement, or
+reboot-only recovery.
+
+The new regression verifies this boot baseline, later monotonic
+throttle bands, and the unchanged 90 C emergency. Success in local
+offline CI and script staging does not imply full iOS boot or
+physical thermal safety. Test in the prior required order: local
+CachyOS CI, then non-takeover stage check. **No destructive live
+takeover is authorized by this change alone.**
+
 ### 2026-11-22: Close the Framework-stop / CPU-cap activation gap (offline only)
 
 Before this change, the independent root CPU-cap process was created only
