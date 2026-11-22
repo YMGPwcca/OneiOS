@@ -22,6 +22,44 @@ a separate verified rearm has already finished. A consumed Data clone
 must never be reused. The existing long-form 10-minute risk acknowledgement
 names the maximum risk profile; selecting 300 does not certify watchdog safety.
 
+## Read-only admission and default duration
+
+After a fresh Data clone has been rearmed and both staged scripts have been
+upgraded (these operations **never stop Framework**), verify the exact
+requested deadline without consuming APFS Data:
+
+```bash
+cd ~/projects/OneiOS
+python3 -u scripts/phone/sm8850-600s-thermal-telemetry.py \
+  --duration 300 --preflight-only
+```
+
+This requires rooted One UI and checks a current-boot pinned thermal manifest,
+temperature readings and writable-but-not-yet-written CPU policies. It does
+not itself prove subsecond reaction, thermal safety, or independent watchdog
+hardware recovery. Exit zero/terminal PASS is **read-only admission only**.
+
+Once genuinely qualified by local tests and the physical recovery checks,
+the preferred command for the FIRST session after the previous consumed
+600s snapshot is the top-level telemetry invocation **without**
+`--no-rearm`; it will first archive the consumed Data and prepare
+a fresh one-shot clone. The explicit user-requested `--no-rearm` form is
+valid ONLY AFTER that separate rearm has already finished. Never re-use
+the consumed snapshot. Omit `--duration` for the 600s default.
+
+```bash
+python3 -u scripts/phone/sm8850-600s-thermal-telemetry.py \
+  --duration 300 \
+  --i-accept-10-minute-legacy-watchdog-risk
+```
+
+After an observed root-capable return, `sm8850-takeover.py --collect`
+includes `thermal-guard.log`, `thermal-cap.log`, both heartbeat records
+and `thermal.guard.manifest`. It automatically runs the offline frame
+stall correlator, producing `frame-stall-report.json`, if the archive is
+complete. The report is evidence of *candidate* missing-frame windows;
+it is not yet a per-thread CoreAnimation critical-path profiler.
+
 The staged OneOS commit is pinned as the `app` submodule on this branch.
 Do not update only one repository; OneiOS's host stager must package the
 root workers from precisely the matching OneOS revision.
