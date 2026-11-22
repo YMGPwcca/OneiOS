@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SM-S948B OneiOS 600s takeover + PASSIVE 15-second thermal/clock telemetry.
+"""SM-S948B bounded (60..600s) takeover + PASSIVE 15-second telemetry.
 
-Uses the existing OneiOS full-takeover wrapper and its 600s DEVICE-SIDE
+Uses the existing OneiOS full-takeover wrapper and its bounded DEVICE-SIDE
 framework deadline. It never requests a return, changes thermal policy, clocks,
 or watchdog state. Android kernel/firmware protection and existing recovery are
 left untouched. This is experimental evidence, not safety certification.
@@ -32,7 +32,7 @@ meta() { printf 'M\t%s\t%s\n' "$1" "$2"; }
 val() { [ ! -r "$1" ] || meta "$2" "$(cat "$1" 2>/dev/null)"; }
 val /proc/sys/kernel/random/boot_id boot_id
 meta uptime "$(cut -d' ' -f1 /proc/uptime)"
-for k in boot state framework.launch framework.mode framework.deadline framework.takeover-confirmed watchdog.phase; do
+for k in boot state framework.launch framework.mode framework.duration framework.deadline framework.takeover-confirmed watchdog.phase; do
     val "$ST/control/$k" "ctl/$k"
 done
 [ ! -e "$ST/session/ready" ] || meta guest_ready 1
@@ -228,7 +228,8 @@ def state_of(meta: dict[str, str]) -> tuple[str, float | None, int | None]:
 
 
 def sample(adb: str, serial: str, kind: str, out: Path, console: Console,
-           jsonl, expected_boot: str, expected_token: str | None) -> dict | None:
+           jsonl, expected_boot: str, expected_token: str | None,
+           duration: int | None = None) -> dict | None:
     ts = now_utc()
     try:
         meta, metrics = remote_probe(adb, serial, full=True, markers=True)
@@ -246,7 +247,8 @@ def sample(adb: str, serial: str, kind: str, out: Path, console: Console,
         jsonl.flush()
         console.say(f"SAMPLE_REJECTED kind={kind}: {reason}")
         return None
-    elapsed = round(600 - (deadline - uptime), 3) if deadline is not None and uptime is not None else None
+    elapsed = (round(duration - (deadline - uptime), 3)
+               if deadline is not None and uptime is not None and duration is not None and expected_token else None)
     record = {"kind": kind, "utc": ts, "elapsed_from_framework_stop_s": elapsed,
               "meta": meta, "metrics": metrics}
     jsonl.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
@@ -257,8 +259,8 @@ def sample(adb: str, serial: str, kind: str, out: Path, console: Console,
     for k in sorted(metrics):
         console.say(f"READ {k} = {raw_metric_human(k, metrics[k])}")
     console.say(f"===== END SNAPSHOT {kind} =====\n")
-    if kind in {"BASELINE_SPRINGBOARD_BACKBOARDD", "FINAL_AROUND_590S"}:
-        (out / ("baseline.json" if kind.startswith("BASELINE") else "final_590.json")).write_text(
+    if kind in {"BASELINE_SPRINGBOARD_BACKBOARDD", "FINAL_NEAR_DEADLINE"}:
+        (out / ("baseline.json" if kind.startswith("BASELINE") else "final.json")).write_text(
             json.dumps(record, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"
         )
     return record
@@ -269,7 +271,7 @@ def numeric(val: str) -> int | None:
 
 
 def compare(a: dict | None, b: dict | None, console: Console, out: Path) -> None:
-    lines = ["===== BASELINE VS FINAL_590 COMPARISON ====="]
+    lines = ["===== BASELINE VS FINAL COMPARISON ====="]
     if a is None or b is None:
         lines += ["COMPARISON=INCOMPLETE", "REASON=Baseline or final telemetry unavailable; no fabricated readings"]
     else:
@@ -330,8 +332,9 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
     console.say("THERMAL_LOGGER=PASSIVE_READ_ONLY; SCRIPT_THERMAL_FORCESHUTDOWN=NONE")
     console.say("KERNEL_FIRMWARE_THERMAL_PROTECTION=UNCHANGED")
     console.say("GPU_3D=REQUIRED_NO_2D_FALLBACK; BACKEND_PROOF=CHECK_XNUHOST_KGSL_LOG")
-    console.say("RECOVERY=EXISTING_DEVICE_SIDE_600S_DEADLINE_NOT_MODIFIED")
-    console.say("SCHEDULE=15S FROM VERIFIED_FRAMEWORK_STOP; FINAL=ABOUT_T590S")
+    duration = args.duration
+    console.say(f"RECOVERY=DEVICE_SIDE_DEADLINE_{duration}S_FROM_FRAMEWORK_STOP_MAX_600S")
+    console.say(f"SCHEDULE=15S FROM VERIFIED_FRAMEWORK_STOP; FINAL=ABOUT_T{duration-10}S")
     console.say("WARNING=LEGACY_WATCHDOG_AND_UNASSISTED_RETURN_NOT_FULLY_QUALIFIED")
     before, _ = remote_probe(adb, args.serial)
     old_token = before.get("ctl/framework.launch", "")
@@ -363,8 +366,8 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
         console.say(f"PRELAUNCH_THERMAL_ZONE_COUNT={available_zones}")
         console.say("SENSOR_COVERAGE=VISIBLE_SYSFS_NODES_ONLY; NOT_ALL_INTERNAL_FIRMWARE_SENSORS")
         # This is the existing, risk-acknowledged, state-gated OneiOS runner.
-        cmd = ["bash", str(WRAPPER), "run", args.serial, RISK]
-        console.say("===== LAUNCH EXISTING ONEIOS FULL 600S TAKEOVER =====")
+        cmd = ["bash", str(WRAPPER), "run", args.serial, RISK, "--duration", str(duration)]
+        console.say(f"===== LAUNCH GUARDED ONEIOS FULL {duration}S TAKEOVER =====")
         proc, thread = run_existing(repo, cmd, console, out / "takeover.log", async_mode=True)
         deadline = None
         token = None
@@ -380,7 +383,7 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
         last_error_report_at = 0.0
         launched_at = time.monotonic()
         post_reboot = False
-        while time.monotonic() - launched_at < 850:
+        while time.monotonic() - launched_at < duration + 250:
             try:
                 meta, _ = remote_probe(adb, args.serial, markers=(baseline is None))
             except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
@@ -425,17 +428,18 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
                 and meta.get("ctl/state") == "running"):
                 stop_line = meta.get("framework_stop_log", "")
                 matched = re.search(r"uptime (\d+)\. Deadline: (\d+)", stop_line)
-                if (matched and int(matched.group(1)) + 600 == int(matched.group(2))
-                    and int(matched.group(2)) == current_deadline):
+                if (matched and int(matched.group(1)) + duration == int(matched.group(2))
+                    and int(matched.group(2)) == current_deadline
+                    and meta.get("ctl/framework.duration") == str(duration)):
                     deadline = current_deadline
                     stop_verified = True
-                    console.say(f"FRAMEWORK_DEADLINE_UPTIME={deadline} FRAMEWORK_STOP_UPTIME={deadline-600}")
-                    console.say("FRAMEWORK_600S_TIMEBASE=VERIFIED_FROM_CURRENT_SWITCH_LOG")
+                    console.say(f"FRAMEWORK_DEADLINE_UPTIME={deadline} FRAMEWORK_STOP_UPTIME={deadline-duration}")
+                    console.say(f"FRAMEWORK_{duration}S_TIMEBASE=VERIFIED_FROM_CURRENT_SWITCH_LOG")
                 elif not incompatible_reported and stop_line:
                     incompatible_reported = True
-                    console.say("FRAMEWORK_600S_TIMEBASE=MISMATCH; WILL_NOT_LABEL_INVALID_T=590S")
+                    console.say("FRAMEWORK_TIMEBASE=MISMATCH; WILL_NOT_LABEL_UNVERIFIED_ELAPSED")
             if deadline is not None and uptime is not None and token:
-                elapsed = 600.0 - (deadline - uptime)
+                elapsed = float(duration) - (deadline - uptime)
                 last_uptime = uptime
                 if meta.get("springboard_log") == "1":
                     seen_springboard = True
@@ -443,24 +447,24 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
                     seen_backboardd = True
                 if seen_springboard and seen_backboardd and baseline is None:
                     baseline = sample(adb, args.serial, "BASELINE_SPRINGBOARD_BACKBOARDD",
-                                      out, console, jsonl, identity["boot_id"], token)
+                                      out, console, jsonl, identity["boot_id"], token, duration)
                     if baseline:
                         console.say("BASELINE=LOG_MARKERS_OBSERVED_NOT_LIVE_PROCESS_PROOF")
-                # Target 590s, with 1s early margin to avoid racing return.
-                if elapsed >= 589.0 and final is None and elapsed < 599.0:
-                    final = sample(adb, args.serial, "FINAL_AROUND_590S", out, console,
-                                   jsonl, identity["boot_id"], token)
+                # Capture 10 seconds before the requested return deadline.
+                if elapsed >= duration - 11 and final is None and elapsed < duration - 1:
+                    final = sample(adb, args.serial, "FINAL_NEAR_DEADLINE", out, console,
+                                   jsonl, identity["boot_id"], token, duration)
                     if final:
                         console.say(f"FINAL_CAPTURE_T={final['elapsed_from_framework_stop_s']}")
-                if elapsed >= next_sample and elapsed < 599:
+                if elapsed >= next_sample and elapsed < duration - 1:
                     actual = next_sample
                     next_sample += 15
                     if elapsed - actual > 12:
                         console.say(f"PERIODIC_MISSED=TARGET_{actual}S ACTUAL_T={elapsed:.1f}S")
                     else:
                         sample(adb, args.serial, f"PERIODIC_TARGET_{actual:03d}S",
-                               out, console, jsonl, identity["boot_id"], token)
-                if elapsed >= 604 and proc.poll() is not None:
+                               out, console, jsonl, identity["boot_id"], token, duration)
+                if elapsed >= duration + 4 and proc.poll() is not None:
                     break
             if proc.poll() is not None:
                 # Successful completion can have exit 4 by design; never infer
@@ -476,7 +480,7 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
         if baseline is None:
             console.say(f"SPRINGBOARD_LOG_SEEN={seen_springboard} BACKBOARDD_LOG_SEEN={seen_backboardd}")
         if final is None:
-            console.say("FINAL_590=NOT_CAPTURED; CHECK_LOGS_FOR_EARLY_RETURN_OR_USB_LOSS")
+            console.say("FINAL_NEAR_DEADLINE=NOT_CAPTURED; CHECK_LOGS_FOR_EARLY_RETURN_OR_USB_LOSS")
         console.say(f"GPU_3D_BACKEND_LOG_SEEN={seen_kgsl_3d}; NO_2D_FALLBACK_ENFORCED_BY_ONEOS")
         console.say(f"LAST_BOOT_UPTIME={last_uptime} DEVICE_DEADLINE={deadline} TIMEBASE_VERIFIED={stop_verified}")
         console.say(f"SAMPLES_JSONL={out/'telemetry.jsonl'}")
@@ -496,9 +500,13 @@ def main() -> int:
     ap.add_argument("--adb", default=str(Path.home() / "Android/Sdk/platform-tools/adb"))
     ap.add_argument("--serial", default="R5GL64LZ9HA")
     ap.add_argument("--i-accept-10-minute-legacy-watchdog-risk", action="store_true")
+    ap.add_argument("--duration", type=int, default=600,
+                    help="Seconds after verified Framework stop, 60..600 (default 600)")
     ap.add_argument("--no-rearm", action="store_true", help="skip rearm; preflight must still admit a fresh Data clone")
     ap.add_argument("--self-test", action="store_true", help="parse/unit checks only, never connects to a phone")
     args = ap.parse_args()
+    if not 60 <= args.duration <= 600:
+        ap.error("--duration must be between 60 and 600 seconds")
     if args.self_test:
         m,d = parse_lines("M\tboot_id\ta\nM\tuptime\t123.50\nM\tctl/framework.deadline\t700\nD\t/sys/x\t451\n")
         assert (m["boot_id"], d["/sys/x"]) == ("a", "451")
@@ -514,17 +522,17 @@ def main() -> int:
         ap.error(f"Missing existing OneiOS wrapper: {repo / WRAPPER}")
     if not Path(args.adb).is_file():
         ap.error(f"ADB not found: {args.adb}")
-    out = repo / "out/sm8850/thermal-600s" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
+    out = repo / "out/sm8850/thermal-bounded" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
     out.mkdir(parents=True, exist_ok=False, mode=0o700)
     console = Console(out / "console.txt")
     try:
-        console.say("ONEIOS_600S_TELEMETRY=START")
+        console.say(f"ONEIOS_BOUNDED_TELEMETRY=START duration={args.duration}")
         console.say(f"OUTPUT={out}")
         rc = run_monitor(args, repo, out, console)
-        console.say(f"ONEIOS_600S_TELEMETRY=FINISHED EXIT={rc}")
+        console.say(f"ONEIOS_BOUNDED_TELEMETRY=FINISHED EXIT={rc}")
         return rc
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
-        console.say(f"ONEIOS_600S_TELEMETRY=ERROR {type(exc).__name__}: {exc}")
+        console.say(f"ONEIOS_BOUNDED_TELEMETRY=ERROR {type(exc).__name__}: {exc}")
         return 2
     finally:
         console.say(f"COPY_ALL_OUTPUT_FROM={out/'console.txt'}")
