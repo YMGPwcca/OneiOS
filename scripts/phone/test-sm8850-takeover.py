@@ -239,11 +239,13 @@ control/framework.result=smoke complete
             with self.subTest(original=original):
                 self.assertFalse(TAKEOVER.restored_on_same_boot(baseline, after.replace(original, replacement), "smoke"))
 
-    def test_full_run_requires_explicit_600s_auto_gpu_and_legacy_consent(self):
+    def test_full_run_requires_3d_legacy_consent_and_bounded_duration(self):
         cases = (
             ["--run", "--confirm", "--duration", "600", "--gpu", "auto"],
             ["--run", "--confirm", "--accept-legacy-watchdog-risk", "--duration", "240", "--gpu", "auto"],
             ["--run", "--confirm", "--accept-legacy-watchdog-risk", "--duration", "600", "--gpu", "2d"],
+            ["--run", "--confirm", "--accept-legacy-watchdog-risk", "--duration", "30", "--gpu", "3d"],
+            ["--run", "--confirm", "--accept-legacy-watchdog-risk", "--duration", "601", "--gpu", "3d"],
         )
         for extra in cases:
             with self.subTest(extra=extra), patch.object(TAKEOVER, "Phone") as phone, \
@@ -252,6 +254,18 @@ control/framework.result=smoke complete
                 TAKEOVER.main()
             self.assertEqual(2, exit_code.exception.code)
             phone.assert_not_called()
+
+    def test_run_300s_reaches_launcher_without_phone_activity(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(TAKEOVER, "Phone") as phone, \
+             patch.object(TAKEOVER, "launch", return_value=0) as launch, \
+             patch("sys.argv", ["sm8850-takeover.py", "--run", "--confirm",
+                                "--accept-legacy-watchdog-risk", "--gpu", "3d",
+                                "--duration", "300", "--output", folder]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, TAKEOVER.main())
+            launch.assert_called_once()
+            self.assertEqual(300, launch.call_args.kwargs["duration"])
 
     def test_full_run_reuses_oneos_legacy_reboot_audit_and_no_new_smoke(self):
         with tempfile.TemporaryDirectory() as folder, \
