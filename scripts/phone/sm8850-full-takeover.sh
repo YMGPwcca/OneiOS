@@ -282,7 +282,7 @@ PY
     extra=()
     if [ "${ONEIOS_SM8850_SOFT_THERMAL_OFF:-}" = I_ACCEPT_SOFT_GUARD_OFF_180S ]; then
       [ "$duration" = 180 ] || { echo "BLOCKED: passive thermal mode requires 180s" >&2; exit 2; }
-      extra+=(--passive-soft-thermal-180)
+      extra+=(--no-userspace-thermal-180)
     fi
     python3 scripts/phone/sm8850-takeover.py \
       --run --confirm --accept-legacy-watchdog-risk \
