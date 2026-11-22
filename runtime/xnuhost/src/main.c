@@ -668,6 +668,13 @@ static void audio_latency_arg(const br_audio_backend *audio, void *ctx)
 
 static int boot(void)
 {
+  // Verify the full-bridges experiment before touching guest RAM, KGSL,
+  // /dev/input or any Samsung CPU/HAL/panel device. Android Framework must
+  // be down and both independent root thermal workers required on THIS boot.
+  if (config.sm8850_full_bridges && !sm8850_full_bridge_admitted()) {
+    LOGE("SM8850_FULL_BRIDGES=BLOCKED_FRAMEWORK_OR_STAGE_NOT_VERIFIED; no host hardware opened");
+    return -1;
+  }
   const char *error = NULL;
   static xl_kernel kernel;
   size_t image_size = 0;
@@ -778,14 +785,6 @@ static int boot(void)
   }
   if (!input || !xh_virtio_gpu_create_3d(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, fb_width, fb_height, gpu3d)) return -1;
   kinds[ndev++] = XL_DEV_GPU;
-  // The SM8850 full-bridges profile REALLY enables bridges=1. Before any
-  // Samsung CPU/HAL/backlight/TSP or raw input side effect, independently
-  // confirm that the OneOS reboot-only experiment stopped Android Framework
-  // and armed both thermal workers on THIS boot and watchdog generation.
-  if (config.sm8850_full_bridges && !sm8850_full_bridge_admitted()) {
-    LOGE("SM8850_FULL_BRIDGES=BLOCKED_FRAMEWORK_OR_STAGE_NOT_VERIFIED; no host bridge opened");
-    return -1;
-  }
   // The hardware backend of each bridge (hw-backend, bridges/hw_backend.h): set before any of them opens.
   br_hw_configure(&config.hw);
   if (config.input) {
