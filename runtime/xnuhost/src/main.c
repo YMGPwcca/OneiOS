@@ -40,6 +40,7 @@ static xh_config config;
 // it before it asks init to stop zygote. Never access Samsung backlight/TSP
 // until both services stopped, system_server disappeared, and the current
 // generation's independent thermal workers were required.
+#ifdef __ANDROID__
 static bool panel_stage_line(const char *path, char *out, size_t size)
 {
   int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -52,7 +53,6 @@ static bool panel_stage_line(const char *path, char *out, size_t size)
   return out[0] != 0;
 }
 
-#ifdef __ANDROID__
 static bool panel_server_absent(void)
 {
   DIR *dir = opendir("/proc");
