@@ -19,9 +19,10 @@ Usage:
 stage-runtime: root-only stage update, no build/test, no APFS rearm and no
 Framework stop; requires previously consumed Data and prebuilt 3D artifacts.
 Full-bridges experimental branch: rearm and run are explicitly gated by
-ONEIOS_SM8850_FULL_BRIDGES_60S=I_ACCEPT_UNQUALIFIED_60S_LIVE_TEST;
-run requires --duration 60. Re-arming fresh one-shot Data and launching
-are separate steps; the 60s software deadline is not a hardware guarantee.
+ONEIOS_SM8850_FULL_BRIDGES_180S=I_ACCEPT_UNQUALIFIED_180S_LIVE_TEST.
+Both rearm and run require --duration 180, selected by the operator.
+Re-arming fresh one-shot Data and launching are separate steps; the
+180s software deadline is not an independently qualified recovery guarantee.
 Other historical full-run durations: 60..600 seconds, default 600, measured after
 verified Framework stop; the root watchdog and thermal monitor are required.
 The live run WILL stop Android Framework. Samsung USB + Volume Up+Down can
@@ -36,17 +37,24 @@ mode="${1:-}"
 serial="${2:-R5GL64LZ9HA}"
 risk="${3:-}"
 duration=600
+duration_explicit=0
 case "$mode" in prepare|rearm|stage-runtime|run) ;; *) usage ;; esac
 if [ "$mode" = run ]; then
     [ "$risk" = --i-accept-10-minute-legacy-watchdog-risk ] || usage
     if [ "$#" -gt 3 ]; then
         [ "$#" -eq 5 ] && [ "$4" = --duration ] || usage
         duration=$5
+        duration_explicit=1
     fi
-    case "$duration" in ''|0*|*[!0-9]*) usage ;; esac
-    [ "${#duration}" -le 3 ] && [ "$duration" -ge 60 ] && [ "$duration" -le 600 ] || usage
+elif [ "$mode" = rearm ] && [ "$#" -eq 4 ] && [ "$3" = --duration ]; then
+    duration=$4
+    duration_explicit=1
 else
     [ "$#" -le 2 ] || usage
+fi
+if [ "$mode" = run ] || [ "$mode" = rearm ]; then
+    case "$duration" in ''|0*|*[!0-9]*) usage ;; esac
+    [ "${#duration}" -le 3 ] && [ "$duration" -ge 60 ] && [ "$duration" -le 600 ] || usage
 fi
 case "$serial" in
     ''|*[!a-zA-Z0-9_-]*) echo "Invalid ADB serial" >&2; exit 2 ;;
@@ -67,18 +75,16 @@ case "$(git branch --show-current)" in
         case "$mode" in
             stage-runtime) ;;
             rearm|run)
-                [ "${ONEIOS_SM8850_FULL_BRIDGES_60S:-}" = I_ACCEPT_UNQUALIFIED_60S_LIVE_TEST ] || {
-                    echo "BLOCKED: full bridges live trial needs explicit 60s experimental opt-in" >&2
+                [ "${ONEIOS_SM8850_FULL_BRIDGES_180S:-}" = I_ACCEPT_UNQUALIFIED_180S_LIVE_TEST ] || {
+                    echo "BLOCKED: full bridges live trial requires explicit 180s experimental opt-in" >&2
                     exit 2
                 }
-                if [ "$mode" = run ]; then
-                    [ "$duration" = 60 ] || {
-                        echo "BLOCKED: full bridges live trial limited to 60 seconds" >&2
-                        exit 2
-                    }
-                fi ;;
+                [ "$duration_explicit" = 1 ] && [ "$duration" = 180 ] || {
+                    echo "BLOCKED: this full bridges trial must explicitly select --duration 180" >&2
+                    exit 2
+                } ;;
             *)
-                echo "BLOCKED: full bridges allows only stage-runtime, rearm or 60s run" >&2
+                echo "BLOCKED: full bridges allows only stage-runtime, rearm or 180s run" >&2
                 exit 2 ;;
         esac ;;
     *) echo "Expected an authorized SM8850 feature branch" >&2; exit 2 ;;
@@ -197,7 +203,7 @@ PY
     echo "FRAMEWORK_STOP=NO LIVE_TAKEOVER=NO"
   elif [ "$mode" = rearm ]; then
     if [ "$(git branch --show-current)" = feat/sm8850-full-bridges-takeover ]; then
-      echo "===== FULL BRIDGES 60S TRIAL: VERIFY PREVIOUSLY STAGED XNUHOST ====="
+      echo "===== FULL BRIDGES ${duration}S TRIAL: VERIFY PREVIOUSLY STAGED XNUHOST ====="
       XNUHOST=runtime/xnuhost/build/android/xnuhost
       test -s "$XNUHOST"
       grep -aFq 'SM8850_FULL_BRIDGES=ACTIVE' "$XNUHOST"
@@ -216,10 +222,10 @@ PY
       echo "===== FRESH ONE-SHOT APFS DATA CLONE; PRESERVE CONSUMED DATA ====="
       python3 scripts/phone/sm8850-takeover.py \
         --rearm-data --confirm --serial "$serial"
-      echo "===== READ-ONLY 60S LIVE ADMISSION PREFLIGHT ====="
+      echo "===== READ-ONLY ${duration}S LIVE ADMISSION PREFLIGHT ====="
       "$ADB" -s "$serial" shell -T \
-        "su -c '/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run 60'"
-      echo "FULL_BRIDGES_60S_REARM=PASS_NO_FRAMEWORK_STOP"
+        "su -c '/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run $duration'"
+      echo "FULL_BRIDGES_${duration}S_REARM=PASS_NO_FRAMEWORK_STOP"
       echo "LIVE_FRAMEWORK_STOP=NO"
     else
     echo "===== VERIFY PATCHED GUEST MOUNT SAFETY (LOCAL ONLY) ====="
@@ -252,7 +258,7 @@ PY
     echo "THERMAL_SAFETY=ROOT_GUARD_AND_MONOTONIC_THROTTLE_REQUIRED; 80C_THROTTLE; 90C_EMERGENCY_RETURN"
     if [ "$(git branch --show-current)" = feat/sm8850-full-bridges-takeover ]; then
       echo "SM8850_BRIDGES=1 CPU_PIN=1 CPU_AFFINITY_BENCH=0"
-      echo "WARNING=HISTORIC_95C_101C_PEAKS; 60S_DEADLINE_AND_WATCHDOG_RETURN_UNQUALIFIED"
+      echo "WARNING=HISTORIC_95C_101C_PEAKS; ${duration}S_DEADLINE_AND_WATCHDOG_RETURN_UNQUALIFIED"
     else
       echo "CPU_AFFINITY=BENCH_ONLY_EIGHT_DISTINCT_HOST_CORES_REQUIRED"
     fi
