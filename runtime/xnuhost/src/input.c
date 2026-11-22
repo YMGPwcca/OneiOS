@@ -189,6 +189,7 @@ static void resync(xh_input_source *s, int64_t now_ns, uint64_t now_counter, uin
   }
   for (unsigned k = 0; k < 3; k++)
     if ((!s->power_only || side_keys[k] == KEY_POWER_) &&
+        (!s->suppress_volume || side_keys[k] == KEY_POWER_) &&
         ((st.keys ^ s->sent_keys) & 1u << k))
       send_event(s, EV_KEY_, side_keys[k], (st.keys >> k) & 1);
   if (s->touch) send_event(s, EV_MSC_, MSC_TIMESTAMP_, (int32_t)scan_ticks(now_ns, now_ns, now_counter, hz));
@@ -215,8 +216,9 @@ void xh_input_feed(xh_input_source *s, const xh_input_ev *ev, unsigned n, int64_
     } else if (v->type == EV_KEY_) {
       // The side keys, and the two the guest also takes from a host that has them (OneiOSSideKeys.inc): Home, the ringer.
       bool side = v->code == KEY_VOLUMEDOWN_ || v->code == KEY_VOLUMEUP_ || v->code == KEY_POWER_ || v->code == KEY_MUTE_ || v->code == KEY_HOMEPAGE_;
-      if ((!s->power_only && side) ||
-          (s->power_only && v->code == KEY_POWER_) ||
+      if (((!s->power_only && side) ||
+           (s->power_only && v->code == KEY_POWER_)) &&
+          (!s->suppress_volume || (v->code != KEY_VOLUMEUP_ && v->code != KEY_VOLUMEDOWN_)) ||
           (s->touch && v->code == BTN_TOUCH_))
         send_event(s, EV_KEY_, v->code, v->value);
       if (v->code == KEY_POWER_ && v->value == 1 && xh_input_power_key) xh_input_power_key();
@@ -413,6 +415,7 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
     }
     LOGI("input: %s \"%s\"%s%s%s", path, name, touch ? " touch" : "", ranges, keys ? " keys" : "");
     xh_input_source_init(&sources[nfds], dev, touch ? "touch" : name, touch);
+    sources[nfds].suppress_volume = touch_exclusive;
     if (touch_exclusive && keys && !touch) {
       sources[nfds].power_only = true;
       have_power = true;
