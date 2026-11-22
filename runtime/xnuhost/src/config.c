@@ -258,6 +258,7 @@ static void usage(void)
         "               [--hw-backend samsung|treble] [--hw-backend-BRIDGE samsung|treble] [--hw-backend-fallback 0|1]\n"
         "               [--haptics-native-impacts 0|1] (requires Treble haptics without fallback)\n"
         "               [--no-input] [--input-script FILE] [--set touch-exclusive=1] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n"
+        "               [--set panel-bridge=1 --set touch-sleep=0] (SM8850 stopped-Framework bench ONLY; bridges=0)\n"
         "       xnuhost --selftest      checks of this host (trap layer, PAC, memory), no kernel\n"
         "docs/booter.md describes the image set's files, the session files and the exit codes.\n", stderr);
 }
