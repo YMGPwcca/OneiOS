@@ -2,6 +2,8 @@
 # SM-S948B/m3q iOS 27 FULL Framework takeover, 8 vCPU / GPU 3D / <=600s.
 # - prepare: build locally, hash existing phone image, install signed
 #   current native artifacts and independent APFS Data clone, NO Framework stop
+# - stage-runtime: install pinned OneOS scripts and prebuilt 3D runtime only;
+#   preserve the one-shot APFS Data state; NEVER stop Android Framework
 # - run: actually stop Android Framework and start the 3D iOS guest.
 #          An independent 600s deadline forces a return REBOOT.
 set -euo pipefail
@@ -11,7 +13,10 @@ usage() {
 Usage:
   bash scripts/phone/sm8850-full-takeover.sh prepare [SERIAL]
   bash scripts/phone/sm8850-full-takeover.sh rearm [SERIAL]
+  bash scripts/phone/sm8850-full-takeover.sh stage-runtime [SERIAL]
   bash scripts/phone/sm8850-full-takeover.sh run [SERIAL] --i-accept-10-minute-legacy-watchdog-risk [--duration SECONDS]
+stage-runtime: root-only stage update, no build/test, no APFS rearm and no
+Framework stop; requires previously consumed Data and prebuilt 3D artifacts.
 Full-run duration: 60..600 seconds, default 600. It is measured after
 verified Framework stop; the root watchdog and thermal monitor are required.
 The live run WILL stop Android Framework. Samsung USB + Volume Up+Down can
@@ -26,7 +31,7 @@ mode="${1:-}"
 serial="${2:-R5GL64LZ9HA}"
 risk="${3:-}"
 duration=600
-case "$mode" in prepare|rearm|run) ;; *) usage ;; esac
+case "$mode" in prepare|rearm|stage-runtime|run) ;; *) usage ;; esac
 if [ "$mode" = run ]; then
     [ "$risk" = --i-accept-10-minute-legacy-watchdog-risk ] || usage
     if [ "$#" -gt 3 ]; then
@@ -48,9 +53,22 @@ git diff --quiet && git diff --cached --quiet || {
     exit 2
 }
 case "$(git branch --show-current)" in
-    feat/oneios-sm8850-m3q|feat/sm8850-guarded-duration-tracing) ;;
-    *) echo "Expected SM8850 feature/guarded-duration branch" >&2; exit 2 ;;
+    feat/oneios-sm8850-m3q|feat/sm8850-guarded-duration-tracing)
+        [ "$mode" != stage-runtime ] || {
+            echo "BLOCKED: stage-runtime is for the full-bridges branch only" >&2
+            exit 2
+        } ;;
+    feat/sm8850-full-bridges-takeover)
+        [ "$mode" = stage-runtime ] || {
+            echo "BLOCKED: full-bridges branch is stage-only pending independent thermal/recovery qualification" >&2
+            exit 2
+        } ;;
+    *) echo "Expected an authorized SM8850 feature branch" >&2; exit 2 ;;
 esac
+[ "$(git -C app rev-parse HEAD)" = "$(git rev-parse HEAD:app)" ] || {
+    echo "BLOCKED: OneOS submodule commit does not match OneiOS gitlink" >&2
+    exit 2
+}
 [ -z "$(git status --porcelain app)" ] || {
     echo "OneOS submodule has uncommitted or unexpected changes" >&2
     exit 2
@@ -132,6 +150,33 @@ PY
     echo "FULL_TAKEOVER_STAGE=PREPARED"
     echo "LIVE_FRAMEWORK_STOP=NO"
     echo "MANIFEST=$manifest"
+  elif [ "$mode" = stage-runtime ]; then
+    echo "===== VERIFY PREBUILT FULL BRIDGES=1 ARM64 RUNTIME (NO REBUILD) ====="
+    XNUHOST=runtime/xnuhost/build/android/xnuhost
+    [ -s "$XNUHOST" ] &&
+      grep -aFq 'SM8850_FULL_BRIDGES=ACTIVE' "$XNUHOST" || {
+        echo "BLOCKED: local ARM64 xnuhost lacks full-bridges marker; no staging attempted" >&2
+        exit 2
+    }
+    for native in oneios-display oneios-display.dex liboneios-display.so; do
+      [ -s "runtime/display/build/android/$native" ] || {
+        echo "BLOCKED: missing prebuilt runtime/display/build/android/$native" >&2
+        exit 2
+      }
+    done
+    sha256sum "$XNUHOST" \
+      runtime/display/build/android/oneios-display \
+      runtime/display/build/android/oneios-display.dex \
+      runtime/display/build/android/liboneios-display.so
+    echo "===== STAGE PINNED ONEOS SCRIPTS (ROLLBACK PRESERVED) ====="
+    python3 scripts/phone/sm8850-takeover.py \
+      --reboot-stage-check --confirm --serial "$serial"
+    echo "===== STAGE NATIVE RUNTIME (ROLLBACK PRESERVED; DATA NOT REARMED) ====="
+    python3 scripts/phone/sm8850-takeover.py \
+      --upgrade-runtime --confirm --serial "$serial"
+    echo "FULL_BRIDGES_STAGE_ONLY=PASS"
+    echo "APFS_DATA=CONSUMED_NOT_REARMED"
+    echo "FRAMEWORK_STOP=NO LIVE_TAKEOVER=NO"
   elif [ "$mode" = rearm ]; then
     echo "===== VERIFY PATCHED GUEST MOUNT SAFETY (LOCAL ONLY) ====="
     python3 scripts/phone/test-sm8850-full-takeover.py -v
