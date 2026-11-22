@@ -543,6 +543,27 @@ Only the actual archive and restored-device receipt can determine which
 past-session evidence was captured. Do not treat stale guest logs as proof
 of a current full-bridges run.
 
+### 2026-11-23: Archived frame traces are session-scoped
+
+The operator listed the 15 MiB `collect-pxkkglwo/device-logs.tar` contents.
+The current `session/xnuhost.log` exists but the current
+`control/display.log` is absent. Several prior archived sessions contain
+BOTH under the same `logs/session.TOKEN/` prefix, including
+`UZNzNZ`, `IzR1hQ`, `XOpCkz`, `JRfwTb` and `iLnG4O`.
+That explains why current-session frame analysis cannot proceed, but it
+**does not establish** which historical session corresponds to the thermal
+abort or to the failed swipe attempt; timestamps/boot/generation still
+need inspection from file contents.
+
+The archive analyzer now offers `--list-sessions` and an explicit
+`--archive-session TOKEN` selecting both the XNUHost and display trace
+from ONE historical session. It refuses to silently join the current
+XNUHost trace with a prior display log. These are offline archive-only
+operations and cannot qualify live full bridges or watchdog recovery.
+The thermal faults, append-only cap/guard logs and return outcomes should
+be inspected independently, with boot/generation provenance, before any
+new physical trial.
+
 ## 2026-11-22 300s physical run: guest boots, panel/touch interaction fails
 
 The actual S26 Ultra run from the original 300s guest clone verified
