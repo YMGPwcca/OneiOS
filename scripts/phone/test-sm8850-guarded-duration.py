@@ -108,6 +108,14 @@ class BoundedTimingTest(unittest.TestCase):
             finally:
                 c.close()
 
+    def test_verified_post_reboot_must_not_claim_root_was_lost(self):
+        source = TELEMETRY.read_text()
+        self.assertIn("POST_REBOOT=ANDROID_BOOT_COMPLETE_OBSERVED_VIA_UNPRIVILEGED_ADB", source)
+        self.assertNotIn("POST_REBOOT=ANDROID_BOOT_COMPLETE_ROOT_UNAVAILABLE", source)
+        self.assertIn("BOUNDED_TAKEOVER_RESULT=POST_REBOOT_OBSERVED_SESSION_CAUSE_NOT_PROVEN", source)
+        self.assertIn("if post_reboot:\n            console.say(", source)
+        self.assertIn("return 4\n        return code", source)
+
     def test_sample_300s_clocks_and_pre_oneui_not_stale(self):
         mod = load("sm8850_tel_test", TELEMETRY)
         with tempfile.TemporaryDirectory() as temp:
