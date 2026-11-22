@@ -564,6 +564,18 @@ The thermal faults, append-only cap/guard logs and return outcomes should
 be inspected independently, with boot/generation provenance, before any
 new physical trial.
 
+A read-only P0 archive inventory is available for the already-collected TAR:
+```bash
+python3 scripts/phone/sm8850-archive-forensics.py \
+  --archive out/sm8850/takeover/collect-pxkkglwo/device-logs.tar \
+  --output out/sm8850/takeover/collect-pxkkglwo/p0-forensics.json
+```
+It reports the current control directory and each archived session
+separately, records the archive SHA-256, and labels global append-only
+thermal logs **unattributed**. It does not establish causality or prove
+independent watchdog recovery, and it never accesses ADB/device state.
+
+
 ## 2026-11-22 300s physical run: guest boots, panel/touch interaction fails
 
 The actual S26 Ultra run from the original 300s guest clone verified
