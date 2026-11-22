@@ -27,6 +27,19 @@ class TakeoverTest(unittest.TestCase):
             self.assertEqual(2, error.exception.code)
             phone.assert_not_called()
 
+    def test_passive_soft_thermal_mode_requires_180s_before_phone_actions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            device = unittest.mock.Mock()
+            with self.assertRaisesRegex(ValueError, "exactly 180s"):
+                TAKEOVER.launch(device, "run", Path(folder), duration=60,
+                                passive_soft_thermal=True)
+            device.root.assert_not_called()
+        src = Path(TAKEOVER.__file__).read_text()
+        self.assertIn('experimental_prefix = (', src)
+        self.assertIn('f"{experimental_prefix}{shell} --framework-check', src)
+        self.assertIn('{experimental_prefix}{shell} --framework-session', src)
+        self.assertIn('--passive-soft-thermal-180', src)
+
     def test_recovery_audit_refusal_precedes_staging_and_launch(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(TAKEOVER, "upload") as upload, \
                 patch.object(TAKEOVER, "Phone") as phone, contextlib.redirect_stdout(io.StringIO()):
