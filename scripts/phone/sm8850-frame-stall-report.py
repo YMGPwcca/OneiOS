@@ -30,8 +30,13 @@ class MissingTraceInputs(Exception):
         super().__init__(", ".join(paths))
 
 
-def read_logs(archive: Path | None, folder: Path | None) -> tuple[str, str]:
-    names = ('session/xnuhost.log', 'control/display.log')
+def read_logs(
+    archive: Path | None, folder: Path | None, archive_session: str | None = None,
+) -> tuple[str, str]:
+    # Select a matched pair from ONE specific session. A current xnuhost
+    # trace must never be joined with a historical display trace.
+    prefix = f'logs/session.{archive_session}/' if archive_session else ''
+    names = (prefix + 'session/xnuhost.log', prefix + 'control/display.log')
     if archive:
         with tarfile.open(archive, 'r:*') as tf:
             # A thermal abort can happen before xnuhost ever starts.
@@ -153,9 +158,45 @@ def main() -> int:
     src.add_argument('--folder', type=Path)
     p.add_argument('--thermal-csv', type=Path)
     p.add_argument('--output', type=Path)
+    p.add_argument('--archive-session', metavar='TOKEN',
+                   help='Use paired logs/session.TOKEN/{session/xnuhost.log,control/display.log} '
+                        'from this archive, never mix sessions')
+    p.add_argument('--list-sessions', action='store_true',
+                   help='List archive sessions with paired xnuhost/display logs; no analysis')
     args = p.parse_args()
+    if args.archive_session and not args.archive:
+        p.error('--archive-session requires --archive')
+    if args.archive_session and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', args.archive_session):
+        p.error('invalid --archive-session token')
+    if args.list_sessions:
+        if not args.archive:
+            p.error('--list-sessions requires --archive')
+        try:
+            with tarfile.open(args.archive, 'r:*') as tf:
+                names = {m.name for m in tf.getmembers() if m.isfile()}
+            tokens = sorted(set(
+                re.fullmatch(r'logs/session\.([A-Za-z0-9_-]+)/session/xnuhost\.log', name).group(1)
+                for name in names
+                if re.fullmatch(r'logs/session\.([A-Za-z0-9_-]+)/session/xnuhost\.log', name)
+            ))
+            print('FRAME_STALL_SESSION=current '
+                  f'xnu={int("session/xnuhost.log" in names)} '
+                  f'display={int("control/display.log" in names)}')
+            for token in tokens:
+                base = f'logs/session.{token}/'
+                print(f'FRAME_STALL_SESSION={token} xnu=1 '
+                      f'display={int(base + "control/display.log" in names)}')
+            return 0
+        except (OSError, ValueError, tarfile.TarError) as error:
+            print(f'FRAME_STALL_REPORT=ERROR {type(error).__name__}: {error}',
+                  file=sys.stderr)
+            return 2
     try:
-        data = analyze(*read_logs(args.archive, args.folder), thermal_csv=args.thermal_csv)
+        data = analyze(*read_logs(args.archive, args.folder, args.archive_session),
+                       thermal_csv=args.thermal_csv)
+        data['source_session'] = (f'logs/session.{args.archive_session}'
+                                  if args.archive_session else 'current')
+        data['source_pairing'] = 'SAME_SESSION_ONLY_NOT_CROSS_BOOT_PROOF'
     except MissingTraceInputs as error:
         print('FRAME_STALL_REPORT=SKIPPED_MISSING_GUEST_TRACE '
               f'missing={",".join(error.paths)}', file=sys.stderr)
