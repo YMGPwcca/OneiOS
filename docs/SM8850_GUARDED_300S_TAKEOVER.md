@@ -521,6 +521,28 @@ new physical session. This collector writes only local evidence; it
 must not be confused with `--run`, `--rearm-data`, or an independent
 watchdog qualification. A clean stage does not close the P0 blocker.
 
+## 2026-11-23: Archived collection post-processing diagnostic
+
+A read-only `--collect` invocation created local evidence directory
+`out/sm8850/takeover/collect-pxkkglwo` but printed
+`FRAME_STALL_REPORT=UNAVAILABLE Traceback ... raise SystemExit(main())`.
+The collector previously truncated the analysis subprocess's stderr to
+180 characters, concealing the actual exception. The excerpt does **not**
+prove that the device archive or restored-device diagnostics failed, nor
+does it identify the missing member or show any new guest crash.
+
+The frame-stall analyzer required both `session/xnuhost.log` and
+`control/display.log` even when a prior thermal abort occurred before
+guest startup. It now emits `SKIPPED_MISSING_GUEST_TRACE` if those inputs
+are absent; otherwise it reports analysis errors explicitly. The collector
+preserves full unexpected errors in `frame-stall-error.txt` while keeping
+recovery/thermal archive capture independent. The existing archive in
+`collect-pxkkglwo` must be inspected **offline**; there is no need to
+recollect, rearm APFS Data, or repeat takeover to resolve this message.
+Only the actual archive and restored-device receipt can determine which
+past-session evidence was captured. Do not treat stale guest logs as proof
+of a current full-bridges run.
+
 ## 2026-11-22 300s physical run: guest boots, panel/touch interaction fails
 
 The actual S26 Ultra run from the original 300s guest clone verified
