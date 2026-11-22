@@ -395,51 +395,50 @@ OneOS scripts without consuming or recloning the current one-shot
 APFS Data. Run the exact 300s read-only preflight again. Neither
 step qualifies unassisted recovery or authorizes the live run.
 
-## Experimental isolated panel/TSP bridge (source-only branch; NOT on phone)
+## Experimental FULL hardware bridges=1 (source-only, not staged)
 
-The prior non-takeover touch preview already delivered real physical
-sec_touchscreen gestures into iOS. The full 8-vCPU / GPU3D run instead
-used `bridges=0`, so `br_bright_open()` and the guest's
-`OB_CH_BRIGHTNESS` channel never existed; only the initial
-`KEYCODE_WAKEUP` was available. A dark screen or TSP powered off
-after the Framework stopped could not be corrected by iOS Power events.
+The user explicitly selected **real `bridges=1`**, not a
+brightness-only partial workaround. Both repositories now use the
+`feat/sm8850-full-bridges-takeover` branch. OneOS passes
+`--set bridges=1 --set sm8850-full-bridges=1 --set touch-sleep=0`
+and `--set cpu-affinity-bench=0 --set cpu-pin=1` in the SM8850
+8-vCPU GPU3D Framework run, retaining `touch-exclusive=1`.
 
-New isolated source branches: OneiOS and OneOS both
-`feat/sm8850-isolated-panel-bridge`. The OneOS full-run command
-passes `--set panel-bridge=1 --set touch-sleep=0` while retaining
-`--set bridges=0` and the existing 8-vCPU, KGSL 3D, exclusive
-touch and independent thermal/reboot recovery settings.
-The xnuhost flag defaults to **off** and is restricted to the exact
-SM8850 full-run bench profile (SHM, GPU3D, exclusive touch, host
-affinity, wifi/haptics off, virtual Bluetooth, non-sleeping TSP,
-OneOS's specific runtime/session/data paths).
+This runs the GENERIC xnuhost bridges=1 initialization, including
+host CPU topology, cpufreq virtio MMIO, brightness with Samsung TSP
+power control, battery and the guest thermal-pressure bridge.
+`wifi=off`, `haptics=off`, `bluetooth=virtual` and `encoder=off`
+remain explicit per-device choices for the first integration.
+They are **not evidence that bridges=0**: the generic bridge device
+is present with CPU/brightness/battery/thermal channels.
+The legacy `cpu-affinity-bench=1` is incompatible with the real CPU
+bridge; CPU placement now uses the native bridge's plan and
+`cpu-pin=1`. This changes performance/affinity semantics and is not
+yet verified on SM8850 hardware.
 
-The host performs a second **run-time** admission BEFORE any panel
-or touch-power sysfs write. It requires root, the separate mount
-namespace, a current boot ID, the active `run`/reboot Framework
-session, stopped zygotes, absent `system_server`, the stopped
-marker and matching thermal guard/cap generations. A false result
-logs `PANEL_BRIDGE=BLOCKED_FRAMEWORK_OR_STAGE_NOT_VERIFIED` and
-refuses the guest. A missing real backlight or named
-`sec_touchscreen` TSP also fails closed. Only then does
-`br_bright_open` publish ONE virtio bridge with the brightness
-channel, disable ALS and keep the TSP awake even when the guest
-requests display-off. No haptic, thermal, battery, camera, HCI,
-network or CPU governor bridge is activated.
+Before opening any host bridge or grabbing raw touch, xnuhost checks
+the rooted OneOS experimental session: current boot ID, current
+watchdog generation, `framework.mode=run`, reboot-only return,
+independent guard/cap requirements, Framework stopped, absent
+`system_server`, and a distinct session mount namespace.
+`sm8850-full-bridges=1` is rejected outside this exact
+bench/shm/8cpu/GPU3D/exclusive-touch profile. Missing CPU topology,
+cpufreq MMIO, Samsung panel/TSP, battery, thermal or virtio
+bridge fails closed. Normal phone / PC preview behavior remains
+unchanged.
 
-The generic `bridges=1` path **remains rejected** with exclusive
-touch; enabling it would initialize unrelated hardware and is not a
-safe substitute for the missing display-power channel.
+OneOS blocks stale native runtimes before the one-shot APFS Data
+claim: it must find the new `SM8850_FULL_BRIDGES=ACTIVE` marker in
+the installed arm64 xnuhost. Source-only branch update is not enough:
+rebuild and verify the actual runtime package **separately** before
+any phone staging. The independent thermal guard (90 C emergency),
+40% boot CPU cap, watchdog and reboot-only return are all unchanged.
 
-**Deployment order:** run CachyOS offline tests, build the NEW
-arm64 `xnuhost`, verify exact new runtime artifact, then stage
-both source sets together. OneOS full-run preflight now checks for
-`PANEL_BRIDGE=ACTIVE_ONLY_BRIGHTNESS_TSP` in the staged native
-binary and refuses an older artifact **before** claiming APFS Data.
-A reboot-stage-check alone does NOT validate this new native binary.
-There is NO newly authorized live takeover, no APFS rearm, no
-change to the watchdog/thermal thresholds and no new physical
-touch/brightness acceptance yet.
+**Current status:** code pushed; source/static checks only. No
+CachyOS local CI or arm64 build has passed for this new branch, and
+no phone run is authorized by these commits alone. The
+`--reboot-stage-check` mode only stages the OneOS scripts and
+does not prove the new xnuhost binary is present.
 
 ## 2026-11-22 300s physical run: guest boots, panel/touch interaction fails
 
