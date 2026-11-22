@@ -493,13 +493,14 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600):
     boot = re.search(r"^boot=(.+)$", baseline, re.M).group(1)
     token = uuid.uuid4().hex
     risk_token = " I_ACCEPT_LEGACY_WATCHDOG_FULL_600S_RISK" if mode == "run" else ""
+    duration_token = f" {duration}" if mode == "run" else ""
     if phone.root(f"""set -eu
 umask 077
 cd {STAGE}
 mkdir -p launches
 mkdir launches/{token}
 /data/adb/ksu/bin/busybox setsid /system/bin/sh -c '
-    {shell} --framework-session {session_mode} {ACK} {token}{risk_token}{f" {duration}" if mode == "run" else ""}
+    {shell} --framework-session {session_mode} {ACK} {token}{risk_token}{duration_token}
     rc=$?
     printf "%s\n" "$rc" > launches/{token}/exit
 ' </dev/null > launches/{token}/switch.log 2>&1 &
