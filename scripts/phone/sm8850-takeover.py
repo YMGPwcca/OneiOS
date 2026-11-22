@@ -36,7 +36,7 @@ STATUS = f"""stage={STAGE}
 echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
 echo "boot_completed=$(getprop sys.boot_completed)"
 echo "boot_reason=$(getprop ro.boot.bootreason)"
-for name in boot state framework.mode framework.return framework.takeover-confirmed framework.launch framework.deadline framework.result watchdog.phase; do
+for name in boot state framework.mode framework.return framework.takeover-confirmed framework.launch framework.duration framework.deadline framework.result watchdog.phase thermal.guard.required thermal.cap.required thermal.guard.heartbeat thermal.cap.heartbeat thermal.guard.fault thermal.cap.fault; do
     if [ -f "$stage/control/$name" ]; then printf 'control/%s=' "$name"; cat "$stage/control/$name"; fi
 done
 if [ -f "$stage/return.outcome" ]; then printf 'outcome='; cat "$stage/return.outcome"; fi
@@ -274,7 +274,7 @@ def collect(phone, output):
     with (output / "device-logs.tar").open("wb") as archive:
         result = phone.root(f"""cd {STAGE} || exit 1
 set --
-for name in launches return.log return.outcome control session logs; do
+for name in launches return.log return.outcome control session logs thermal-guard.log thermal-cap.log thermal.guard.manifest; do
     if [ -e "$name" ]; then set -- "$@" "$name"; fi
 done
 [ $# -gt 0 ] && tar --exclude=display.sock -cf - "$@"
