@@ -512,18 +512,27 @@ def full_takeover_deadline_result(baseline, after, token):
     )
 
 
-def launch(phone, mode, output, *, reboot_only=False, duration=600):
+def launch(phone, mode, output, *, reboot_only=False, duration=600,
+           passive_soft_thermal=False):
     # SM8850 full-run deliberately uses the same legacy OneOS V watchdog
     # feeder and mandatory reboot-return path as the observed smoke.
     # It is separately risk-acknowledged, NEVER an in-place handback.
     legacy_reboot = reboot_only or mode == "run"
+    if passive_soft_thermal and (mode != "run" or duration != 180):
+        raise ValueError("passive software thermal experiment requires exactly 180s run")
+    # Prefix only the root-owned switch, including its admission check.
+    # No persistent Android property or stale stage toggle is left behind.
+    experimental_prefix = (
+        "ONEIOS_SM8850_EXPERIMENT_NO_SOFT_THERMAL=I_ACCEPT_SOFT_GUARD_OFF_180S "
+        if passive_soft_thermal else ""
+    )
     if audit(phone, output / "preflight.txt", reboot_only=legacy_reboot):
         return 2
     if upload(phone, "upgrade" if legacy_reboot else "install"):
         return 2
     shell = f"/system/bin/sh {STAGE}/oneios_switch.sh"
     session_mode = "reboot-smoke" if reboot_only else mode
-    check = phone.root(f"{shell} --framework-check {session_mode}" +
+    check = phone.root(f"{experimental_prefix}{shell} --framework-check {session_mode}" +
                        (f" {duration}" if mode == "run" else ""), timeout=120)
     if check.returncode:
         return check.returncode
@@ -539,7 +548,7 @@ cd {STAGE}
 mkdir -p launches
 mkdir launches/{token}
 /data/adb/ksu/bin/busybox setsid /system/bin/sh -c '
-    {shell} --framework-session {session_mode} {ACK} {token}{risk_token}{duration_token}
+    {experimental_prefix}{shell} --framework-session {session_mode} {ACK} {token}{risk_token}{duration_token}
     rc=$?
     printf "%s\n" "$rc" > launches/{token}/exit
 ' </dev/null > launches/{token}/switch.log 2>&1 &
@@ -553,8 +562,13 @@ mkdir launches/{token}
             print("FULL_TAKEOVER=REQUESTED", flush=True)
             print("GUEST_VCPUS=8; GPU=3d/required-no-fallback; TOUCH_EXCLUSIVE=YES; RAM=4GiB", flush=True)
             print("GPU_3D_STATUS=BACKEND_MUST_BE_CONFIRMED_IN_XNUHOST_LOG", flush=True)
-            print("THERMAL_BRIDGE=NOT_ACTIVE_IN_BENCH_BRIDGES_0; INDEPENDENT_ROOT_THROTTLE=REQUIRED", flush=True)
-            print("CPU_AFFINITY=BENCH_AFFINITY_1_DISTINCT_HOST_CORE_PER_VCPU_REQUIRED", flush=True)
+            if passive_soft_thermal:
+                print("SM8850_SOFT_THERMAL_GUARD=PASSIVE_NO_SOFTWARE_OVERHEAT_REBOOT", flush=True)
+                print("CPU_UNDERCLOCK=FLOOR_AWARE_INITIAL_28_PERCENT_REQUEST", flush=True)
+                print("WARNING=VENDOR_CPU_MINIMUM_MAY_EXCEED_REQUESTED_CAP", flush=True)
+            else:
+                print("SM8850_SOFT_THERMAL_GUARD=DEFAULT_FAIL_CLOSED", flush=True)
+            print("BRIDGES=1; CPU_PIN=1; CPU_AFFINITY_BENCH=0; GPU=3D_REQUIRED", flush=True)
             print("THERMAL_KERNEL_FIRMWARE_GUARDS=STILL_PRESENT_NOT_INDEPENDENTLY_VERIFIED", flush=True)
             print(f"DEADLINE_RETURN={duration}_SECONDS_AFTER_FRAMEWORK_STOP", flush=True)
             print("RECOVERY=MANDATORY_REBOOT_NOT_INPLACE; WATCHDOG_LEGACY_UNQUALIFIED=YES", flush=True)
@@ -716,6 +730,8 @@ def main():
     parser.add_argument("--serial", help="ADB USB serial. Defaults to the sole authorized USB device.")
     parser.add_argument("--adb", type=Path, default=ADB_DEFAULT)
     parser.add_argument("--duration", type=int, help="Full run only: 60..600 seconds; default 600")
+    parser.add_argument("--passive-soft-thermal-180", action="store_true",
+                        help="180s full bridges: software thermal soft-trip disabled, floor-aware CPU underclock; kernel thermal remains")
     parser.add_argument("--gpu", choices=["3d"])
     parser.add_argument("--bench-manifest", type=Path)
     parser.add_argument("--output", type=Path, help="New local evidence directory")
@@ -729,6 +745,8 @@ def main():
         parser.error("--run requires --gpu 3d and --duration between 60 and 600 seconds (default 600)")
     if args.mode != "run" and (args.duration is not None or args.gpu):
         parser.error("--duration and --gpu apply to --run")
+    if args.passive_soft_thermal_180 and (args.mode != "run" or args.duration != 180):
+        parser.error("--passive-soft-thermal-180 requires --run --duration 180")
     if (args.mode == "prepare") != bool(args.bench_manifest):
         parser.error("--prepare requires --bench-manifest with an independently verified benchmark SHA-256 list")
     manifest = manifest_bytes(args.bench_manifest) if args.bench_manifest else None
@@ -765,7 +783,8 @@ def main():
     if args.mode == "reboot-smoke":
         return launch(phone, "smoke", output, reboot_only=True)
     return launch(phone, "smoke" if args.mode == "recovery-smoke" else "run", output,
-                  duration=args.duration if args.duration is not None else 600)
+                  duration=args.duration if args.duration is not None else 600,
+                  passive_soft_thermal=args.passive_soft_thermal_180)
 
 
 if __name__ == "__main__":
