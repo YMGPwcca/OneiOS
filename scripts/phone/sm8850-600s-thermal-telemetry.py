@@ -467,13 +467,6 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
             boot, uptime, current_deadline = state_of(meta)
             if token and meta.get("kgsl_3d_backend_log") == "1":
                 seen_kgsl_3d = True
-            if token and meta.get("full_bridges_runtime_log") == "1":
-                seen_full_bridges = True
-                if not (out / "full-bridges-observed.txt").exists():
-                    (out / "full-bridges-observed.txt").write_text(
-                        f"SM8850_FULL_BRIDGES=ACTIVE_LOG_OBSERVED\\n"
-                        f"BOOT={boot if 'boot' in locals() else identity['boot_id']}\\n"
-                        f"SESSION_TOKEN={token}\\n", encoding="utf-8")
             if boot != identity["boot_id"]:
                 console.say(f"POST_REBOOT=BOOT_CHANGED boot={boot} prior={identity['boot_id']}")
                 post_reboot = True
@@ -486,6 +479,10 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
             if token and observed_token != token:
                 console.say("SESSION_MISMATCH=CONTROL_TOKEN_CHANGED; STOPPING_TELEMETRY")
                 break
+            if token and meta.get("full_bridges_runtime_log") == "1":
+                if not seen_full_bridges:
+                    console.say(f"SM8850_FULL_BRIDGES=ACTIVE_RUNTIME_LOG token={token} boot={boot}")
+                seen_full_bridges = True
             if (token and current_deadline is not None and deadline is None
                 and meta.get("ctl/state") == "running"):
                 stop_line = meta.get("framework_stop_log", "")
