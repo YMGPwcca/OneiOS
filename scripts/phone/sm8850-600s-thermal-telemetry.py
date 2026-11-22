@@ -450,7 +450,7 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
                     remote_boot = re.search(r"^BOOT=([a-fA-F0-9-]{36})$", check, re.M)
                     if (remote_boot and remote_boot.group(1) != identity["boot_id"]
                         and "DONE=1" in check):
-                        console.say("POST_REBOOT=ANDROID_BOOT_COMPLETE_ROOT_UNAVAILABLE")
+                        console.say("POST_REBOOT=ANDROID_BOOT_COMPLETE_OBSERVED_VIA_UNPRIVILEGED_ADB")
                         (out / "post-reboot.txt").write_text(check, encoding="utf-8")
                         post_reboot = True
                         break
@@ -541,7 +541,10 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
             console.say("TAKEOVER_RUNNER_STILL_WAITING=YES; HOST_WAIT_BOUNDED")
         code = finish_local_runner(proc, reboot_observed=post_reboot, console=console)
         thread.join(timeout=10)
-        console.say(f"TAKEOVER_RUNNER_EXIT={code} (4 can mean reboot observed without recovery proof)")
+        console.say(f"TAKEOVER_RUNNER_EXIT={code} (host process outcome is not recovery proof)")
+        if post_reboot:
+            console.say("BOUNDED_TAKEOVER_RESULT=POST_REBOOT_OBSERVED_SESSION_CAUSE_NOT_PROVEN")
+            return 4
         return code
 
 
