@@ -75,6 +75,9 @@ if [ "$(cat "$ST/control/boot" 2>/dev/null)" = "$(cat /proc/sys/kernel/random/bo
     if tail -c 1048576 "$ST/session/xnuhost.log" 2>/dev/null | grep -Fq 'gpu: drm2kgsl on /dev/kgsl-3d0'; then
         printf 'M\tkgsl_3d_backend_log\t1\n'
     fi
+    if tail -c 1048576 "$ST/session/xnuhost.log" 2>/dev/null | grep -Fq 'SM8850_FULL_BRIDGES=ACTIVE; bridges=1;'; then
+        printf 'M\tfull_bridges_runtime_log\t1\n'
+    fi
 fi
 '''
 
@@ -431,6 +434,7 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
         seen_springboard = False
         seen_backboardd = False
         seen_kgsl_3d = False
+        seen_full_bridges = False
         last_error_report_at = 0.0
         launched_at = time.monotonic()
         post_reboot = False
@@ -463,6 +467,13 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
             boot, uptime, current_deadline = state_of(meta)
             if token and meta.get("kgsl_3d_backend_log") == "1":
                 seen_kgsl_3d = True
+            if token and meta.get("full_bridges_runtime_log") == "1":
+                seen_full_bridges = True
+                if not (out / "full-bridges-observed.txt").exists():
+                    (out / "full-bridges-observed.txt").write_text(
+                        f"SM8850_FULL_BRIDGES=ACTIVE_LOG_OBSERVED\\n"
+                        f"BOOT={boot if 'boot' in locals() else identity['boot_id']}\\n"
+                        f"SESSION_TOKEN={token}\\n", encoding="utf-8")
             if boot != identity["boot_id"]:
                 console.say(f"POST_REBOOT=BOOT_CHANGED boot={boot} prior={identity['boot_id']}")
                 post_reboot = True
@@ -533,6 +544,8 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
         if final is None:
             console.say("FINAL_NEAR_DEADLINE=NOT_CAPTURED; CHECK_LOGS_FOR_EARLY_RETURN_OR_USB_LOSS")
         console.say(f"GPU_3D_BACKEND_LOG_SEEN={seen_kgsl_3d}; NO_2D_FALLBACK_ENFORCED_BY_ONEOS")
+        console.say(f"SM8850_FULL_BRIDGES_RUNTIME_LOG_SEEN={seen_full_bridges}; "
+                    "EXACT_CURRENT_SESSION_CHECK=REQUIRED")
         console.say(f"LAST_BOOT_UPTIME={last_uptime} DEVICE_DEADLINE={deadline} TIMEBASE_VERIFIED={stop_verified}")
         console.say(f"SAMPLES_JSONL={out/'telemetry.jsonl'}")
         console.say(f"TAKEOVER_LOG={out/'takeover.log'}")
