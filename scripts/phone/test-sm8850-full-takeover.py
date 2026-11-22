@@ -195,7 +195,7 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         source = (ROOT / "scripts/phone/sm8850-600s-thermal-telemetry.py").read_text()
         self.assertIn('ap.add_argument("--duration", type=int, default=600', source)
         self.assertIn('FINAL_NEAR_DEADLINE', source)
-        self.assertIn('duration - 10', source)
+        self.assertIn('duration-10', source)
         self.assertIn('"--duration", str(duration)', source)
         self.assertIn('FRAMEWORK_TIMEBASE=MISMATCH', source)
         self.assertIn('meta.get("ctl/framework.duration") == str(duration)', source)
