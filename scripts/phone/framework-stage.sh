@@ -23,6 +23,42 @@ hash_of() { sha256sum "$1" | cut -d' ' -f1; }
 root_file() {
     [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c '%u:%a' "$1")" = 0:700 ]
 }
+# Pin the current boot's actual junction sensors for the independent
+# root-side guard. Exclude pseudo trip-temperature zones; the caller
+# verifies every ID/type on each sample. This operation never writes sysfs.
+thermal_manifest_build() {
+    tmp="$incoming/thermal.guard.zones.$"
+    : > "$tmp" || fail "cannot allocate sensor manifest"
+    count=0; cpu=0; gpu=0; ddr=0
+    for z in /sys/class/thermal/thermal_zone[0-9]*; do
+        [ -d "$z" ] || continue
+        idx=${z##*thermal_zone}
+        case "$idx" in ''|*[!0-9]*) fail "invalid thermal zone id" ;; esac
+        [ "$idx" -le 255 ] || fail "invalid thermal zone index"
+        typ=$(cat "$z/type" 2>/dev/null) || fail "unreadable thermal zone"
+        grp=
+        case "$typ" in
+            cpu-hw-trip-*) continue ;;
+            cpu-*|cpuss-*) grp=cpu; cpu=$((cpu+1)) ;;
+            gpuss-*) grp=gpu; gpu=$((gpu+1)) ;;
+            ddr) grp=ddr; ddr=$((ddr+1)) ;;
+            xo-therm) grp=xo ;;
+            *) continue ;;
+        esac
+        case "$typ" in ''|*[!a-zA-Z0-9._-]*) fail "unsafe thermal zone type" ;; esac
+        printf 'z %s %s %s\n' "$idx" "$typ" "$grp" >> "$tmp" || fail "cannot write sensor map"
+        count=$((count+1))
+        [ "$count" -le 96 ] || fail "too many supported thermal zones"
+    done
+    [ "$cpu" -gt 0 ] && [ "$gpu" -gt 0 ] && [ "$ddr" -gt 0 ] ||
+        fail "missing required CPU/GPU/DDR junction sensor"
+    boot=$(cat /proc/sys/kernel/random/boot_id) || fail "cannot read sensor map boot ID"
+    { printf 'v1 %s %s\n' "$boot" "$count"; cat "$tmp"; } > "$incoming/thermal.guard.manifest" ||
+        fail "cannot finalize sensor map"
+    rm -f "$tmp"
+    chmod 600 "$incoming/thermal.guard.manifest"
+    echo "SM8850_THERMAL_SENSOR_MANIFEST=BOOT_PINNED count=$count cpu=$cpu gpu=$gpu ddr=$ddr"
+}
 install_stage() {
     if [ ! -d "$stage" ]; then
         mkdir -m 700 "$stage" || fail "cannot create the experimental stage"
@@ -47,13 +83,19 @@ install_stage() {
     [ "$(getprop init.svc.zygote)" = running ] &&
         pidof system_server >/dev/null 2>&1 ||
         fail "Android Framework not healthy before staging"
-    for name in oneios_switch.sh oneios_return.sh oneios-watchdog; do
+    for name in oneios_switch.sh oneios_return.sh oneios-watchdog oneios_sm8850_thermal_cap.sh oneios_sm8850_thermal_takeover_guard.sh; do
         [ -f "$incoming/$name" ] && [ ! -L "$incoming/$name" ] ||
             fail "untrusted incoming $name"
         if [ -e "$stage/$name" ] || [ -L "$stage/$name" ]; then
             root_file "$stage/$name" || fail "untrusted installed $name"
         fi
     done
+    thermal_manifest_build
+    if [ -e "$stage/thermal.guard.manifest" ] || [ -L "$stage/thermal.guard.manifest" ]; then
+        [ ! -L "$stage/thermal.guard.manifest" ] &&
+            [ "$(stat -c '%u:%a' "$stage/thermal.guard.manifest")" = 0:600 ] ||
+            fail "untrusted installed sensor manifest"
+    fi
     # The native watchdog supervisor is not being changed by this
     # OneOS compatibility patch. Do not silently swap its binary.
     if [ -e "$stage/oneios-watchdog" ] &&
@@ -65,7 +107,10 @@ install_stage() {
             [ -f "$stage/$name" ] || fail "cannot upgrade incomplete stage $name"
         done
         if cmp -s "$incoming/oneios_switch.sh" "$stage/oneios_switch.sh" &&
-           cmp -s "$incoming/oneios_return.sh" "$stage/oneios_return.sh"; then
+           cmp -s "$incoming/oneios_return.sh" "$stage/oneios_return.sh" &&
+           cmp -s "$incoming/oneios_sm8850_thermal_cap.sh" "$stage/oneios_sm8850_thermal_cap.sh" &&
+           cmp -s "$incoming/oneios_sm8850_thermal_takeover_guard.sh" "$stage/oneios_sm8850_thermal_takeover_guard.sh" &&
+           cmp -s "$incoming/thermal.guard.manifest" "$stage/thermal.guard.manifest"; then
             echo "Experimental recovery scripts are already identical"
             return 0
         fi
@@ -76,7 +121,8 @@ install_stage() {
         backup=$(mktemp -d "$stage/.rollback/oneos-compat.XXXXXXXX") ||
             fail "cannot allocate rollback archive"
         root_dir "$backup" || fail "untrusted rollback archive"
-        for name in oneios_switch.sh oneios_return.sh oneios-watchdog; do
+        for name in oneios_switch.sh oneios_return.sh oneios-watchdog oneios_sm8850_thermal_cap.sh oneios_sm8850_thermal_takeover_guard.sh thermal.guard.manifest; do
+            [ -e "$stage/$name" ] || continue
             cp -p "$stage/$name" "$backup/$name" || fail "backup failed for $name"
             cmp -s "$stage/$name" "$backup/$name" || fail "backup verification failed for $name"
             sha256sum "$backup/$name" >> "$backup/old.sha256" ||
@@ -84,15 +130,17 @@ install_stage() {
         done
         # Prepare files before replacing anything. The old scripts remain
         # in .rollback with original hashes and the live logs stay untouched.
-        for name in oneios_switch.sh oneios_return.sh; do
+        for name in oneios_switch.sh oneios_return.sh oneios_sm8850_thermal_cap.sh oneios_sm8850_thermal_takeover_guard.sh thermal.guard.manifest; do
             [ ! -e "$stage/$name.oneios-new" ] && [ ! -L "$stage/$name.oneios-new" ] ||
                 fail "unexpected pending stage upgrade for $name"
-            install -m 700 "$incoming/$name" "$stage/$name.oneios-new" ||
+            perm=700
+            [ "$name" != thermal.guard.manifest ] || perm=600
+            install -m "$perm" "$incoming/$name" "$stage/$name.oneios-new" ||
                 fail "cannot stage replacement $name"
             cmp -s "$incoming/$name" "$stage/$name.oneios-new" ||
                 fail "replacement verification failed for $name"
         done
-        for name in oneios_switch.sh oneios_return.sh; do
+        for name in oneios_switch.sh oneios_return.sh oneios_sm8850_thermal_cap.sh oneios_sm8850_thermal_takeover_guard.sh thermal.guard.manifest; do
             mv -f "$stage/$name.oneios-new" "$stage/$name" ||
                 fail "cannot atomically install $name"
             sha256sum "$stage/$name" >> "$backup/new.sha256" ||
@@ -101,12 +149,14 @@ install_stage() {
         echo "ONEOS_STAGE_UPGRADE=PASS_BACKUP_PRESERVED:$backup"
         return 0
     fi
-    for name in oneios_switch.sh oneios_return.sh oneios-watchdog; do
+    for name in oneios_switch.sh oneios_return.sh oneios-watchdog oneios_sm8850_thermal_cap.sh oneios_sm8850_thermal_takeover_guard.sh thermal.guard.manifest; do
+        perm=700
+        [ "$name" != thermal.guard.manifest ] || perm=600
         if [ -e "$stage/$name" ]; then
             [ ! -L "$stage/$name" ] && cmp -s "$incoming/$name" "$stage/$name" ||
                 fail "existing $name differs; run the separately confirmed reboot stage-check upgrade"
         else
-            install -m 700 "$incoming/$name" "$stage/$name" ||
+            install -m "$perm" "$incoming/$name" "$stage/$name" ||
                 fail "cannot install missing stage artifact $name"
         fi
     done
