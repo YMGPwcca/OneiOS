@@ -81,8 +81,13 @@ root workers from precisely the matching OneOS revision.
   attempt leaving One UI under an unexpected CPU cap.
 * Current experimental monotonic levels: <55C→60%; >=55→40%;
   >=65→28%; >=72→18%; >=77→12%; >=80→8% of hardware max, never less
-  than the CPU policy's validated min and never overriding a tighter
-  external cap. It intentionally favors heat reduction over frame rate.
+  than the greater of the hardware minimum and Samsung's *current dynamic*
+  `scaling_min_freq` vote and never overriding a tighter external cap.
+  It intentionally favors heat reduction over frame rate. If Samsung's
+  active minimum is above the computed cap, the worker logs
+  `P0_CPU_CAP=MIN_FLOOR_LIMITED` and uses the minimum without modifying
+  `scaling_min_freq` or `cpufreq_max_limit`. The requested 8% cap
+  is NOT guaranteed to be the effective cap.
   These percentages are frequency ceilings, NOT a guaranteed fraction of
   CPU work or power.
 * At >=80°C the controller throttles; it does **not** normally return.
@@ -119,6 +124,39 @@ heartbeat reaction timing, Samsung CPU min/max readback, root process
 independence and recovery after injected monitor death (with a
 **non-destructive fixture**, never by overheating the phone).
 
+## Observed SM-S948B hardware evidence (2026-11-22)
+
+Root-backed One UI inventory verified CPU0–5 policy0 and CPU6–7
+policy6 with hardware ranges 384000..3628800 and 768000..4742400 kHz.
+Samsung's `cpufreq_max_limit=2112000` applied an existing vendor ceiling.
+Five read-only thermal/cpufreq policy checks passed, including 16 CPU,
+11 GPU and 1 DDR temperature zones; each ADB round trip took ~1.0s,
+which is NOT the resident worker's reaction latency.
+
+A supervised **1-second per-policy write/readback** under healthy One UI
+accepted a 40% policy request and rounded down:
+`policy0: 1451520 → 1440000 kHz` and
+`policy6: 1896960 → 1862400 kHz`. Both restored to the
+original `2112000 kHz`. This verifies *one* level on real
+hardware; it does NOT certify stronger caps or the runtime worker.
+
+Crucial: Samsung `policy0/scaling_min_freq` was initially observed at
+`384000` kHz but later at `1228800` kHz without us changing that
+minimum. The revised worker validates and clamps to the live minimum
+on **every tick**, continues to lower `scaling_max_freq` where possible,
+and logs when the requested cap is blocked by Samsung's current vote.
+If the floor remains at `1228800` kHz at 80°C, the nominal 384 MHz
+policy0 target CANNOT be reached by this non-invasive controller.
+The root 90°C emergency/heartbeat failure path remains unqualified.
+No thermal runaway, death-of-monitor, watchdog or full 300s
+live takeover test was performed to obtain these data.
+
+After syncing an updated `app` submodule into an already rearmed
+phone, use the **reboot-stage-check upgrade** to install revised
+OneOS scripts without consuming or recloning the current one-shot
+APFS Data. Run the exact 300s read-only preflight again. Neither
+step qualifies unassisted recovery or authorizes the live run.
+
 ## Diagnosing 1–2 second UI frame stalls
 
 `sm8850-frame-stall-report.py` correlates already collected
@@ -143,8 +181,10 @@ contention and the stage where no new frame is produced.
 
 1. Full physical thermal response/readback and independent watchdog
    behavior have **not** been validated with this code.
-2. `cpuinfo_min_freq` clipping may prevent 8% of maximum from
-   applying to Snapdragon Oryon; verify effective limits.
+2. Both `cpuinfo_min_freq` and Samsung's dynamically changing
+   `scaling_min_freq` can prevent 8% of maximum from applying to
+   Snapdragon Oryon; preserve external minimum votes and report clamped
+   limits instead of claiming the nominal target was applied.
 3. A root-owned cpufreq limit may persist if the hardware unexpectedly
    escapes the designed reboot-only return path; production recovery
    needs explicit restoration assurance.
