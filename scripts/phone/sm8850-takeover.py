@@ -563,9 +563,9 @@ mkdir launches/{token}
             print("GUEST_VCPUS=8; GPU=3d/required-no-fallback; TOUCH_EXCLUSIVE=YES; RAM=4GiB", flush=True)
             print("GPU_3D_STATUS=BACKEND_MUST_BE_CONFIRMED_IN_XNUHOST_LOG", flush=True)
             if passive_soft_thermal:
-                print("SM8850_SOFT_THERMAL_GUARD=PASSIVE_NO_SOFTWARE_OVERHEAT_REBOOT", flush=True)
-                print("CPU_UNDERCLOCK=FLOOR_AWARE_INITIAL_28_PERCENT_REQUEST", flush=True)
-                print("WARNING=VENDOR_CPU_MINIMUM_MAY_EXCEED_REQUESTED_CAP", flush=True)
+                print("SM8850_SOFT_THERMAL_GUARD=OFF_NO_PROCESS_NO_HEARTBEAT", flush=True)
+                print("CPU_UNDERCLOCK=NONFATAL_BEST_EFFORT_FIXED_28_PERCENT_REQUEST", flush=True)
+                print("WARNING=CAP_FAILURE_NO_SOFTWARE_REBOOT_AND_VENDOR_MINIMUM_MAY_OVERRIDE_CAP", flush=True)
             else:
                 print("SM8850_SOFT_THERMAL_GUARD=DEFAULT_FAIL_CLOSED", flush=True)
             print("BRIDGES=1; CPU_PIN=1; CPU_AFFINITY_BENCH=0; GPU=3D_REQUIRED", flush=True)
