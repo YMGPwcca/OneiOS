@@ -302,10 +302,24 @@ done
             )
             if p.returncode == 0:
                 print("FRAME_STALL_REPORT=" + str(report_file), flush=True)
+            elif p.returncode == 3 and "FRAME_STALL_REPORT=SKIPPED_MISSING_GUEST_TRACE" in p.stderr:
+                # Thermal/recovery-only captures may have no guest traces;
+                # this does not invalidate the device archive or return logs.
+                print(p.stderr.strip(), flush=True)
             else:
-                print("FRAME_STALL_REPORT=UNAVAILABLE " + p.stderr[:180], flush=True)
+                error_file = output / "frame-stall-error.txt"
+                error_file.write_text(
+                    f"exit={p.returncode}\\nstdout:\\n{p.stdout}\\nstderr:\\n{p.stderr}",
+                    encoding="utf-8",
+                )
+                reason = p.stderr.strip().splitlines()[-1] if p.stderr.strip() else f"exit={p.returncode}"
+                print(f"FRAME_STALL_REPORT=UNAVAILABLE reason={reason[:180]} "
+                      f"full_error={error_file}", flush=True)
         except (OSError, subprocess.TimeoutExpired) as error:
-            print(f"FRAME_STALL_REPORT=UNAVAILABLE {type(error).__name__}", flush=True)
+            error_file = output / "frame-stall-error.txt"
+            error_file.write_text(f"{type(error).__name__}: {error}\\n", encoding="utf-8")
+            print(f"FRAME_STALL_REPORT=UNAVAILABLE {type(error).__name__} "
+                  f"full_error={error_file}", flush=True)
     with (output / "restored-device.txt").open("wb") as details:
         diagnostic = phone.root(STATUS + """
 echo '=== Input services ==='
