@@ -135,7 +135,11 @@ def build_phone_tool(source, destination):
 
 
 def upload(phone, operation, manifest=None):
-    files = {name: ASSETS / name for name in ("oneios_switch.sh", "oneios_return.sh")}
+    files = {name: ASSETS / name for name in (
+        "oneios_switch.sh", "oneios_return.sh",
+        "oneios_sm8850_thermal_cap.sh",
+        "oneios_sm8850_thermal_takeover_guard.sh",
+    )}
     files["stage.sh"] = HERE / "framework-stage.sh"
     with tempfile.TemporaryDirectory(prefix="oneios-framework-") as folder:
         if operation not in {"install", "upgrade"}:
@@ -469,7 +473,7 @@ def full_takeover_deadline_result(baseline, after, token):
     )
 
 
-def launch(phone, mode, output, *, reboot_only=False):
+def launch(phone, mode, output, *, reboot_only=False, duration=600):
     # SM8850 full-run deliberately uses the same legacy OneOS V watchdog
     # feeder and mandatory reboot-return path as the observed smoke.
     # It is separately risk-acknowledged, NEVER an in-place handback.
@@ -480,7 +484,8 @@ def launch(phone, mode, output, *, reboot_only=False):
         return 2
     shell = f"/system/bin/sh {STAGE}/oneios_switch.sh"
     session_mode = "reboot-smoke" if reboot_only else mode
-    check = phone.root(f"{shell} --framework-check {session_mode}", timeout=120)
+    check = phone.root(f"{shell} --framework-check {session_mode}" +
+                       (f" {duration}" if mode == "run" else ""), timeout=120)
     if check.returncode:
         return check.returncode
     baseline = status(phone)
@@ -494,7 +499,7 @@ cd {STAGE}
 mkdir -p launches
 mkdir launches/{token}
 /data/adb/ksu/bin/busybox setsid /system/bin/sh -c '
-    {shell} --framework-session {session_mode} {ACK} {token}{risk_token}
+    {shell} --framework-session {session_mode} {ACK} {token}{risk_token}{f" {duration}" if mode == "run" else ""}
     rc=$?
     printf "%s\n" "$rc" > launches/{token}/exit
 ' </dev/null > launches/{token}/switch.log 2>&1 &
@@ -508,14 +513,15 @@ mkdir launches/{token}
             print("FULL_TAKEOVER=REQUESTED", flush=True)
             print("GUEST_VCPUS=8; GPU=3d/required-no-fallback; TOUCH_EXCLUSIVE=YES; RAM=4GiB", flush=True)
             print("GPU_3D_STATUS=BACKEND_MUST_BE_CONFIRMED_IN_XNUHOST_LOG", flush=True)
-            print("THERMAL_BRIDGE=NOT_ACTIVE_IN_BENCH_BRIDGES_0", flush=True)
+            print("THERMAL_BRIDGE=NOT_ACTIVE_IN_BENCH_BRIDGES_0; INDEPENDENT_ROOT_THROTTLE=REQUIRED", flush=True)
+            print("CPU_AFFINITY=BENCH_AFFINITY_1_DISTINCT_HOST_CORE_PER_VCPU_REQUIRED", flush=True)
             print("THERMAL_KERNEL_FIRMWARE_GUARDS=STILL_PRESENT_NOT_INDEPENDENTLY_VERIFIED", flush=True)
-            print("DEADLINE_RETURN=600_SECONDS_AFTER_FRAMEWORK_STOP", flush=True)
+            print(f"DEADLINE_RETURN={duration}_SECONDS_AFTER_FRAMEWORK_STOP", flush=True)
             print("RECOVERY=MANDATORY_REBOOT_NOT_INPLACE; WATCHDOG_LEGACY_UNQUALIFIED=YES", flush=True)
         else:
             print("This smoke has a 20-second automatic reboot deadline AFTER Framework takeover.", flush=True)
         print("Do NOT press Volume Up + Down during this session.", flush=True)
-    end = time.monotonic() + 1000
+    end = time.monotonic() + (max(duration, 60) + 400 if mode == "run" else 1000)
     reboot_seen = None
     confirmed_announced = False
     full_guest_seen = False
@@ -532,7 +538,7 @@ mkdir launches/{token}
                     kv = dict(line.split("=", 1) for line in state.splitlines() if "=" in line)
                     if kv.get("control/state") == "running" and kv.get("control/framework.takeover-confirmed"):
                         if not confirmed_announced:
-                            print("FRAMEWORK_TAKEOVER=CONFIRMED; DEADLINE=600_SECONDS; DO_NOT_PRESS_VOLUME_KEYS", flush=True)
+                            print(f"FRAMEWORK_TAKEOVER=CONFIRMED; DEADLINE={duration}_SECONDS; DO_NOT_PRESS_VOLUME_KEYS", flush=True)
                             confirmed_announced = True
                         if kv.get("guest_ready") == "1" and not full_guest_seen:
                             full_guest_seen = True
@@ -669,7 +675,7 @@ def main():
                         help="Separate risk consent for SM8850 legacy a:82 mandatory-reboot smoke OR 600-second full iOS takeover")
     parser.add_argument("--serial", help="ADB USB serial. Defaults to the sole authorized USB device.")
     parser.add_argument("--adb", type=Path, default=ADB_DEFAULT)
-    parser.add_argument("--duration", type=int, choices=[600])
+    parser.add_argument("--duration", type=int, help="Full run only: 60..600 seconds; default 600")
     parser.add_argument("--gpu", choices=["3d"])
     parser.add_argument("--bench-manifest", type=Path)
     parser.add_argument("--output", type=Path, help="New local evidence directory")
@@ -678,9 +684,10 @@ def main():
         parser.error(f"--{args.mode} requires --confirm")
     if args.mode in {"reboot-smoke", "run"} and not args.accept_legacy_watchdog_risk:
         parser.error(f"--{args.mode} requires separate --accept-legacy-watchdog-risk consent")
-    if args.mode == "run" and (args.duration != 600 or args.gpu != "3d"):
-        parser.error("--run must specify --duration 600 --gpu 3d; full-run is bounded by independent reboot deadline")
-    if args.mode != "run" and (args.duration or args.gpu):
+    if args.mode == "run" and (args.gpu != "3d" or (args.duration is not None and
+                                  not 60 <= args.duration <= 600)):
+        parser.error("--run requires --gpu 3d and --duration between 60 and 600 seconds (default 600)")
+    if args.mode != "run" and (args.duration is not None or args.gpu):
         parser.error("--duration and --gpu apply to --run")
     if (args.mode == "prepare") != bool(args.bench_manifest):
         parser.error("--prepare requires --bench-manifest with an independently verified benchmark SHA-256 list")
@@ -717,7 +724,8 @@ def main():
         return reboot_stage_check(phone, output)
     if args.mode == "reboot-smoke":
         return launch(phone, "smoke", output, reboot_only=True)
-    return launch(phone, "smoke" if args.mode == "recovery-smoke" else "run", output)
+    return launch(phone, "smoke" if args.mode == "recovery-smoke" else "run", output,
+                  duration=args.duration if args.duration is not None else 600)
 
 
 if __name__ == "__main__":
