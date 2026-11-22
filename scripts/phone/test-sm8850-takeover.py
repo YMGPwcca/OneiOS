@@ -261,11 +261,12 @@ control/framework.result=smoke complete
              patch.object(TAKEOVER, "launch", return_value=0) as launch, \
              patch("sys.argv", ["sm8850-takeover.py", "--run", "--confirm",
                                 "--accept-legacy-watchdog-risk", "--gpu", "3d",
-                                "--duration", "300", "--output", folder]), \
+                                "--duration", "300", "--output", str(Path(folder) / "run-300s")]), \
              contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(0, TAKEOVER.main())
             launch.assert_called_once()
             self.assertEqual(300, launch.call_args.kwargs["duration"])
+            self.assertTrue((Path(folder) / "run-300s").is_dir())
 
     def test_full_run_reuses_oneos_legacy_reboot_audit_and_no_new_smoke(self):
         with tempfile.TemporaryDirectory() as folder, \
