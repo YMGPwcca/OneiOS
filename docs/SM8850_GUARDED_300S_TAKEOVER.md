@@ -157,6 +157,47 @@ OneOS scripts without consuming or recloning the current one-shot
 APFS Data. Run the exact 300s read-only preflight again. Neither
 step qualifies unassisted recovery or authorizes the live run.
 
+## 2026-11-22 300s physical run: guest boots, panel/touch interaction fails
+
+The actual S26 Ultra run from the original 300s guest clone verified
+`IOS_GUEST_READY=OBSERVED`, first frame, 8-host-CPU mask and KGSL GPU 3D
+logs. The guest remained under the bounded 300s deadline, and Android
+`sys.boot_completed=1` was observed on a new boot afterwards; ephemeral root
+was lost, so the post-reboot result correctly stayed unverified.
+
+The operator **could not swipe to unlock** and saw a dim/sleeping panel.
+This is an **interactive FAIL** despite the successful guest boot markers.
+The telemetry alone does not prove the physical touch IC's `enabled`
+state or whether raw touch gestures reached the guest: it did not include
+the session's complete `xnuhost.log`.
+
+Root cause candidates directly visible in pinned source:
+* The 8-vCPU exclusive bench deliberately runs `bridges=0`. No
+  brightness bridge is initialized, so the host will inherit any sleeping
+  One UI display/touch IC state; OneOS only recorded and restored the
+  backlight, not its live wake transition.
+* `touch-exclusive=1` filtered out all key-only devices, including
+  the physical Power key. There was no way to wake an iOS lock screen
+  through Power even if it had entered guest sleep.
+
+**Source mitigation (not physically certified):** OneOS now sends
+`input keyevent KEYCODE_WAKEUP` to healthy Android **before** the Framework
+stop and refuses takeover if the wake event cannot be delivered.
+The touch-exclusive xnuhost code now listens, without `EVIOCGRAB`,
+to exactly one Power key source and forwards only Power to guest HID.
+Volume keys remain reserved for the root recovery watcher and are
+suppressed even after SYN_DROPPED resync. No active Samsung sysfs
+touch/panel control or `bridges=1` shortcut was added.
+
+This mitigates inheritance of a dark host panel and loss of Power wake
+events. **It is not proof** of backlight power transitions after an iOS
+sleep event or functioning end-to-end touch. Before another live run,
+build the UPDATED xnuhost runtime locally, run native and shell tests,
+prepare a fresh one-shot APFS Data clone, then check physical touch
+gesture logs and TSP state while the guest is live. Never reuse the
+consumed 300s Data clone or deploy only the updated switcher against
+an obsolete xnuhost binary and claim the bug fixed.
+
 ## Diagnosing 1–2 second UI frame stalls
 
 `sm8850-frame-stall-report.py` correlates already collected
