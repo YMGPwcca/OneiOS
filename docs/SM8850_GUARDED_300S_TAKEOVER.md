@@ -482,6 +482,45 @@ return remain hard blockers for another live takeover. A staged binary
 is not proof that the CPU/thermal/brightness/touch bridges work on the
 device.
 
+## 2026-11-22: Full-bridges stage-only completed (no Framework stop)
+
+The operator's CachyOS log confirms `stage-runtime` exited `0` on
+SM-S948B firmware `S948BXXS4BZIG` using OneiOS
+`06c108a01ef9488edc123c7cee23eb5c637131d8` and pinned OneOS
+`3d40343bfc800c49112e2cbebbb4d2c939ecbe82`. Rooted Android
+One UI stayed running. The current-boot thermal sensor manifest pinned
+28 zones (16 CPU, 11 GPU, 1 DDR). OneOS scripts were installed with
+`ONEOS_STAGE_UPGRADE=PASS_BACKUP_PRESERVED` and the preflight returned
+`REBOOT_STAGE_CHECK=PASS_NO_FRAMEWORK_STOP`.
+
+The native runtime was updated with SHA-256 validation and preserved under
+`/data/adb/oneios-m3q-framework/.rollback/runtime.KyUycmUk`:
+
+- `xnuhost`: `ea0dd9c977fa1349762e91584d6ad0e5a43944fb90549fe283397de5142f0802`
+- `oneios-display`: `93a1dee53e6f00b31a368377a7ff44f1b82a1baa63777853ff2722d79bd575e6`
+- `oneios-display.dex`: `44cc35c41dfeeea389301cd01f54bbdc8813a1515565650af9887ea3f3e98ced`
+- `liboneios-display.so`: `c524db80be1c6139abd04d8fceb3b5f63379c086674ca2bc20807d62a6f3d61c`
+
+The script reported `NATIVE_RUNTIME_UPGRADE=PASS_BACKUP_PRESERVED`,
+`FULL_BRIDGES_STAGE_ONLY=PASS`, `APFS_DATA=CONSUMED_NOT_REARMED`,
+and `FRAMEWORK_STOP=NO LIVE_TAKEOVER=NO`. OneOS script rollback:
+`/data/adb/oneios-m3q-framework/.rollback/oneos-compat.QoC9Woku`.
+The host-side console log is
+`out/sm8850/takeover/full-stage-runtime-20261122T175143Z-747484.log`.
+These source-reported outcomes are staging evidence, **not** fresh
+boot, full-br-hardware functionality, watchdog recovery or thermal
+safety evidence. Do not re-use the consumed APFS Data.
+
+**Next P0 action (read-only evidence capture, not a new guest run):**
+with rooted, healthy One UI and no active guest, use the existing
+`python3 scripts/phone/sm8850-takeover.py --collect --serial
+R5GL64LZ9HA` to archive the root-owned prior-session control,
+thermal-cap/guard, return and watcher records. Analyze boot/generation
+provenance and the reported 95 C pre-guest abort before deciding on any
+new physical session. This collector writes only local evidence; it
+must not be confused with `--run`, `--rearm-data`, or an independent
+watchdog qualification. A clean stage does not close the P0 blocker.
+
 ## 2026-11-22 300s physical run: guest boots, panel/touch interaction fails
 
 The actual S26 Ultra run from the original 300s guest clone verified
