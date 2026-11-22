@@ -5,7 +5,8 @@
 # - stage-runtime: install pinned OneOS scripts and prebuilt 3D runtime only;
 #   preserve the one-shot APFS Data state; NEVER stop Android Framework
 # - run: actually stop Android Framework and start the 3D iOS guest.
-#          An independent 600s deadline forces a return REBOOT.
+#          A device-side deadline requests a reboot-return. The legacy
+#          watchdog and unassisted return have NOT been qualified.
 set -euo pipefail
 
 usage() {
@@ -17,7 +18,11 @@ Usage:
   bash scripts/phone/sm8850-full-takeover.sh run [SERIAL] --i-accept-10-minute-legacy-watchdog-risk [--duration SECONDS]
 stage-runtime: root-only stage update, no build/test, no APFS rearm and no
 Framework stop; requires previously consumed Data and prebuilt 3D artifacts.
-Full-run duration: 60..600 seconds, default 600. It is measured after
+Full-bridges experimental branch: rearm and run are explicitly gated by
+ONEIOS_SM8850_FULL_BRIDGES_60S=I_ACCEPT_UNQUALIFIED_60S_LIVE_TEST;
+run requires --duration 60. Re-arming fresh one-shot Data and launching
+are separate steps; the 60s software deadline is not a hardware guarantee.
+Other historical full-run durations: 60..600 seconds, default 600, measured after
 verified Framework stop; the root watchdog and thermal monitor are required.
 The live run WILL stop Android Framework. Samsung USB + Volume Up+Down can
 enter Download Mode. DO NOT press both volume keys during this experiment.
@@ -59,10 +64,23 @@ case "$(git branch --show-current)" in
             exit 2
         } ;;
     feat/sm8850-full-bridges-takeover)
-        [ "$mode" = stage-runtime ] || {
-            echo "BLOCKED: full-bridges branch is stage-only pending independent thermal/recovery qualification" >&2
-            exit 2
-        } ;;
+        case "$mode" in
+            stage-runtime) ;;
+            rearm|run)
+                [ "${ONEIOS_SM8850_FULL_BRIDGES_60S:-}" = I_ACCEPT_UNQUALIFIED_60S_LIVE_TEST ] || {
+                    echo "BLOCKED: full bridges live trial needs explicit 60s experimental opt-in" >&2
+                    exit 2
+                }
+                if [ "$mode" = run ]; then
+                    [ "$duration" = 60 ] || {
+                        echo "BLOCKED: full bridges live trial limited to 60 seconds" >&2
+                        exit 2
+                    }
+                fi ;;
+            *)
+                echo "BLOCKED: full bridges allows only stage-runtime, rearm or 60s run" >&2
+                exit 2 ;;
+        esac ;;
     *) echo "Expected an authorized SM8850 feature branch" >&2; exit 2 ;;
 esac
 [ "$(git -C app rev-parse HEAD)" = "$(git rev-parse HEAD:app)" ] || {
@@ -178,6 +196,29 @@ PY
     echo "APFS_DATA=CONSUMED_NOT_REARMED"
     echo "FRAMEWORK_STOP=NO LIVE_TAKEOVER=NO"
   elif [ "$mode" = rearm ]; then
+    if [ "$(git branch --show-current)" = feat/sm8850-full-bridges-takeover ]; then
+      echo "===== FULL BRIDGES 60S TRIAL: VERIFY PREVIOUSLY STAGED XNUHOST ====="
+      XNUHOST=runtime/xnuhost/build/android/xnuhost
+      test -s "$XNUHOST"
+      grep -aFq 'SM8850_FULL_BRIDGES=ACTIVE' "$XNUHOST"
+      EXPECTED_SHA=$(sha256sum "$XNUHOST" | awk '{print $1}')
+      INSTALLED_SHA=$("$ADB" -s "$serial" exec-out \
+        "su -c 'sha256sum /data/adb/oneios-m3q-framework/runtime/bin/xnuhost'" \
+        | tr -d '\r' | awk '{print $1}')
+      [ "$EXPECTED_SHA" = "$INSTALLED_SHA" ] || {
+        echo "BLOCKED: on-device xnuhost SHA-256 differs from validated local build" >&2
+        exit 2
+      }
+      echo "STAGED_FULL_BRIDGES_XNUHOST_SHA256=$INSTALLED_SHA"
+      echo "===== FRESH ONE-SHOT APFS DATA CLONE; PRESERVE CONSUMED DATA ====="
+      python3 scripts/phone/sm8850-takeover.py \
+        --rearm-data --confirm --serial "$serial"
+      echo "===== READ-ONLY 60S LIVE ADMISSION PREFLIGHT ====="
+      "$ADB" -s "$serial" shell -T \
+        "su -c '/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run 60'"
+      echo "FULL_BRIDGES_60S_REARM=PASS_NO_FRAMEWORK_STOP"
+      echo "LIVE_FRAMEWORK_STOP=NO"
+    else
     echo "===== VERIFY PATCHED GUEST MOUNT SAFETY (LOCAL ONLY) ====="
     python3 scripts/phone/test-sm8850-full-takeover.py -v
     echo "===== UPGRADE ON-DEVICE ONEOS SCRIPTS (NO FRAMEWORK STOP) ====="
@@ -199,13 +240,19 @@ PY
     echo "FULL_TAKEOVER_ADMISSION=PASS_NO_FRAMEWORK_STOP"
     echo "FULL_TAKEOVER_STAGE=REARMED"
     echo "LIVE_FRAMEWORK_STOP=NO"
+    fi
   else
     echo "===== LIVE FULL FRAMEWORK TAKEOVER 8 VCPU + GPU3D ${duration}S ====="
     echo "WARNING=LEGACY_WATCHDOG_NOT_INDEPENDENTLY_QUALIFIED"
     echo "WARNING=UNASSISTED_NORMAL_ONEUI_REBOOT_NOT_VERIFIED"
     echo "WARNING=PRIOR_FULL_RUN_GUEST_READY_AND_KGSL_OBSERVED_BUT_PERFORMANCE_POOR"
     echo "THERMAL_SAFETY=ROOT_GUARD_AND_MONOTONIC_THROTTLE_REQUIRED; 80C_THROTTLE; 90C_EMERGENCY_RETURN"
-    echo "CPU_AFFINITY=BENCH_ONLY_EIGHT_DISTINCT_HOST_CORES_REQUIRED"
+    if [ "$(git branch --show-current)" = feat/sm8850-full-bridges-takeover ]; then
+      echo "SM8850_BRIDGES=1 CPU_PIN=1 CPU_AFFINITY_BENCH=0"
+      echo "WARNING=HISTORIC_95C_101C_PEAKS; 60S_DEADLINE_AND_WATCHDOG_RETURN_UNQUALIFIED"
+    else
+      echo "CPU_AFFINITY=BENCH_ONLY_EIGHT_DISTINCT_HOST_CORES_REQUIRED"
+    fi
     echo "WARNING=GPU_3D_REQUIRED_NO_2D_FALLBACK; IF_KGSL_INIT_FAILS_GUEST_BOOT_FAILS"
     echo "WARNING=ONE_SHOT_APFS_DATA_MUST_BE_FRESH_FOR_EACH_RUN"
     echo "PHYSICAL_KEYS=DO_NOT_PRESS_BOTH_VOLUME_KEYS"
