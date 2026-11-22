@@ -61,7 +61,7 @@ static bool panel_server_absent(void)
   bool absent = true;
   while ((ent = readdir(dir))) {
     if (!*ent->d_name || strspn(ent->d_name, "0123456789") != strlen(ent->d_name)) continue;
-    char path[80], comm[40];
+    char path[512], comm[40];
     if (snprintf(path, sizeof path, "/proc/%s/comm", ent->d_name) >= (int)sizeof path) continue;
     if (panel_stage_line(path, comm, sizeof comm) && !strcmp(comm, "system_server")) {
       absent = false;
