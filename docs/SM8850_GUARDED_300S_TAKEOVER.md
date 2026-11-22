@@ -64,6 +64,47 @@ The staged OneOS commit is pinned as the `app` submodule on this branch.
 Do not update only one repository; OneiOS's host stager must package the
 root workers from precisely the matching OneOS revision.
 
+## 2026-11-22: Rebuild existing runtime without reusing consumed APFS Data
+
+The local NDK build and all native tests passed after the touch/Power
+patch, but `sm8850-full-takeover.sh prepare` correctly refused with
+`STAGING REFUSED: one-shot Data was already used`. A first-time
+`prepare` installs a complete isolated image only when there is no old
+Data. It does NOT replace an existing guest runtime in place. The old
+`rearm` command cloned Data but silently kept the previously built
+`xnuhost`, which would have defeated the touch fix.
+
+**Updated procedure on the confirmed SM8850 branch**:
+
+```bash
+bash scripts/phone/sm8850-guarded-local-ci.sh
+bash scripts/phone/sm8850-full-takeover.sh rearm R5GL64LZ9HA
+```
+
+`rearm` now (1) checks/updates OneOS scripts, (2) builds the current
+Android `xnuhost` and display helpers on CachyOS, (3) uploads and
+SHA-256-checks exactly four native artifacts, (4) archives the previous
+runtime and manifest under `.rollback/runtime.*` before replacing them,
+and (5) archives the consumed private APFS Data and its marker before
+cloning fresh Data from the separate benchmark seed. **No guest starts
+and Android Framework is not stopped.** The native runtime upgrade
+requires `data.consumed`; it never makes consumed Data bootable.
+`NATIVE_RUNTIME_UPGRADE=PASS_BACKUP_PRESERVED`,
+`APFS_DATA_REARMED=YES`, and `FULL_TAKEOVER_STAGE=REARMED`
+must all be observed before any later live session.
+
+The new host-only synthetic test
+`scripts/phone/test-sm8850-native-runtime-upgrade.py` executes the
+actual upgrade function on fake native files, rejects corrupt hashes,
+and checks that the consumed Data stays untouched. On a failure AFTER
+the ready marker is disarmed, the stage remains fail-closed until
+investigated; do not delete `.rollback` or forcefully bypass markers.
+
+No further live takeover should be claimed successful until physical
+Power wake and raw swipe interaction are actually observed. Source
+mitigations are not proof that Samsung display/TSP power state survives
+an iOS sleep/wake cycle.
+
 ## CPU/vCPU behavior
 
 * Guest runs `--cpus 8`, GPU `3d` required (no 2D fallback), `bridges=0`
