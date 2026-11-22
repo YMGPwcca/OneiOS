@@ -1298,6 +1298,35 @@ static void test_input_filter(void)
   n = input_take(&d, got, 32);
   CHECK(n == 3 && got[0].code == 115 && got[0].value == 1 && got[1].code == 116 && got[1].value == 0 && got[2].type == 0 && k.sent_keys == 2);
   CHECK(power_presses == 1);                                                    // a release (and a resync) is no press
+  // Exclusive SM8850 full-run: Power reaches iOS, but Volume is reserved for
+  // the independent recovery key readers (including on a resync).
+  xh_input_source bench_keys;
+  xh_input_source_init(&bench_keys, d.dev, "power-only", false);
+  bench_keys.power_only = true;
+  bench_keys.suppress_volume = true;
+  bench_keys.read_state = fake_read_state;
+  const xh_input_ev bench_press[] = {
+    { now, 1, 114, 1 }, { now, 1, 115, 1 }, { now, 1, 116, 1 },
+    { now, 0, 0, 0 }
+  };
+  xh_input_feed(&bench_keys, bench_press, 4, now, counter, hz);
+  n = input_take(&d, got, 32);
+  CHECK(n == 2 && got[0].type == 1 && got[0].code == 116 &&
+        got[0].value == 1 && got[1].type == 0);
+  CHECK(bench_keys.sent_keys == 4);
+  const xh_input_ev bench_release[] = {
+    { now, 1, 114, 0 }, { now, 1, 115, 0 }, { now, 1, 116, 0 },
+    { now, 0, 0, 0 }
+  };
+  xh_input_feed(&bench_keys, bench_release, 4, now, counter, hz);
+  n = input_take(&d, got, 32);
+  CHECK(n == 2 && got[0].code == 116 && got[0].value == 0 &&
+        got[1].type == 0 && bench_keys.sent_keys == 0);
+  fake_state.keys = 3; // both Volume keys down: no leak on SYN_DROPPED.
+  const xh_input_ev bench_drop[] = { { now, 0, 3, 0 }, { now, 0, 0, 0 } };
+  xh_input_feed(&bench_keys, bench_drop, 2, now, counter, hz);
+  n = input_take(&d, got, 32);
+  CHECK(n == 1 && got[0].type == 0 && bench_keys.sent_keys == 0);
   xh_input_power_key = NULL;
 }
 
