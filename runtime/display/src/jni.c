@@ -182,6 +182,26 @@ static void log_frame_trace(const struct xhd_frame_perf *p, uint64_t now_ns)
           (unsigned long long)p->flush_to_post_oldest.max_us);
 }
 
+// v2 measures CPU copy of the scanout's dirty rectangle; it does not
+// attribute Metal command submission or a specific KGSL fence to this frame.
+static void log_scanout_perf(const struct xhd_frame_perf *p, uint64_t now_ns)
+{
+  if (!p->scanout_packets) return;
+  fprintf(stderr,
+          "oneios-display: scanout-trace: mono_ms=%llu copy_samples=%llu blob=%llu 2d=%llu "
+          "copy_mean_us=%llu copy_max_us=%llu copy_worst_per_post_p95_us=%llu "
+          "scanout_begin_to_post_oldest_p95_us=%llu "
+          "endpoint=ANativeWindow_unlockAndPost_not_physical_present\n",
+          (unsigned long long)(now_ns / 1000000u),
+          (unsigned long long)p->scanout_packets,
+          (unsigned long long)p->scanout_blob,
+          (unsigned long long)p->scanout_2d,
+          (unsigned long long)(p->scanout_copy_sum_ns / p->scanout_packets / 1000u),
+          (unsigned long long)(p->scanout_copy_max_ns / 1000u),
+          (unsigned long long)xhd_perf_quantile_bound_us(&p->scanout_copy_max_per_post, 95),
+          (unsigned long long)xhd_perf_quantile_bound_us(&p->scanout_start_to_post_oldest, 95));
+}
+
 // ready_path: SESSION/ready (--session), or NULL (--socket): the first post waits for it (xhd_hold_first). Until the
 // first post the layer has no buffer and the OneOS boot screen under it shows.
 JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong handle, jobject surface, jint format, jint dataspace,
@@ -227,6 +247,7 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
     if (xhd_perf_due(&perf, tick_ns)) {
       log_frame_perf(&perf, tick_ns);
       if (trace.active) log_frame_trace(&perf, tick_ns);
+      if (trace.active) log_scanout_perf(&perf, tick_ns);
       xhd_perf_next_window(&perf, tick_ns);
     }
     if (hold) { if (ready > 0) held_flushes++; continue; }
@@ -297,6 +318,7 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
   if (perf.posts || xhd_perf_due(&perf, finished_ns)) {
     log_frame_perf(&perf, finished_ns);
     if (trace.active) log_frame_trace(&perf, finished_ns);
+    if (trace.active) log_scanout_perf(&perf, finished_ns);
   }
   if (trace.active && trace.pending.traced)
     fprintf(stderr, "oneios-display: frame-trace: unposted_on_stop=%llu first_seq=%llu last_seq=%llu; not counted as presented frames\n",
