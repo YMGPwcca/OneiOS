@@ -498,6 +498,9 @@ static void test_virtio_gpu(void)
   CHECK(flush_rect[0] == 2 && flush_rect[1] == 1 && flush_rect[2] == 4 && flush_rect[3] == 2 && ready_count == 1);
   CHECK(scanout_trace_calls > 0 && last_scanout.kind == XH_FRAME_SCANOUT_2D && last_scanout.resource_id == 1);
   CHECK(last_scanout.start_ns > 0 && last_scanout.copied_ns >= last_scanout.start_ns);
+  CHECK(last_scanout.resource_generation > 0 && last_scanout.queue_generation == 0 &&
+        last_scanout.owner_context == 0);
+  const uint64_t first_scanout_gen = last_scanout.resource_generation;
   const uint8_t *px = fake_display.pixels + 1 * 32 + 2 * 4;                    // pixel (2,1) = index 10: B,G,R,X
   CHECK(px[0] == 10 && px[1] == 0x80 && px[2] == 0x11);
   CHECK(fake_display.pixels[0] == 0 && fake_display.pixels[1 * 32 + 6 * 4] == 0);       // outside the flushed rectangle
@@ -527,6 +530,9 @@ static void test_virtio_gpu(void)
     memset(cmd, 0, 4096);
     cmd[0] = 0x104; cmd[6] = 1; cmd[7] = 2; cmd[8] = 2; cmd[9] = 1; cmd[10] = 5;   // RESOURCE_FLUSH (1,2) 2x1
     CHECK(SEND(12, 24) == 24 && resp[0] == 0x1100);
+    CHECK(last_scanout.resource_id == 5 &&
+          last_scanout.resource_generation > first_scanout_gen &&
+          last_scanout.owner_context == 0);
     CHECK(!memcmp(fake_display.pixels + 2 * 64 + 1 * 8, halves + (2 * 8 + 1) * 4, 16) && fake_display.pixels[0] == 0);
     cmd[0] = 0x102; cmd[6] = 5;
     CHECK(SEND(8, 24) == 24 && resp[0] == 0x1100);
@@ -958,6 +964,8 @@ static void test_virtio_gpu3d(void)
     CHECK(!memcmp(fake_display.pixels, want, sizeof want));
     CHECK(last_scanout.kind == XH_FRAME_SCANOUT_BLOB && last_scanout.resource_id == 30);
     CHECK(last_scanout.start_ns > 0 && last_scanout.copied_ns >= last_scanout.start_ns);
+    CHECK(last_scanout.resource_generation > 0 &&
+          last_scanout.owner_context == 0);  // GUEST scanout's creator; not last GPU writer
     // half floats onto the 8-bit display: encoded to sRGB, clamped
     free(fake_display.pixels);
     fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .format = XH_PIXELS_BGRX8, .bpp = 4, .pixels = eight };
