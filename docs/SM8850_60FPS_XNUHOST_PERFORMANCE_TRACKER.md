@@ -17,8 +17,9 @@
 
 - [ ] **PERF-P0-01 — Safe deferred-only task order error diagnostic.** `runtime/xnuhost/src/task.c`: fix `order(t,NULL,0)` log dereference, cover -ETIMEDOUT, >=1000ms, explicit op and empty batch; preserve wait rc and mapping synchronization. **Status: source fix + 11-check diagnostic unit test + Android ARM64 build and complete CachyOS local CI PASS on `7ee2743a` (operator log 2026-11-24). Integrated service-thread timeout injection is still pending; no performance gain claimed.** Existing tracker: ONI-P1-01.
 - [ ] **PERF-P0-02 — XNUHost low-overhead profiler.** Add opt-in bounded counters/histograms by vCPU, guest pid/thread and event kind for syscall, VM fault, map/unmap, timer and futex; no per-event default logs, measure instrumentation overhead.
-  - **First source slice committed; local CI pending:** `--set perf-task=1` enables bounded, atomic-relaxed counters in `task.c` for task-process host PID and vCPU: syscall/fault/IRQ/other trap kinds, deferred/ordered maps/unmaps and futex waits/sleeps. Prints top eight *active* host task processes by cumulative activity at each `perf-log` report. Default is OFF; absent opt-in produces no counter writes. Host-only process IDs are **not yet mapped to guest XNU PID/name**, retired processes are not included and guest-thread/timer attribution plus overhead A/B are outstanding. No per-event logs or hardware state changes.
+  - **First source slice committed; CachyOS local CI PASS at `f2c24fa` (2026-11-24):** `--set perf-task=1` enables bounded, atomic-relaxed counters in `task.c` for task-process host PID and vCPU: syscall/fault/IRQ/other trap kinds, deferred/ordered maps/unmaps and futex waits/sleeps. Prints top eight *active* host task processes by cumulative activity at each `perf-log` report. Default is OFF; absent opt-in produces no counter writes. Host-only process IDs are **not yet mapped to guest XNU PID/name**, retired processes are not included and guest-thread/timer attribution plus overhead A/B are outstanding. No per-event logs or hardware state changes.
 - [ ] **PERF-P0-03 — End-to-end frame critical-path IDs.** Connect guest render/scanout, `virtio_gpu.c`, `xh_display_flush`, display seqpacket, Android lock/copy/post, and actual presentation/VSync where supported; document clock domains and trace loss.
+  - **First source slice committed; new local CI pending.** `--set frame-trace=1` (default OFF) makes `xh_display_flush` send a 40-byte XHDF record that preserves the legacy 20-byte rectangle prefix; it appends version 1, monotonically increasing flush ID and CLOCK_MONOTONIC ns at the post-copy host flush. A legacy helper receiving 20 bytes continues to render. Updated `xhd_drain_trace` accepts both, counts sequence gaps/invalid and coalesced flushes, and `liboneios-display.so` reports p95/latest/oldest `flush -> helper` and `flush -> ANativeWindow_unlockAndPost` timing in bounded 5-second windows. The visible frame is NOT proven presented; stages before `xh_display_flush` (including Metal/KGSL/guest process), actual SurfaceFlinger/HWC present fences/VSync and precise touch correlation remain uninstrumented. No hardware/root policy changes and no physical run authorized.
 - [ ] **PERF-P0-04 — VM fault and deferred map attribution.** Histogram queue occupancy, joined operations, ordered unmaps, unmaps by release, stall times; never remove `map-defer` or weaken TLB ordering without concurrency proofs.
 - [ ] **PERF-P0-05 — Syscall/trap hotspot and long tails.** Group syscall/fault classes by guest pid and vCPU and time-correlate the 286.6ms syscall / 596.2ms VM-fault outliers with frame IDs before blaming a frame.
 - [ ] **PERF-P0-06 — Timer/futex wakeup churn.** Inspect duplicate timer programming, host timer call rate, guest wakeups, service-thread waits, and futex sleep/wake tails; compare no-op instrumentation baseline.
@@ -77,5 +78,23 @@ JOBS=8 ./scripts/ci-local.sh all 0.0.0-ci
 ```
 
 `--set perf-task=1` is intended to be passed **explicitly to an already approved XNUHost session**. It adds `perf-task:` cumulative top-active-host-task lines to the normal `perf:` report; `perf-task=0` is the default. It is not a capture of real presented FPS and its current host PIDs are not guest process names. Compare profiler OFF vs ON for overhead before using its tails as an optimization baseline. This branch has not been validated on the actual SM8850 device.
+
+## New opt-in frame trace: compatibility and local regression
+
+The unchanged XHDF first 20 bytes contain `magic + x/y/w/h`. Extra fields are only sent if `--set frame-trace=1` is explicitly requested; the updated helper accepts either packet size, and old 20-byte SOCK_SEQPACKET readers consume only the rectangle prefix. The trace is **not a real screen FPS counter** and does not imply a completed performance optimization.
+
+- Clock domain: `CLOCK_MONOTONIC` nanoseconds, from XNUHost through the display helper in the same Linux boot. Trace ID is monotonic within an XNUHost process, not an iOS Quartz/CoreAnimation frame ID.
+- Coalescing: multiple XHDF packets may produce one Android post; `traced_flushes - traced_posts` counts coalesced packets only in traced posts. `seq_gaps` shows missing/not received sequence numbers, not necessarily the reason (e.g., socket EAGAIN, invalid records or disconnect).
+- Latencies: `flush_to_helper_p95_us` uses the latest flush received for a post; `flush_to_post_latest_p95_us` / `flush_to_post_oldest_p95_us` include helper scheduling, native buffer lock/copy/post and possible initial readiness hold. They end when `ANativeWindow_unlockAndPost` returns, **not at physical panel scanout**.
+- Host-side regression: `tests/test_display.c` exercises 40-byte packets, an unchanged 20-byte legacy reader, mixed frames, sequence gaps and malformed timestamps. `test_frame_perf.c` checks coalesced packet aggregation, histogram bounds and window reset.
+
+```bash
+# CachyOS local-only. No ADB, OneOS switch, guest boot or thermal change.
+make -C runtime/display test
+make -C runtime/xnuhost test
+JOBS=8 ./scripts/ci-local.sh all 0.0.0-ci
+```
+
+**Remaining P0.3:** include `virtio_gpu.c` copy/scanout and GPU fence IDs, ensure a trustworthy guest process/frame mapping; obtain actual presentation timestamps where available; correlate touch ID to physical presentation; run OFF/ON profiler overhead A/B in a safe, separately authorized session only after root recovery/thermal gates pass.
 
 **Source evidence:** [180s findings](SM8850_180S_UNCAPPED_SESSION_FINDINGS_2026_11_24.md) · [original findings tracker](SM8850_180S_UNCAPPED_ENGINEERING_TRACKER_2026_11_24.md) · [OneOS fixed-duration/root policy](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-no-root-cpu-cap-180s/docs/SM8850_180S_UNCAPPED_ROOT_POLICY_2026_11_24.md).
