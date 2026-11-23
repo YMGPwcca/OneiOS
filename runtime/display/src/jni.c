@@ -164,7 +164,8 @@ static void log_frame_trace(const struct xhd_frame_perf *p, uint64_t now_ns)
 {
   fprintf(stderr,
           "oneios-display: frame-trace: mono_ms=%llu traced_posts=%llu traced_flushes=%llu coalesced=%llu "
-          "seq_gaps=%llu invalid=%llu legacy_after_enable=%llu "
+          "seq_gaps=%llu invalid=%llu legacy=%llu "
+          "source_single_posts=%llu source_mixed_posts=%llu source_unknown_posts=%llu source_overflow_posts=%llu "
           "flush_to_helper_p95_us=%llu flush_to_post_latest_p95_us=%llu "
           "flush_to_post_oldest_p95_us=%llu latest_max_us=%llu oldest_max_us=%llu "
           "endpoint=ANativeWindow_unlockAndPost_not_physical_present\n",
@@ -175,11 +176,29 @@ static void log_frame_trace(const struct xhd_frame_perf *p, uint64_t now_ns)
           (unsigned long long)p->traced_gaps,
           (unsigned long long)p->traced_bad,
           (unsigned long long)p->traced_legacy,
+          (unsigned long long)p->source_unique_posts,
+          (unsigned long long)p->source_mixed_posts,
+          (unsigned long long)p->source_unknown_posts,
+          (unsigned long long)p->source_overflow_posts,
           (unsigned long long)xhd_perf_quantile_bound_us(&p->flush_to_helper, 95),
           (unsigned long long)xhd_perf_quantile_bound_us(&p->flush_to_post_latest, 95),
           (unsigned long long)xhd_perf_quantile_bound_us(&p->flush_to_post_oldest, 95),
           (unsigned long long)p->flush_to_post_latest.max_us,
           (unsigned long long)p->flush_to_post_oldest.max_us);
+  // At most eight resource-identity lines in each 5-second report, not per frame.
+  for (unsigned i = 0; i < XHD_PERF_SOURCES; i++) {
+    const struct xhd_source_stat *src = &p->sources[i];
+    if (!src->posts) continue;
+    fprintf(stderr,
+            "oneios-display: frame-source: mono_ms=%llu queue_gen=%llu resource_gen=%llu "
+            "resource_id=%u creator_ctx=%u posts=%llu last_seq=%llu "
+            "meaning=scanout_source_not_render_fence_or_physical_present\n",
+            (unsigned long long)(now_ns / UINT64_C(1000000)),
+            (unsigned long long)src->queue_generation,
+            (unsigned long long)src->resource_generation,
+            src->resource_id, src->owner_ctx,
+            (unsigned long long)src->posts, (unsigned long long)src->last_seq);
+  }
 }
 
 // v2 measures CPU copy of the scanout's dirty rectangle; it does not
