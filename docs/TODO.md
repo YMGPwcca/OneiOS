@@ -10,13 +10,13 @@
 
 ## Performance workstream: XNUHost-first 60 FPS
 
-**2026-11-24 local CI evidence:** operator verified CachyOS full `JOBS=8 ./scripts/ci-local.sh all 0.0.0-ci` **PASS at `f2c24fa`**, including 20/20 new profiler checks, 14,331/14,331 XNUHost native tests, 956/956 GPU leak checks, display and bridge regressions, ARM64 packaging and checksum verification. Prior P0.1 also passed at `7ee2743a`. These are build/regression receipts, **not real-device FPS**. New optional `frame-trace=1` transport→Android-post instrumenting commits are still pending their own local CI.
+**2026-11-24 local CI evidence:** operator verified CachyOS full `JOBS=8 ./scripts/ci-local.sh all 0.0.0-ci` **PASS at `f2c24fa`**, including 20/20 new profiler checks, 14,331/14,331 XNUHost native tests, 956/956 GPU leak checks, display and bridge regressions, ARM64 packaging and checksum verification. Prior P0.1 also passed at `7ee2743a`. **Frame-trace v1** separately passed full CachyOS CI at `fc89dd7`: 152 display checks, 25 frame-profiler checks, 14,335 XNUHost native checks, 956 GPU leak checks and ARM64 package checks. These are build/regression receipts, **not real-device FPS**. **Frame-trace v2** (VirtIO GPU CPU scanout copy stage) was committed afterward and still needs a fresh local CI run.
 
 
 
 **Active implementation:** [SM8850 60 FPS / XNUHost P0-P4 tracker](SM8850_60FPS_XNUHOST_PERFORMANCE_TRACKER.md) — 29 performance items; first code fix addresses the `task.c` zero-count deferred-order timeout diagnostic with a host regression test. This is the **performance work ordering** requested for SM8850, not a revision of the independently documented physical-device release/safety gates below. Thermal guard and return policy have not been modified. Do not infer 60 FPS from peak posted-buffer rate.
 
-**Immediate local-first gate for the new frame trace:** `make -C runtime/display test`, `make -C runtime/xnuhost test`, then `JOBS=8 ./scripts/ci-local.sh all 0.0.0-ci` on CachyOS. No ADB, OneOS switch or phone takeover in CI. Trace is OFF by default; the 40-byte XHDF extension preserves the 20-byte legacy prefix and only measures through `ANativeWindow_unlockAndPost`, not actual physical presentation. Full guest/GPU/frame correlation remains open.
+**Immediate local-first gate for the new frame trace:** `make -C runtime/display test`, `make -C runtime/xnuhost test`, then `JOBS=8 ./scripts/ci-local.sh all 0.0.0-ci` on CachyOS. No ADB, OneOS switch or phone takeover in CI. Trace is OFF by default. The helper now accepts 20/40/64-byte XHDF packets and the opt-in v2 packet timestamps **2D/blob CPU scanout copy** before host flush. Its timeline still ends at `ANativeWindow_unlockAndPost`, not actual physical presentation, and cannot establish guest Metal/KGSL fence or guest-process ownership. A new full local CI PASS is required for v2 before any further device-side steps.
 
 ## 2026-11-24 latest physical evidence: 180s **uncapped** full bridges, not the prior 28% capped EPROTO session
 
