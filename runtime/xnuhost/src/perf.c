@@ -173,6 +173,7 @@ void xh_perf_log(bool since_start)
            100.0 * (double)user / w, 100.0 * (double)idle / w, (double)t / seconds, thread_psr(v->tid));
     if (!since_start) { last[i] = *p; last_cpu_ns[i] = cpu; }
   }
+  xh_task_perf_log();  // optional bounded per-task cumulative counters; no per-event logging
   if (!since_start) last_report = now;
 }
 
