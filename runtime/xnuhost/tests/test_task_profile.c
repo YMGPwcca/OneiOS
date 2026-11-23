@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: MIT
+// Pure host regression: bounded vCPU/host buckets, atomic counters, no device needed.
+#include <stdio.h>
+#include <string.h>
+#include "task_profile.h"
+
+static unsigned checks, failed;
+#define CHECK(x) do { checks++; if (!(x)) { failed++; fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); } } while (0)
+
+int main(void)
+{
+  xh_task_profile p = { 0 };
+  CHECK(XH_TP_BUCKETS == XH_MAX_CPUS + 1);
+  CHECK(XH_TP_HOST_BUCKET == XH_MAX_CPUS);
+  CHECK(xh_task_profile_read(&p, 0, XH_TP_TRAP_FAULT) == 0);
+  CHECK(xh_task_profile_read(NULL, 0, XH_TP_TRAP_FAULT) == 0);
+  CHECK(xh_task_profile_read(&p, 0, XH_TP_EVENTS) == 0);
+
+  // Independently count task traps by vCPU and operation, including the last vCPU.
+  xh_task_profile_add(&p, 0, XH_TP_TRAP_SYSCALL);
+  xh_task_profile_add(&p, 0, XH_TP_TRAP_SYSCALL);
+  xh_task_profile_add(&p, XH_MAX_CPUS - 1, XH_TP_TRAP_FAULT);
+  xh_task_profile_add(&p, 0, XH_TP_MAP_DEFERRED);
+  xh_task_profile_add(&p, 0, XH_TP_UNMAP_ORDERED);
+  CHECK(xh_task_profile_read(&p, 0, XH_TP_TRAP_SYSCALL) == 2);
+  CHECK(xh_task_profile_read(&p, XH_MAX_CPUS - 1, XH_TP_TRAP_FAULT) == 1);
+  CHECK(xh_task_profile_read(&p, 0, XH_TP_MAP_DEFERRED) == 1);
+  CHECK(xh_task_profile_read(&p, 0, XH_TP_UNMAP_ORDERED) == 1);
+  CHECK(xh_task_profile_read(&p, 1, XH_TP_TRAP_SYSCALL) == 0);
+
+  // Calls without an active vCPU are accounted to one distinct host bucket.
+  xh_task_profile_add(&p, XH_MAX_CPUS, XH_TP_MAP_ORDERED);
+  xh_task_profile_add(&p, XH_MAX_CPUS + 100, XH_TP_MAP_ORDERED);
+  CHECK(xh_task_profile_read(&p, XH_TP_HOST_BUCKET, XH_TP_MAP_ORDERED) == 2);
+  CHECK(xh_task_profile_read(&p, XH_MAX_CPUS + 1, XH_TP_MAP_ORDERED) == 2);
+  CHECK(xh_task_profile_read(&p, 0, XH_TP_MAP_ORDERED) == 0);
+
+  // Invalid event and NULL pointers must be benign.
+  xh_task_profile_add(&p, 0, XH_TP_EVENTS);
+  xh_task_profile_add(NULL, 0, XH_TP_HOST_FUTEX_WAIT);
+  CHECK(xh_task_profile_read(&p, 0, XH_TP_HOST_FUTEX_WAIT) == 0);
+  xh_task_profile_add(&p, 0, XH_TP_HOST_FUTEX_WAIT);
+  xh_task_profile_add(&p, 0, XH_TP_TASK_FUTEX_SLEEP);
+  CHECK(xh_task_profile_read(&p, 0, XH_TP_HOST_FUTEX_WAIT) == 1);
+  CHECK(xh_task_profile_read(&p, 0, XH_TP_TASK_FUTEX_SLEEP) == 1);
+
+  // Copy after all updates: future read-only report snapshots must be complete.
+  xh_task_profile snapshot;
+  memcpy(&snapshot, &p, sizeof p);
+  CHECK(xh_task_profile_read(&snapshot, 0, XH_TP_TRAP_SYSCALL) == 2);
+  CHECK(xh_task_profile_read(&snapshot, XH_TP_HOST_BUCKET, XH_TP_MAP_ORDERED) == 2);
+
+  printf("task profile: %u checks, %u failed\n", checks, failed);
+  return failed != 0;
+}
