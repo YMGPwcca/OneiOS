@@ -7,6 +7,7 @@
 // MAP_BLOB answered with MAP_INFO_POOL and the offset in /arm-io/virtio-gpu drm-host-pool, SUBMIT_3D with per-ring
 // fences (a fenced command is returned when its fence retires). The renderer is behind gpu3d.h (drm2kgsl on KGSL).
 #include "xnuhost.h"
+#include "xnuhost/frame_trace.h"
 #include "gpu3d.h"
 #include <errno.h>
 #include <pthread.h>
@@ -262,6 +263,14 @@ static uint32_t *ctx_find(gpu_state *g, uint32_t id)
 // The copy of each scanout flush, one log line per 10 s while frames come: `display: 10 s: flushes N, copy mean X us
 // max Y us (Z MiB)`. The device's one thread does it, so the guest's next commands (a frame's submissions, its blobs)
 // wait behind it.
+// This clock is only read for scanout timing in explicitly opted-in trace mode.
+static uint64_t scanout_now_ns(void)
+{
+  struct timespec t;
+  if (clock_gettime(CLOCK_MONOTONIC, &t)) return 0;
+  return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
+}
+
 static uint64_t flush_now_us(void)
 {
   struct timespec t;
@@ -295,6 +304,8 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
   // from its start for every row: 3120 rows of a 1440x3120 frame over about 1100 segments of 16 KiB pages.)
   // A half-float scanout is 8 bytes a pixel in the guest; the display's pixels are d->format's (display-format=).
   uint32_t status = RESP_OK_NODATA;
+  const bool trace_scanout = xh_display_trace_enabled() && w && hgt;
+  const uint64_t scanout_start_ns = trace_scanout ? scanout_now_ns() : 0;
   uint64_t t0 = flush_now_us();
   unsigned seg = 0, gbpp = format_bpp(g->scan.format), dformat = display_format(), dbpp = xh_pixels_bpp(dformat);
   uint64_t seg_start = 0;                            // the blob offset at which entries[seg] begins
@@ -324,10 +335,15 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
       at += n; left -= n;
     }
   }
+  const uint64_t scanout_copied_ns = trace_scanout ? scanout_now_ns() : 0;
   flush_note(flush_now_us() - t0, (uint64_t)w * hgt * gbpp);
   if (status == RESP_OK_NODATA && w && hgt) {
     frame_shown(g, b->entries, b->nentries);     // first: session/ready before the helper is told of the frame
-    xh_display_flush(rect->x, rect->y, w, hgt);
+    const struct xh_frame_scanout sample = {
+      .start_ns = scanout_start_ns, .copied_ns = scanout_copied_ns,
+      .kind = XH_FRAME_SCANOUT_BLOB, .resource_id = b->id
+    };
+    xh_display_flush_scanout(rect->x, rect->y, w, hgt, trace_scanout ? &sample : NULL);
   }
   return status;
 }
@@ -661,11 +677,20 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
     if (id == g->scanout_resource && d && d->pixels && r->dbpp == xh_pixels_bpp(display_format())) {
       uint32_t w = rect.x < d->width ? (rect.w < d->width - rect.x ? rect.w : d->width - rect.x) : 0;
       uint32_t hgt = rect.y < d->height ? (rect.h < d->height - rect.y ? rect.h : d->height - rect.y) : 0;
+      const bool trace_scanout = xh_display_trace_enabled() && w && hgt;
+      const uint64_t scanout_start_ns = trace_scanout ? scanout_now_ns() : 0;
       for (uint32_t y = 0; y < hgt && w; y++)
         memcpy(d->pixels + (size_t)(rect.y + y) * d->stride + (size_t)rect.x * r->dbpp,
                r->pixels + ((size_t)(rect.y + y) * r->width + rect.x) * r->dbpp, (size_t)w * r->dbpp);
+      const uint64_t scanout_copied_ns = trace_scanout ? scanout_now_ns() : 0;
       frame_shown(g, r->backing, r->nbacking);   // first: session/ready before the helper is told of the frame
-      if (w && hgt) xh_display_flush(rect.x, rect.y, w, hgt);
+      if (w && hgt) {
+        const struct xh_frame_scanout sample = {
+          .start_ns = scanout_start_ns, .copied_ns = scanout_copied_ns,
+          .kind = XH_FRAME_SCANOUT_2D, .resource_id = id
+        };
+        xh_display_flush_scanout(rect.x, rect.y, w, hgt, trace_scanout ? &sample : NULL);
+      }
     }
     return RESP_OK_NODATA;
   }
