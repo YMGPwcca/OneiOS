@@ -1774,6 +1774,10 @@ static void test_config(const char *dir)
   CHECK(xh_config_set(&c, "perf-task", "invalid") != 0 && !c.perf_task);
   CHECK(xh_config_set(&c, "perf-task", "1") == 0 && c.perf_task);
   CHECK(xh_config_set(&c, "perf-task", "0") == 0 && !c.perf_task);
+  CHECK(!c.frame_trace);
+  CHECK(xh_config_set(&c, "frame-trace", "invalid") != 0 && !c.frame_trace);
+  CHECK(xh_config_set(&c, "frame-trace", "1") == 0 && c.frame_trace);
+  CHECK(xh_config_set(&c, "frame-trace", "0") == 0 && !c.frame_trace);
   CHECK(xh_config_set(&c, "cpu-affinity-bench", "wrong") != 0);
   CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0 && c.cpu_affinity_bench);
   CHECK(xh_config_set(&c, "cpu-affinity-bench", "0") == 0 && !c.cpu_affinity_bench);
