@@ -80,7 +80,7 @@
 **Tasks**
 - [ ] Examine `runtime/xnuhost/src/gpu3d_kgsl.c` and `drm2kgsl/oneios_gpu_policy.h`; time-align per-fence submit/retire with guest command, compositor flush and actual post.
 - [ ] Identify whether outlier is GPU execution, waittimestamp callback, scheduling, blob import, queue priority or guest wake.
-- [ ] Preserve ``0009-kgsl-reset-aware-submit-errors.patch` semantics and test errors/resets with fake KGSL; do not replay ambiguous IB.
+- [ ] Preserve `0009-kgsl-reset-aware-submit-errors.patch` semantics and test errors/resets with fake KGSL; do not replay ambiguous IB.
 - [ ] Do not claim the old 684.274ms EPROTO/respring is “fixed” solely because this new run had no errors. Not a controlled A/B.
 - [ ] Do not force 1300 MHz or alter thermal policy.
 
