@@ -94,3 +94,12 @@ worked. Kernel/vendor/firmware thermal policy and the guest thermal bridge
 remain unchanged. The root thermal guard and root CPU cap are intentionally
 OFF in this experimental branch. Historical CPU readings exceeded 100°C.
 No new physical safety or return certification is claimed.
+
+
+## 2026-11-24 follow-up — exact uncapped profile verified, followed by a physical live run
+
+This section is **later** than the earlier mismatch and source-only fix above. Executed source: OneiOS `f244b5cdfdedd592cc68bcbbb0770762def9e140` with OneOS `f5c1b4a44fc45d78987694a230f7ffabb213e99c`. Separate read-only preflight confirmed `SM8850_SOFT_THERMAL_GUARD=OFF_NOT_SPAWNED`, `SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER` and `NO_USERSPACE_THERMAL_180S_PREFLIGHT=PASS_NO_FRAMEWORK_STOP_NO_DATA_CONSUMPTION`. The clone was rearmed before this check; the check did not rearm or stop Framework again.
+
+The **later live** 180s full-bridges experiment physically reached iOS ready, a first displayed frame, live KGSL 3D and a working brightness path. Its exactly matched archived token was `7434ae27f8e84b76806f7a4b506e90c9`. No `GPU_COMMAND EPROTO` or `backboardd`/`SpringBoard` exit was logged in **this** run, unlike the prior separately capped run. The current run also showed intermittent display/touch latency, and the host's passive CPU-zone telemetry was previously summarized as **104.8°C** peak.
+
+**Profile handoff correctness is supported by the explicit admission receipts and current guest launch, but runtime thermal safety and independently unassisted reboot return are STILL NOT VERIFIED.** A new normal One UI boot and matching boot reason were observed, not an authenticated original root requester. Do **not** repeat no-guard/no-cap live takeover. [Detailed current session](SM8850_180S_UNCAPPED_SESSION_FINDINGS_2026_11_24.md) · [11 source issues](SM8850_180S_UNCAPPED_ENGINEERING_TRACKER_2026_11_24.md) · [OneOS P0 recovery/thermal tasks](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-no-root-cpu-cap-180s/docs/SM8850_180S_UNCAPPED_ROOT_TRACKER_2026_11_24.md).
