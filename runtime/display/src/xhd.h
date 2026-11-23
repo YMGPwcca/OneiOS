@@ -69,6 +69,12 @@ struct xhd_trace_pending {
   uint64_t first_seq, last_seq;
   uint64_t scanout_packets, scanout_blob, scanout_2d;
   uint64_t scanout_copy_sum_ns, scanout_copy_max_ns, oldest_scanout_start_ns;
+  // Every packet contributing to a post must carry the same v3 identity
+  // before that post may be attributed to one scanout resource. Non-v3
+  // packets, invalid records, and multiple identities remain unassigned.
+  uint64_t provenance_packets, provenance_queue_gen, provenance_resource_gen;
+  uint32_t provenance_resource_id, provenance_owner_ctx;
+  bool provenance_mixed;
 };
 struct xhd_trace_state {
   uint64_t last_seq;                 // survives per-post pending resets
@@ -76,7 +82,7 @@ struct xhd_trace_state {
   struct xhd_trace_pending pending;
 };
 // Extended packets are optional: a legacy XHDF remains valid, and older helpers
-// receive the exact 20-byte prefix even when the sender writes 40 or 64 bytes.
+// receive the exact 20-byte prefix even when the sender writes 40, 64 or 88 bytes.
 int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace);
 // Read every pending flush without blocking, adding each (clipped to the frame) to *damage.
 // 0 the socket is open, -1 it closed.
