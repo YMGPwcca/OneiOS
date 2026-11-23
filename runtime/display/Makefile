@@ -44,7 +44,7 @@ $(A)/oneios-display.dex: java/OneiOSDisplay.java
 $(H)/test_display: tests/test_display.c src/xhd.c $(XHD_H)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) -Isrc -fsanitize=address,undefined tests/test_display.c src/xhd.c -lpthread -lm -o $@
-$(H)/test_frame_perf: tests/test_frame_perf.c src/frame_perf.c src/frame_perf.h
+$(H)/test_frame_perf: tests/test_frame_perf.c src/frame_perf.c src/frame_perf.h $(XHD_H)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) -Isrc -fsanitize=address,undefined tests/test_frame_perf.c src/frame_perf.c -lm -o $@
 
