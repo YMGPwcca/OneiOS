@@ -142,33 +142,45 @@ static uint64_t xhd_mono_ns(void)
   return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
 }
 
-static void xhd_trace_note(struct xhd_trace_state *state, const struct xh_frame_trace_packet *packet, uint64_t received_ns)
+static void xhd_trace_note(struct xhd_trace_state *state, const struct xh_frame_trace_packet_v2 *packet,
+                           bool valid, uint64_t received_ns)
 {
   struct xhd_trace_pending *p = &state->pending;
-  // Never attribute a future timestamp or non-monotonic sequence to a post.
-  if (!xh_frame_trace_valid(packet) || packet->flush_mono_ns > received_ns || !received_ns ||
-      (state->last_seq && packet->seq <= state->last_seq)) {
+  const struct xh_frame_trace_packet *base = &packet->base;
+  // Never attribute malformed, future or out-of-order timestamps to a post.
+  if (!valid || base->flush_mono_ns > received_ns || !received_ns ||
+      (state->last_seq && base->seq <= state->last_seq)) {
     p->bad++;
     return;
   }
   state->active = true;
-  if (state->last_seq && packet->seq - state->last_seq > 1) p->seq_gaps += packet->seq - state->last_seq - 1;
-  state->last_seq = packet->seq;
-  if (!p->traced || packet->flush_mono_ns < p->oldest_flush_ns) p->oldest_flush_ns = packet->flush_mono_ns;
-  if (!p->traced || packet->flush_mono_ns >= p->newest_flush_ns) {
-    p->newest_flush_ns = packet->flush_mono_ns;
+  if (state->last_seq && base->seq - state->last_seq > 1) p->seq_gaps += base->seq - state->last_seq - 1;
+  state->last_seq = base->seq;
+  if (!p->traced || base->flush_mono_ns < p->oldest_flush_ns) p->oldest_flush_ns = base->flush_mono_ns;
+  if (!p->traced || base->flush_mono_ns >= p->newest_flush_ns) {
+    p->newest_flush_ns = base->flush_mono_ns;
     p->newest_recv_ns = received_ns;
   }
-  if (!p->traced) p->first_seq = packet->seq;
-  p->last_seq = packet->seq;
+  if (!p->traced) p->first_seq = base->seq;
+  p->last_seq = base->seq;
   p->traced++;
+
+  if (base->version != XH_FRAME_TRACE_VERSION_SCANOUT) return;
+  if (!p->scanout_packets || packet->scanout_start_ns < p->oldest_scanout_start_ns)
+    p->oldest_scanout_start_ns = packet->scanout_start_ns;
+  const uint64_t copy_ns = packet->scanout_copied_ns - packet->scanout_start_ns;
+  p->scanout_copy_sum_ns += copy_ns;
+  if (copy_ns > p->scanout_copy_max_ns) p->scanout_copy_max_ns = copy_ns;
+  p->scanout_packets++;
+  if (packet->scanout_kind == XH_FRAME_SCANOUT_BLOB) p->scanout_blob++;
+  else p->scanout_2d++;
 }
 
 int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace)
 {
   // Bounded, nonblocking drain: an overactive guest cannot starve posting.
   for (int i = 0; i < 4096; i++) {
-    struct xh_frame_trace_packet packet;
+    struct xh_frame_trace_packet_v2 packet;
     ssize_t n = recv(fd, &packet, sizeof packet, MSG_DONTWAIT);
     if (n < 0) {
       if (errno == EINTR) continue;
@@ -177,14 +189,17 @@ int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *dama
       return -1;
     }
     if (n == 0) { fprintf(stderr, "oneios-display: xnuhost closed the socket\n"); return -1; }
-    if (n != 20 && n != (ssize_t)sizeof packet) continue;
-    // First 20 bytes are the same in both formats, including the magic and rectangle.
-    if (memcmp(packet.magic, "XHDF", 4)) continue;
-    struct xhd_rect r = { packet.x, packet.y, packet.w, packet.h };
+    if (n != 20 && n != (ssize_t)sizeof packet.base && n != (ssize_t)sizeof packet) continue;
+    // First 20 bytes are unchanged in legacy, v1 and v2 packets.
+    if (memcmp(packet.base.magic, "XHDF", 4)) continue;
+    struct xhd_rect r = { packet.base.x, packet.base.y, packet.base.w, packet.base.h };
     if (!xhd_rect_clip(&r, frame->width, frame->height)) continue;
     xhd_rect_union(damage, &r);
     if (!trace) continue;
-    if (n == (ssize_t)sizeof packet) xhd_trace_note(trace, &packet, xhd_mono_ns());
+    if (n == (ssize_t)sizeof packet.base)
+      xhd_trace_note(trace, &packet, xh_frame_trace_valid(&packet.base), xhd_mono_ns());
+    else if (n == (ssize_t)sizeof packet)
+      xhd_trace_note(trace, &packet, xh_frame_trace_v2_valid(&packet), xhd_mono_ns());
     else if (trace->active) trace->pending.legacy++;
   }
   return 0;
