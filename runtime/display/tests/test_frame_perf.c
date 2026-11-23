@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "frame_perf.h"
+#include "xhd.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <math.h>
@@ -36,6 +37,27 @@ int main(void)
   CHECK(xhd_perf_quantile_bound_us(&p.lock,95)==50000);
   CHECK(xhd_perf_quantile_bound_us(&p.post,95)==250);
   CHECK(xhd_perf_quantile_bound_us(&p.gap,0)==0);
+  // A single post may include three guest flushes; it is still ONE post.
+  struct xhd_trace_pending traced = {
+    .traced = 3, .seq_gaps = 1, .oldest_flush_ns = t0,
+    .newest_flush_ns = t0 + UINT64_C(2000000),
+    .newest_recv_ns = t0 + UINT64_C(2500000)
+  };
+  xhd_perf_record_trace(&p, &traced, t0 + UINT64_C(11000000));
+  CHECK(p.traced_posts == 1 && p.traced_flushes == 3 && p.traced_coalesced == 2 && p.traced_gaps == 1);
+  CHECK(p.flush_to_post_oldest.count == 1 && p.flush_to_post_oldest.max_us == 11000);
+  CHECK(p.flush_to_post_latest.count == 1 && p.flush_to_post_latest.max_us == 9000);
+  CHECK(p.flush_to_helper.count == 1 && p.flush_to_helper.max_us == 500);
+  // Bad timing never underflows, and an untraced post must not fabricate FPS.
+  traced = (struct xhd_trace_pending){ .bad = 2, .legacy = 1, .traced = 1,
+             .oldest_flush_ns = t0 + UINT64_C(30000000),
+             .newest_flush_ns = t0 + UINT64_C(30000000),
+             .newest_recv_ns = t0 + UINT64_C(32000000) };
+  xhd_perf_record_trace(&p, &traced, t0 + UINT64_C(10000000));
+  CHECK(p.traced_bad == 2 && p.traced_legacy == 1 && p.traced_posts == 2);
+  CHECK(p.flush_to_post_latest.count == 1 && p.flush_to_post_oldest.count == 1);
+  xhd_perf_next_window(&p, t0 + UINT64_C(12000000000));
+  CHECK(p.traced_posts == 0 && p.traced_flushes == 0 && p.flush_to_post_latest.count == 0);
   printf("frame_perf tests: %d checks, %d failed\n",checks,failed);
   return failed?1:0;
 }
