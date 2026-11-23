@@ -63,6 +63,32 @@ void xhd_perf_record_trace(struct xhd_frame_perf *p, const struct xhd_trace_pend
   p->traced_posts++;
   p->traced_flushes += batch->traced;
   p->traced_coalesced += batch->traced - 1;
+  if (batch->provenance_mixed) {
+    p->source_mixed_posts++;
+  } else if (batch->provenance_packets != batch->traced || batch->legacy || batch->bad) {
+    p->source_unknown_posts++;
+  } else {
+    p->source_unique_posts++;
+    // Group by (queue gen, resource gen, resource ID, owner) so ID reuse,
+    // process resets, and coalescing cannot silently fabricate ownership.
+    unsigned slot = 0;
+    while (slot < XHD_PERF_SOURCES && p->sources[slot].posts &&
+           (p->sources[slot].queue_generation != batch->provenance_queue_gen ||
+            p->sources[slot].resource_generation != batch->provenance_resource_gen ||
+            p->sources[slot].resource_id != batch->provenance_resource_id ||
+            p->sources[slot].owner_ctx != batch->provenance_owner_ctx)) slot++;
+    if (slot < XHD_PERF_SOURCES) {
+      struct xhd_source_stat *src = &p->sources[slot];
+      if (!src->posts) {
+        src->queue_generation = batch->provenance_queue_gen;
+        src->resource_generation = batch->provenance_resource_gen;
+        src->resource_id = batch->provenance_resource_id;
+        src->owner_ctx = batch->provenance_owner_ctx;
+      }
+      src->posts++;
+      src->last_seq = batch->last_seq;
+    } else p->source_overflow_posts++;
+  }
   p->scanout_packets += batch->scanout_packets;
   p->scanout_blob += batch->scanout_blob;
   p->scanout_2d += batch->scanout_2d;
