@@ -173,6 +173,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "legacy-boot-args")) return flag(value, &c->legacy_boot_args);
   else if (!strcmp(key, "setway-skip")) { bool on; if (flag(value, &on)) return -1; c->setway_skip = on; }
   else if (!strcmp(key, "perf-log")) { ok = number(value, 0, 86400, &c->perf_log); }
+  else if (!strcmp(key, "perf-task")) return flag(value, &c->perf_task);
   else if (!strcmp(key, "spin-host")) { ok = number(value, 0, 1000, &c->spin_host); }
   else if (!strcmp(key, "spin-task")) { ok = number(value, 0, 1000, &c->spin_task); }
   else if (!strcmp(key, "cpu-pin")) { if (!strcmp(value, "2")) c->cpu_pin = 2; else { bool on; if (flag(value, &on)) return -1; c->cpu_pin = on; } }
