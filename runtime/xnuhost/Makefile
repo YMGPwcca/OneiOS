@@ -140,6 +140,11 @@ $(H)/test_sm8850_stage_admission: tests/test_sm8850_stage_admission.c src/sm8850
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O2 $(WARN) -Isrc tests/test_sm8850_stage_admission.c -o $@
 
+# The actual deferred-only task ordering diagnostic; no Android, guest or hardware required.
+$(H)/test_task_order_diag: tests/test_task_order_diag.c src/task_order_diag.h stub/stub_abi.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_task_order_diag.c -o $@
+
 $(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DXH_HOST_TEST -fsanitize=address,undefined tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../loader/src/adt.c ../loader/src/boot.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
@@ -209,8 +214,9 @@ parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
 
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_sm8850_stage_admission $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64
+test: $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64
 	$(H)/test_sm8850_stage_admission
+	ASAN_OPTIONS=detect_leaks=0 $(H)/test_task_order_diag
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_xnuhost
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_display_mode
 	$(if $(TEST_DRM2KGSL),ASAN_OPTIONS=detect_leaks=0 $(TEST_DRM2KGSL))
