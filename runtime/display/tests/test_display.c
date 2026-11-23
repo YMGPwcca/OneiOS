@@ -237,7 +237,7 @@ static void *serve(void *arg)
   return NULL;
 }
 
-// The optional 40/64-byte timeline packet must not break legacy consumers
+// The optional 40/64/88-byte timeline packet must not break legacy consumers
 // that read only the original 20-byte XHDF prefix on SOCK_SEQPACKET.
 static void test_frame_trace(void)
 {
@@ -319,6 +319,47 @@ static void test_frame_trace(void)
   damage = (struct xhd_rect){ 0 };
   CHECK(xhd_drain(pair[1], &frame, &damage) == 0);
   CHECK(damage.x == 30 && damage.y == 7 && damage.w == 10 && damage.h == 12);
+
+  // v3 appends queue generation, unique allocation serial and creator context
+  // without changing the first 20 bytes read by legacy SOCK_SEQPACKET clients.
+  struct xh_frame_trace_packet_v3 v3 = {
+    .base = v2, .queue_generation = 0, .resource_generation = 41,
+    .owner_context = 0, .reserved = 0
+  };
+  v3.base.base.version = XH_FRAME_TRACE_VERSION_PROVENANCE;
+  v3.base.base.seq = 14;
+  CHECK(xh_frame_trace_v3_valid(&v3)); // queue generation zero is valid before any reset
+  CHECK(send(pair[0], &v3, sizeof v3, 0) == (ssize_t)sizeof v3);
+  CHECK(recv(pair[1], &legacy, sizeof legacy, 0) == (ssize_t)sizeof legacy);
+  CHECK(!memcmp(legacy.magic, "XHDF", 4) && legacy.a == v3.base.base.x &&
+        legacy.b == v3.base.base.y);
+
+  trace.pending = (struct xhd_trace_pending){ 0 };
+  damage = (struct xhd_rect){ 0 };
+  CHECK(send(pair[0], &v3, sizeof v3, 0) == (ssize_t)sizeof v3);
+  v3.base.base.seq = 15;
+  CHECK(send(pair[0], &v3, sizeof v3, 0) == (ssize_t)sizeof v3);
+  CHECK(xhd_drain_trace(pair[1], &frame, &damage, &trace) == 0);
+  CHECK(trace.pending.provenance_packets == 2 && !trace.pending.provenance_mixed);
+  CHECK(trace.pending.provenance_queue_gen == 0 && trace.pending.provenance_resource_gen == 41 &&
+        trace.pending.provenance_resource_id == 42 && trace.pending.provenance_owner_ctx == 0);
+  CHECK(trace.pending.scanout_packets == 2 && trace.pending.seq_gaps == 2);
+  CHECK(damage.x == 30 && damage.y == 7 && damage.w == 10 && damage.h == 12);
+
+  // A reused resource ID with a new serial cannot be claimed as one source.
+  trace.pending = (struct xhd_trace_pending){ 0 };
+  v3.base.base.seq = 16;
+  CHECK(send(pair[0], &v3, sizeof v3, 0) == (ssize_t)sizeof v3);
+  v3.base.base.seq = 17; v3.resource_generation = 42;
+  CHECK(send(pair[0], &v3, sizeof v3, 0) == (ssize_t)sizeof v3);
+  v3.base.base.seq = 18; v3.reserved = 1;
+  CHECK(!xh_frame_trace_v3_valid(&v3));
+  CHECK(send(pair[0], &v3, sizeof v3, 0) == (ssize_t)sizeof v3);
+  CHECK(xhd_drain_trace(pair[1], &frame, &damage, &trace) == 0);
+  CHECK(trace.pending.traced == 2 && trace.pending.provenance_packets == 2 &&
+        trace.pending.provenance_mixed && trace.pending.bad == 1 && trace.last_seq == 17);
+
+  // A mismatched timestamp/provenance is rejected as trace data, not damage.
   close(pair[0]); close(pair[1]);
 }
 
