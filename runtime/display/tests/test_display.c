@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int checks, failed;
@@ -234,6 +235,54 @@ static void *serve(void *arg)
   close(listener);
   s->done = 1;
   return NULL;
+}
+
+// The optional 40-byte frame timeline packet must not break legacy consumers
+// that read only the original 20-byte XHDF prefix on SOCK_SEQPACKET.
+static void test_frame_trace(void)
+{
+  int pair[2];
+  CHECK(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, pair) == 0);
+  struct timespec ts;
+  CHECK(clock_gettime(CLOCK_MONOTONIC, &ts) == 0);
+  uint64_t before_ns = (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec - UINT64_C(100000000);
+  struct xh_frame_trace_packet p = {
+    .magic = { 'X', 'H', 'D', 'F' }, .x = 2, .y = 3, .w = 10, .h = 12,
+    .version = XH_FRAME_TRACE_VERSION, .seq = 5, .flush_mono_ns = before_ns
+  };
+  CHECK(xh_frame_trace_valid(&p));
+  CHECK(send(pair[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  struct xhd_message legacy;
+  CHECK(recv(pair[1], &legacy, sizeof legacy, 0) == (ssize_t)sizeof legacy);
+  CHECK(!memcmp(legacy.magic, "XHDF", 4) && legacy.a == 2 && legacy.b == 3 && legacy.c == 10 && legacy.d == 12);
+
+  struct xhd_frame frame = { .width = 64, .height = 48 };
+  struct xhd_rect damage = { 0 };
+  struct xhd_trace_state trace = { 0 };
+  CHECK(send(pair[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  p.seq = 7; p.x = 30; p.y = 7;
+  CHECK(send(pair[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  CHECK(xhd_send_flush(pair[0], 1, 1, 2, 2) == 0);
+  CHECK(xhd_drain_trace(pair[1], &frame, &damage, &trace) == 0);
+  CHECK(damage.x == 1 && damage.y == 1 && damage.w == 39 && damage.h == 14);
+  CHECK(trace.active && trace.last_seq == 7 && trace.pending.traced == 2);
+  CHECK(trace.pending.first_seq == 5 && trace.pending.last_seq == 7);
+  CHECK(trace.pending.seq_gaps == 1 && trace.pending.legacy == 1);
+  CHECK(trace.pending.oldest_flush_ns == before_ns && trace.pending.newest_flush_ns == before_ns);
+  CHECK(trace.pending.newest_recv_ns >= before_ns);
+
+  // Each post clears pending stats, never the sequence cursor.
+  trace.pending = (struct xhd_trace_pending){ 0 };
+  p.seq = 7;
+  CHECK(send(pair[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  p.seq = 8; p.flush_mono_ns = UINT64_MAX;
+  CHECK(send(pair[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  p.seq = 9; p.flush_mono_ns = before_ns;
+  CHECK(send(pair[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  CHECK(xhd_drain_trace(pair[1], &frame, &damage, &trace) == 0);
+  CHECK(trace.last_seq == 9 && trace.pending.traced == 1);
+  CHECK(trace.pending.bad == 2 && trace.pending.seq_gaps == 1);
+  close(pair[0]); close(pair[1]);
 }
 
 static void test_panel_report(void)
@@ -464,6 +513,7 @@ int main(int argc, char **argv)
   test_copy();
   test_formats();
   test_copy_formats();
+  test_frame_trace();
   test_panel_report();
   test_hold_first(dir);
   test_protocol(dir);
