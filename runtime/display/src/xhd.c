@@ -135,12 +135,41 @@ int xhd_hold_first(const char *ready)
   return ready && *ready && stat(ready, &st) && errno == ENOENT;
 }
 
-int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage)
+static uint64_t xhd_mono_ns(void)
 {
-  // A bound on one round: a guest that floods flushes must not keep the frame from being posted.
+  struct timespec t;
+  if (clock_gettime(CLOCK_MONOTONIC, &t)) return 0;
+  return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
+}
+
+static void xhd_trace_note(struct xhd_trace_state *state, const struct xh_frame_trace_packet *packet, uint64_t received_ns)
+{
+  struct xhd_trace_pending *p = &state->pending;
+  // Never attribute a future timestamp or non-monotonic sequence to a post.
+  if (!xh_frame_trace_valid(packet) || packet->flush_mono_ns > received_ns || !received_ns ||
+      (state->last_seq && packet->seq <= state->last_seq)) {
+    p->bad++;
+    return;
+  }
+  state->active = true;
+  if (state->last_seq && packet->seq - state->last_seq > 1) p->seq_gaps += packet->seq - state->last_seq - 1;
+  state->last_seq = packet->seq;
+  if (!p->traced || packet->flush_mono_ns < p->oldest_flush_ns) p->oldest_flush_ns = packet->flush_mono_ns;
+  if (!p->traced || packet->flush_mono_ns >= p->newest_flush_ns) {
+    p->newest_flush_ns = packet->flush_mono_ns;
+    p->newest_recv_ns = received_ns;
+  }
+  if (!p->traced) p->first_seq = packet->seq;
+  p->last_seq = packet->seq;
+  p->traced++;
+}
+
+int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace)
+{
+  // Bounded, nonblocking drain: an overactive guest cannot starve posting.
   for (int i = 0; i < 4096; i++) {
-    struct xhd_message m;
-    ssize_t n = recv(fd, &m, sizeof m, MSG_DONTWAIT);
+    struct xh_frame_trace_packet packet;
+    ssize_t n = recv(fd, &packet, sizeof packet, MSG_DONTWAIT);
     if (n < 0) {
       if (errno == EINTR) continue;
       if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
@@ -148,11 +177,22 @@ int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage)
       return -1;
     }
     if (n == 0) { fprintf(stderr, "oneios-display: xnuhost closed the socket\n"); return -1; }
-    if (n != sizeof m || memcmp(m.magic, "XHDF", 4)) continue;      // not a flush: ignored
-    struct xhd_rect r = { m.a, m.b, m.c, m.d };
-    if (xhd_rect_clip(&r, frame->width, frame->height)) xhd_rect_union(damage, &r);
+    if (n != 20 && n != (ssize_t)sizeof packet) continue;
+    // First 20 bytes are the same in both formats, including the magic and rectangle.
+    if (memcmp(packet.magic, "XHDF", 4)) continue;
+    struct xhd_rect r = { packet.x, packet.y, packet.w, packet.h };
+    if (!xhd_rect_clip(&r, frame->width, frame->height)) continue;
+    xhd_rect_union(damage, &r);
+    if (!trace) continue;
+    if (n == (ssize_t)sizeof packet) xhd_trace_note(trace, &packet, xhd_mono_ns());
+    else if (trace->active) trace->pending.legacy++;
   }
   return 0;
+}
+
+int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage)
+{
+  return xhd_drain_trace(fd, frame, damage, NULL);
 }
 
 void xhd_fit(uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh, struct xhd_fit *fit)
