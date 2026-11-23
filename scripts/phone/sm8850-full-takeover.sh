@@ -26,8 +26,8 @@ Re-arming fresh one-shot Data and launching are separate steps; the
 For operator-selected 180s software-thermal-soft-trip-disable + lower clock
 experiment, additionally set:
 ONEIOS_SM8850_SOFT_THERMAL_OFF=I_ACCEPT_SOFT_GUARD_OFF_180S
-This disables ONLY OneOS software temperature-triggered abort, NOT kernel/
-firmware thermal safety, the CPU underclock worker or reboot watchdog.
+This disables the OneOS root thermal monitor AND its 28% CPU cap worker.
+Kernel/firmware thermal protections remain unchanged; recovery is unqualified.
 The floor-aware 28% requested CPU limit may be exceeded by Samsung minimum
 frequency votes. All other full-run durations: 60..600 seconds, default 600.
 The live run WILL stop Android Framework. Samsung USB + Volume Up+Down can
@@ -269,8 +269,8 @@ PY
     echo "WARNING=PRIOR_FULL_RUN_GUEST_READY_AND_KGSL_OBSERVED_BUT_PERFORMANCE_POOR"
     if [ "${ONEIOS_SM8850_SOFT_THERMAL_OFF:-}" = I_ACCEPT_SOFT_GUARD_OFF_180S ]; then
       echo "SM8850_SOFT_THERMAL_GUARD=OFF_NO_ON_DEVICE_PROCESS"
-      echo "CPU_UNDERCLOCK=BEST_EFFORT_FIXED_28_PERCENT_NO_FATAL_ERROR"
-      echo "WARNING=CPU_MIN_VOTES_MAY_PREVENT_REQUESTED_CLOCK_CEILING"
+      echo "CPU_UNDERCLOCK=OFF_NO_ROOT_CAP_WORKER"
+      echo "WARNING=NO_ONEOS_CPU_CEILING_AND_NO_ROOT_THERMAL_GUARD"
       echo "WARNING=HISTORIC_CPU_PEAK_101C_WITH_SOFTWARE_EARLY_RETURN_DISABLED"
       echo "KERNEL_FIRMWARE_THERMAL_PROTECTION=UNCHANGED"
     else

@@ -387,7 +387,7 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
     console.say("KERNEL_FIRMWARE_THERMAL_PROTECTION=UNCHANGED")
     if os.environ.get("ONEIOS_SM8850_SOFT_THERMAL_OFF") == "I_ACCEPT_SOFT_GUARD_OFF_180S":
         console.say("SOFTWARE_THERMAL_GUARD=OFF_NO_ON_DEVICE_PROCESS; WARNING=NO_USERSPACE_TEMP_CUTOFF")
-        console.say("CPU_UNDERCLOCK=BEST_EFFORT_FIXED_REQUEST_28_PERCENT_NO_FATAL_CAP_ERROR; EFFECTIVE_CAP_NOT_GUARANTEED")
+        console.say("CPU_UNDERCLOCK=OFF_NO_ROOT_CAP_WORKER; KERNEL_FIRMWARE_THERMAL_UNCHANGED")
     console.say("GPU_3D=REQUIRED_NO_2D_FALLBACK; BACKEND_PROOF=CHECK_XNUHOST_KGSL_LOG")
     duration = args.duration
     console.say(f"RECOVERY=DEVICE_SIDE_DEADLINE_{duration}S_FROM_FRAMEWORK_STOP_MAX_600S")
@@ -623,6 +623,9 @@ def main() -> int:
         acknowledged_off = "SM8850_SOFT_THERMAL_GUARD=OFF_NOT_SPAWNED" in result
         if no_guard != acknowledged_off:
             raise RuntimeError("root preflight thermal profile mismatch; no Framework stop or data consumption")
+        cap_disabled = "SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER" in result
+        if no_guard != cap_disabled:
+            raise RuntimeError("root preflight CPU cap profile mismatch; no Framework stop or data consumption")
         if no_guard:
             print("NO_USERSPACE_THERMAL_180S_PREFLIGHT=PASS_NO_FRAMEWORK_STOP_NO_DATA_CONSUMPTION")
         else:

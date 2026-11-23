@@ -546,6 +546,11 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
         print("BLOCKED: root preflight thermal profile disagrees with the requested host profile; "
               "nothing was launched", file=sys.stderr, flush=True)
         return 2
+    cap_disabled = "SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER" in check_output
+    if passive_soft_thermal != cap_disabled:
+        print("BLOCKED: root preflight CPU cap profile mismatch; nothing was launched",
+              file=sys.stderr, flush=True)
+        return 2
     baseline = status(phone)
     (output / "baseline.txt").write_text(baseline)
     boot = re.search(r"^boot=(.+)$", baseline, re.M).group(1)
@@ -577,7 +582,7 @@ mkdir launches/{token}
             print("GPU_3D_STATUS=BACKEND_MUST_BE_CONFIRMED_IN_XNUHOST_LOG", flush=True)
             if passive_soft_thermal:
                 print("SM8850_SOFT_THERMAL_GUARD=OFF_NO_PROCESS_NO_HEARTBEAT", flush=True)
-                print("CPU_UNDERCLOCK=NONFATAL_BEST_EFFORT_FIXED_28_PERCENT_REQUEST", flush=True)
+                print("CPU_UNDERCLOCK=OFF_NO_ROOT_CAP_WORKER", flush=True)
                 print("WARNING=CAP_FAILURE_NO_SOFTWARE_REBOOT_AND_VENDOR_MINIMUM_MAY_OVERRIDE_CAP", flush=True)
             else:
                 print("SM8850_SOFT_THERMAL_GUARD=DEFAULT_FAIL_CLOSED", flush=True)

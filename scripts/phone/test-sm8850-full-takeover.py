@@ -104,6 +104,18 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('feat/oneios-sm8850-m3q|feat/sm8850-full-bridges-takeover)', local_ci)
         self.assertNotIn('feat/oneios-sm8850-m3q|feat/sm8850-guarded-duration-tracing)', wrapper)
 
+    def test_no_guard_cpu_cap_profile_admitted_before_data_consumption(self):
+        switch = ONEOS_SWITCH.read_text()
+        host = TAKEOVER_SOURCE.read_text()
+        telemetry = (ROOT / "scripts/phone/sm8850-600s-thermal-telemetry.py").read_text()
+        self.assertIn('SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER', switch)
+        self.assertIn('CPU_THROTTLE=OFF_NO_ROOT_CAP_WORKER', switch)
+        self.assertNotIn('--run-best-effort "$CTL" "$WD_GEN"', switch)
+        self.assertIn('cap_disabled = "SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER" in check_output', host)
+        self.assertIn('cap_disabled = "SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER" in result', telemetry)
+        self.assertLess(switch.index('SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER'),
+                        switch.index('APFS_DATA_CLONE=CONSUMED_ONE_SHOT_BEFORE_FRAMEWORK_STOP'))
+
     def test_no_guard_detached_run_token_is_pinned_before_apfs_consumption(self):
         switch = ONEOS_SWITCH.read_text()
         host = TAKEOVER_SOURCE.read_text()

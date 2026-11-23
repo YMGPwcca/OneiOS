@@ -65,7 +65,7 @@ class TakeoverTest(unittest.TestCase):
              patch.object(TAKEOVER.time, "monotonic", side_effect=[0.0, 1000.0]):
             device = unittest.mock.Mock()
             device.root.side_effect = [
-                subprocess.CompletedProcess([], 0, b"SM8850_SOFT_THERMAL_GUARD=OFF_NOT_SPAWNED\nPREFLIGHT OK\n"),
+                subprocess.CompletedProcess([], 0, b"SM8850_SOFT_THERMAL_GUARD=OFF_NOT_SPAWNED\nSM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER\nPREFLIGHT OK\n"),
                 subprocess.CompletedProcess([], 0, b""),
             ]
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -102,7 +102,7 @@ class TakeoverTest(unittest.TestCase):
         self.assertIn('> "$CTL/framework.deadline.tmp"', switch)
         self.assertIn('! sm8850_no_userspace_thermal', switch)
         self.assertIn('THERMAL_GUARD=OFF_NO_PROCESS_NO_HEARTBEAT_NO_SOFT_RETURN', switch)
-        self.assertIn('CPU_THROTTLE=POST_STOP_BEST_EFFORT_28_PERCENT_NO_FATAL_CAP_ERROR', switch)
+        self.assertIn('CPU_THROTTLE=OFF_NO_ROOT_CAP_WORKER', switch)
         new_runtime_marker = 'SM8850_FULL_BRIDGES=ADMITTED_NO_USERSPACE_THERMAL_180S'
         self.assertIn(new_runtime_marker, main)
         self.assertIn(new_runtime_marker, switch)

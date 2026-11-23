@@ -79,3 +79,18 @@ before any framework stop. This does **not** qualify thermal safety:
 earlier full experiments reported CPU temperatures >100°C, CPU cap 28%
 was best effort, and the legacy watchdog's independent reboot outcome
 remains unverified.
+
+## Subsequent experimental 180-second unguarded/uncapped profile
+
+The operator-requested exact 180s no-root-thermal-guard mode also disables the
+OneOS best-effort 28% root CPU-frequency cap worker. Read-only host/device
+preflight must agree on `SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER` **before**
+consuming one-shot APFS Data, and the root switch emits
+`CPU_THROTTLE=OFF_NO_ROOT_CAP_WORKER` after Framework stop.
+
+These are source/profile contract markers, **not** evidence that a real guest
+ran, the device maintained safe temperatures, or the recovery watchdog
+worked. Kernel/vendor/firmware thermal policy and the guest thermal bridge
+remain unchanged. The root thermal guard and root CPU cap are intentionally
+OFF in this experimental branch. Historical CPU readings exceeded 100°C.
+No new physical safety or return certification is claimed.
