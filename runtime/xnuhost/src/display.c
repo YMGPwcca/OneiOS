@@ -297,9 +297,10 @@ void xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
   pthread_mutex_lock(&client_lock);
   if (client_fd >= 0) {
     struct shm_message m = { { 'X', 'H', 'D', 'F' }, x, y, w, h };
-    struct xh_frame_trace_packet traced = { 0 };
-    struct xh_frame_trace_packet_v2 traced_scanout = { 0 };
-    struct xh_frame_trace_packet_v3 traced_provenance = { 0 };
+    // No initialization or timestamp call on the default frame-trace=0 hot path.
+    struct xh_frame_trace_packet traced;
+    struct xh_frame_trace_packet_v2 traced_scanout;
+    struct xh_frame_trace_packet_v3 traced_provenance;
     const void *record = &m;
     size_t record_bytes = sizeof m;
     if (frame_trace_enabled) {
@@ -332,6 +333,7 @@ void xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
           traced_provenance.queue_generation = scanout->queue_generation;
           traced_provenance.resource_generation = scanout->resource_generation;
           traced_provenance.owner_context = scanout->owner_context;
+          traced_provenance.reserved = 0;
           record = &traced_provenance;
           record_bytes = sizeof traced_provenance;
         }
