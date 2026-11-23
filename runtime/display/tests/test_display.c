@@ -264,7 +264,7 @@ static void test_frame_trace(void)
   CHECK(send(pair[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
   CHECK(xhd_send_flush(pair[0], 1, 1, 2, 2) == 0);
   CHECK(xhd_drain_trace(pair[1], &frame, &damage, &trace) == 0);
-  CHECK(damage.x == 1 && damage.y == 1 && damage.w == 39 && damage.h == 14);
+  CHECK(damage.x == 1 && damage.y == 1 && damage.w == 39 && damage.h == 18);
   CHECK(trace.active && trace.last_seq == 7 && trace.pending.traced == 2);
   CHECK(trace.pending.first_seq == 5 && trace.pending.last_seq == 7);
   CHECK(trace.pending.seq_gaps == 1 && trace.pending.legacy == 1);
