@@ -157,6 +157,31 @@ static void log_frame_perf(const struct xhd_frame_perf *p, uint64_t now_ns)
           (unsigned long long)p->copied_pixels);
 }
 
+// Optional transport->buffer-post report; actual panel presentation is NOT sampled.
+// One Android post can include several guest flush records. The oldest/latest ages
+// bound coalesced flushes instead of pretending each is a separate displayed frame.
+static void log_frame_trace(const struct xhd_frame_perf *p, uint64_t now_ns)
+{
+  fprintf(stderr,
+          "oneios-display: frame-trace: mono_ms=%llu traced_posts=%llu traced_flushes=%llu coalesced=%llu "
+          "seq_gaps=%llu invalid=%llu legacy_after_enable=%llu "
+          "flush_to_helper_p95_us=%llu flush_to_post_latest_p95_us=%llu "
+          "flush_to_post_oldest_p95_us=%llu latest_max_us=%llu oldest_max_us=%llu "
+          "endpoint=ANativeWindow_unlockAndPost_not_physical_present\n",
+          (unsigned long long)(now_ns / 1000000u),
+          (unsigned long long)p->traced_posts,
+          (unsigned long long)p->traced_flushes,
+          (unsigned long long)p->traced_coalesced,
+          (unsigned long long)p->traced_gaps,
+          (unsigned long long)p->traced_bad,
+          (unsigned long long)p->traced_legacy,
+          (unsigned long long)xhd_perf_quantile_bound_us(&p->flush_to_helper, 95),
+          (unsigned long long)xhd_perf_quantile_bound_us(&p->flush_to_post_latest, 95),
+          (unsigned long long)xhd_perf_quantile_bound_us(&p->flush_to_post_oldest, 95),
+          (unsigned long long)p->flush_to_post_latest.max_us,
+          (unsigned long long)p->flush_to_post_oldest.max_us);
+}
+
 // ready_path: SESSION/ready (--session), or NULL (--socket): the first post waits for it (xhd_hold_first). Until the
 // first post the layer has no buffer and the OneOS boot screen under it shows.
 JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong handle, jobject surface, jint format, jint dataspace,
@@ -180,6 +205,7 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
   struct timespec hold_start;
   int result;
   struct xhd_frame_perf perf;
+  struct xhd_trace_state trace = { 0 };
   xhd_perf_begin(&perf, xhd_perf_clock_ns());
   for (;;) {
     // Held: the guest's frame is not shown yet, the damage adds up, and `ready` is looked for at every flush and
@@ -196,10 +222,11 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
     int ready = poll(fds, 2, hold ? XHD_HOLD_POLL_MS : pending.w ? 0 : 1000);
     if (ready < 0 && errno != EINTR) { result = -3; break; }
     if (stopping || (ready > 0 && fds[1].revents)) { result = 1; break; }
-    if (xhd_drain(c->fd, f, &pending) < 0) { result = 0; break; }
+    if (xhd_drain_trace(c->fd, f, &pending, &trace) < 0) { result = 0; break; }
     uint64_t tick_ns = xhd_perf_clock_ns();
     if (xhd_perf_due(&perf, tick_ns)) {
       log_frame_perf(&perf, tick_ns);
+      if (trace.active) log_frame_trace(&perf, tick_ns);
       xhd_perf_next_window(&perf, tick_ns);
     }
     if (hold) { if (ready > 0) held_flushes++; continue; }
@@ -253,6 +280,8 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
     xhd_perf_record(&perf, post_done_ns, lock_done_ns - lock_start_ns,
                     copy_done_ns - copy_start_ns, post_done_ns - copy_done_ns,
                     copied_pixels, full_copy);
+    if (trace.active) xhd_perf_record_trace(&perf, &trace.pending, post_done_ns);
+    trace.pending = (struct xhd_trace_pending){ 0 };  // only after a buffer was posted
     if (frames++ == 0) {
       char waited[96] = "";
       if (held) snprintf(waited, sizeof waited, "; held %.1f s for session/ready, %lu wakes for flushes not shown", seconds_since(&hold_start), held_flushes);
@@ -265,7 +294,10 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
   // Preserve the last partial window even when the guest disconnects or the
   // device-side timeout stops the preview while a UI animation is in flight.
   uint64_t finished_ns = xhd_perf_clock_ns();
-  if (perf.posts || xhd_perf_due(&perf, finished_ns)) log_frame_perf(&perf, finished_ns);
+  if (perf.posts || xhd_perf_due(&perf, finished_ns)) {
+    log_frame_perf(&perf, finished_ns);
+    if (trace.active) log_frame_trace(&perf, finished_ns);
+  }
   ANativeWindow_release(window);
   fprintf(stderr, "oneios-display: %s after %lu frames\n", result == 0 ? "the socket closed" : result == 1 ? "asked to stop" : "error", frames);
   return result;
