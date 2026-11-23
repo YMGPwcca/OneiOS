@@ -862,11 +862,17 @@ static void test_virtio_gpu3d(void)
   CHECK((uint16_t)(used[1] - d.used_seen[0]) == 2);
   b.retire(dev, 5, 1, 3);
   CHECK((uint16_t)(used[1] - d.used_seen[0]) == 3 && R(&d, 0x60) == 1);
+  struct xh_fence_perf fence_sample = { 0 };
+  CHECK(xh_virtio_gpu_fence_perf_snapshot(dev, &fence_sample));
+  CHECK(fence_sample.other.count == 3 && fence_sample.fast.count == 0);
+  CHECK(fence_sample.rejected == 0 && fence_sample.canceled == 0);
   d.used_seen[0] = used[1];
   cmd[1] = 3; cmd[2] = 9; cmd[5] = 0;
   CHECK(G(9, 24) == 1 && resp[2] == 9);                                                                   // ring 0: retired inside the call
   cmd[5] = 9;
   CHECK(G(9, 24) == 1);                                                                                   // a fence the renderer refuses is not held
+  CHECK(xh_virtio_gpu_fence_perf_snapshot(dev, &fence_sample));
+  CHECK(fence_sample.rejected >= 1 && fence_sample.other.count >= 4);  // ring 0 retired synchronously
   cmd[1] = 1; cmd[2] = 0x77; cmd[5] = 0;
   CHECK(G(9, 24) == 1 && resp[1] == 1 && resp[2] == 0x77 && fake.fences == 5);                            // the device's own ring: at once, the renderer not asked
   // a fenced command of a context that is destroyed comes back
@@ -874,6 +880,8 @@ static void test_virtio_gpu3d(void)
   CHECK(G(9, 24) == 0);
   CLEAR(); cmd[0] = 0x201; cmd[4] = 5;
   CHECK(G(6, 24) == 2 && resp[0] == 0x1100 && fake.contexts == 1 && fake.live[0] == 0);
+  CHECK(xh_virtio_gpu_fence_perf_snapshot(dev, &fence_sample));
+  CHECK(fence_sample.canceled >= 1);   // ctx destruction releases pending fence, not successful backend callback
   CHECK(G(6, 24) == 1 && resp[0] == 0x1204);
   // the display's surface: a guest blob as the scanout, its rows copied at the flush
   CLEAR(); cmd[0] = 0x10c; cmd[6] = 20; cmd[7] = 1; cmd[8] = 8; cmd[9] = 1; cmd[12] = 0x1000;
