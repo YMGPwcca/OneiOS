@@ -512,6 +512,25 @@ static void test_virtio_gpu(void)
   cmd[0] = 0x102; cmd[6] = 1;                                                  // RESOURCE_UNREF
   CHECK(SEND(8, 24) == 24 && resp[0] == 0x1100);
   {
+    // The *same* numeric resource ID can be reused; its new allocation serial
+    // must be distinct so a cross-reset/offline trace cannot join two sources.
+    memset(cmd, 0, 4096);
+    cmd[0] = 0x101; cmd[6] = 1; cmd[7] = 67; cmd[8] = 8; cmd[9] = 4;
+    CHECK(SEND(10, 24) == 24 && resp[0] == 0x1100);
+    memset(cmd, 0, 4096);
+    cmd[0] = 0x103; cmd[8] = 8; cmd[9] = 4; cmd[11] = 1;
+    CHECK(SEND(12, 24) == 24 && resp[0] == 0x1100);
+    memset(cmd, 0, 4096);
+    cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 4; cmd[10] = 1;
+    CHECK(SEND(12, 24) == 24 && resp[0] == 0x1100);
+    CHECK(last_scanout.resource_id == 1 &&
+          last_scanout.resource_generation > first_scanout_gen &&
+          last_scanout.queue_generation == first_queue_gen);
+    memset(cmd, 0, 4096);
+    cmd[0] = 0x102; cmd[6] = 1;
+    CHECK(SEND(8, 24) == 24 && resp[0] == 0x1100);
+  }
+  {
     // A half-float 2D resource ('RGhA', 8 bytes a pixel in the backing) onto a half-float display: the rows as they are.
     uint8_t *eight = fake_display.pixels;
     fake_display = (xh_display){ .width = 8, .height = 4, .stride = 64, .format = XH_PIXELS_RGBA16F, .bpp = 8, .pixels = calloc(4, 64) };
