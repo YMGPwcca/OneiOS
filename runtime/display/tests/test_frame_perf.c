@@ -72,6 +72,51 @@ int main(void)
   CHECK(xhd_perf_quantile_bound_us(&p.scanout_copy_max_per_post, 95) == 2000);
   xhd_perf_next_window(&p, t1 + XHD_PERF_WINDOW_NS);
   CHECK(p.scanout_packets == 0 && p.scanout_copy_max_per_post.count == 0);
+
+  // Two flushes from the same v3 source in one batch are ONE attributed post.
+  struct xhd_trace_pending source = {
+    .traced = 2, .provenance_packets = 2, .provenance_queue_gen = 0,
+    .provenance_resource_gen = 10, .provenance_resource_id = 4,
+    .provenance_owner_ctx = 0, .last_seq = 8
+  };
+  xhd_perf_record_trace(&p, &source, t1 + XHD_PERF_WINDOW_NS);
+  CHECK(p.source_unique_posts == 1 && p.sources[0].posts == 1 &&
+        p.sources[0].resource_generation == 10 && p.sources[0].last_seq == 8);
+  // The same numeric resource ID reused with a new serial is another key.
+  source = (struct xhd_trace_pending){ .traced = 1, .provenance_packets = 1,
+       .provenance_queue_gen = 0, .provenance_resource_gen = 11,
+       .provenance_resource_id = 4, .last_seq = 9 };
+  xhd_perf_record_trace(&p, &source, t1 + XHD_PERF_WINDOW_NS);
+  CHECK(p.source_unique_posts == 2 && p.sources[1].posts == 1 &&
+        p.sources[1].resource_generation == 11);
+  // A reset generation separates keys even when the allocation serial is identical.
+  source.provenance_queue_gen = 1;
+  xhd_perf_record_trace(&p, &source, t1 + XHD_PERF_WINDOW_NS);
+  CHECK(p.sources[2].posts == 1 && p.sources[2].queue_generation == 1);
+  source.provenance_mixed = true; source.traced = 2; source.provenance_packets = 2;
+  xhd_perf_record_trace(&p, &source, t1 + XHD_PERF_WINDOW_NS);
+  CHECK(p.source_mixed_posts == 1 && p.source_unique_posts == 3);
+  source.provenance_mixed = false; source.legacy = 1;
+  xhd_perf_record_trace(&p, &source, t1 + XHD_PERF_WINDOW_NS);
+  source.legacy = 0; source.provenance_packets = 1;
+  xhd_perf_record_trace(&p, &source, t1 + XHD_PERF_WINDOW_NS);
+  CHECK(p.source_unknown_posts == 2 && p.source_unique_posts == 3);
+
+  // Fixed eight-source capacity; additional identities count as overflow,
+  // they never replace an earlier source or fabricate a matched fence.
+  for (uint64_t gen = 20; gen < 27; gen++) {
+    source = (struct xhd_trace_pending){ .traced = 1, .provenance_packets = 1,
+      .provenance_queue_gen = 1, .provenance_resource_gen = gen,
+      .provenance_resource_id = 4, .last_seq = 100 + gen };
+    xhd_perf_record_trace(&p, &source, t1 + XHD_PERF_WINDOW_NS);
+  }
+  CHECK(p.source_unique_posts == 10 && p.source_overflow_posts == 2);
+  CHECK(p.sources[0].resource_generation == 10 && p.sources[7].resource_generation == 24);
+  xhd_perf_next_window(&p, t1 + 2 * XHD_PERF_WINDOW_NS);
+  CHECK(p.source_unique_posts == 0 && p.source_mixed_posts == 0 &&
+        p.source_unknown_posts == 0 && p.source_overflow_posts == 0 &&
+        p.sources[0].posts == 0);
+
   printf("frame_perf tests: %d checks, %d failed\n",checks,failed);
   return failed?1:0;
 }
