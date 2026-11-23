@@ -11,6 +11,16 @@
 #include <string.h>
 
 #define XH_FRAME_TRACE_VERSION 1u
+#define XH_FRAME_TRACE_VERSION_SCANOUT 2u
+
+enum { XH_FRAME_SCANOUT_BLOB = 1, XH_FRAME_SCANOUT_2D = 2 };
+
+// Metadata captured around VirtIO GPU's scanout-memory copy. A valid GPU
+// submission fence is NOT implied by a RESOURCE_FLUSH, so none is invented.
+struct xh_frame_scanout {
+  uint64_t start_ns, copied_ns;
+  uint32_t kind, resource_id;
+};
 
 struct xh_frame_trace_packet {
   char magic[4];                 // "XHDF": legacy consumer still sees a normal flush
@@ -27,6 +37,27 @@ static inline int xh_frame_trace_valid(const struct xh_frame_trace_packet *p)
 {
   return p && !memcmp(p->magic, "XHDF", 4) && p->version == XH_FRAME_TRACE_VERSION &&
          p->seq != 0 && p->flush_mono_ns != 0;
+}
+
+// v2 is only sent for GPU scanout flushes (not helper attach / generic flush).
+// The first 40 bytes remain the v1 layout; the first 20 are legacy XHDF.
+struct xh_frame_trace_packet_v2 {
+  struct xh_frame_trace_packet base;
+  uint64_t scanout_start_ns, scanout_copied_ns;
+  uint32_t scanout_kind, resource_id;
+};
+_Static_assert(sizeof(struct xh_frame_trace_packet_v2) == 64, "XHDF scanout packet size");
+_Static_assert(offsetof(struct xh_frame_trace_packet_v2, scanout_start_ns) == 40, "XHDF v2 prefix");
+
+static inline int xh_frame_trace_v2_valid(const struct xh_frame_trace_packet_v2 *p)
+{
+  return p && !memcmp(p->base.magic, "XHDF", 4) &&
+         p->base.version == XH_FRAME_TRACE_VERSION_SCANOUT &&
+         p->base.seq != 0 && p->base.flush_mono_ns != 0 &&
+         p->scanout_start_ns != 0 && p->scanout_start_ns <= p->scanout_copied_ns &&
+         p->scanout_copied_ns <= p->base.flush_mono_ns &&
+         (p->scanout_kind == XH_FRAME_SCANOUT_BLOB || p->scanout_kind == XH_FRAME_SCANOUT_2D) &&
+         p->resource_id != 0;
 }
 
 #endif
