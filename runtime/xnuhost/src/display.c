@@ -10,6 +10,7 @@
 //   none  The frame is kept in memory only (tests, headless bring-up).
 #define _GNU_SOURCE
 #include "xnuhost.h"
+#include "xnuhost/frame_trace.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -21,6 +22,7 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 static xh_display display;
@@ -39,6 +41,15 @@ struct shm_message { char magic[4]; uint32_t a, b, c, d; };
 static int shm_fd = -1, listen_fd = -1, client_fd = -1, first_client = -1;
 static pthread_mutex_t client_lock = PTHREAD_MUTEX_INITIALIZER;
 static char socket_path[600];
+static bool frame_trace_enabled;
+static uint64_t frame_seq;  // protected by client_lock
+
+static uint64_t display_mono_ns(void)
+{
+  struct timespec t;
+  if (clock_gettime(CLOCK_MONOTONIC, &t)) return 0;
+  return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
+}
 
 static void helper_attach(int fd)
 {
@@ -228,6 +239,10 @@ static bool panel_native(xh_panel_mode *native) { (void)native; return false; }
 int xh_display_init(const xh_config *c, unsigned *width, unsigned *height, unsigned *hz)
 {
   backend = !strcmp(c->display, "drm") ? BACK_DRM : !strcmp(c->display, "shm") ? BACK_SHM : BACK_NONE;
+  frame_trace_enabled = c->frame_trace && backend == BACK_SHM;
+  frame_seq = 0;
+  if (frame_trace_enabled)
+    LOGI("display: frame-trace=1: XHDF v1 flush sequence and CLOCK_MONOTONIC timestamps; helper can read legacy prefix; not panel-present timestamps");
   if (backend == BACK_DRM && drm_init()) return -1;
   if (backend == BACK_SHM && shm_listen(c)) return -1;
   // The guest's frame: what is configured, else the mode the display helper reports (surfaceflinger's, after its
@@ -276,10 +291,22 @@ void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h)
   pthread_mutex_lock(&client_lock);
   if (client_fd >= 0) {
     struct shm_message m = { { 'X', 'H', 'D', 'F' }, x, y, w, h };
+    struct xh_frame_trace_packet traced = { 0 };
+    const void *record = &m;
+    size_t record_bytes = sizeof m;
+    if (frame_trace_enabled) {
+      memcpy(traced.magic, "XHDF", 4);
+      traced.x = x; traced.y = y; traced.w = w; traced.h = h;
+      traced.version = XH_FRAME_TRACE_VERSION;
+      traced.seq = ++frame_seq;
+      traced.flush_mono_ns = display_mono_ns();
+      record = &traced;
+      record_bytes = sizeof traced;
+    }
     // Only a helper that is gone loses its socket. A full queue (EAGAIN) or a passing shortage (ENOBUFS, ENOMEM)
     // drops this flush only: the next one names the damage again. On 2026-11-12 (15:35 session) the helper's socket
     // was closed after 7 frames with no line saying why, and the panel stayed dark while iOS drew.
-    if (send(client_fd, &m, sizeof m, MSG_NOSIGNAL | MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != EINTR) {
+    if (send(client_fd, record, record_bytes, MSG_NOSIGNAL | MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != EINTR) {
       if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN) {
         LOGI("display: the helper's socket is gone (%s): closed", strerror(errno));
         close(client_fd); client_fd = -1;
