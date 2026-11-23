@@ -15,11 +15,14 @@ struct xhd_perf_hist {
   uint64_t bins[XHD_PERF_BUCKETS];
 };
 
+struct xhd_trace_pending;
 struct xhd_frame_perf {
   uint64_t window_start_ns, last_post_ns;
   uint64_t posts, full_copies, copied_pixels;
   uint64_t active_gap_count, active_gap_sum_us;
   struct xhd_perf_hist gap, lock, copy, post;
+  uint64_t traced_posts, traced_flushes, traced_coalesced, traced_gaps, traced_bad, traced_legacy;
+  struct xhd_perf_hist flush_to_post_oldest, flush_to_post_latest, flush_to_helper;
 };
 
 uint64_t xhd_perf_clock_ns(void);
@@ -27,6 +30,9 @@ void xhd_perf_begin(struct xhd_frame_perf *p, uint64_t start_ns);
 void xhd_perf_record(struct xhd_frame_perf *p, uint64_t post_time_ns,
                      uint64_t lock_ns, uint64_t copy_ns, uint64_t post_ns,
                      uint64_t copied_pixels, bool full_copy);
+// One display post may coalesce many flushes; these timestamps end at
+// ANativeWindow_unlockAndPost completion, not physical panel presentation.
+void xhd_perf_record_trace(struct xhd_frame_perf *p, const struct xhd_trace_pending *batch, uint64_t post_done_ns);
 bool xhd_perf_due(const struct xhd_frame_perf *p, uint64_t now_ns);
 void xhd_perf_next_window(struct xhd_frame_perf *p, uint64_t now_ns);
 uint64_t xhd_perf_quantile_bound_us(const struct xhd_perf_hist *h, unsigned percentile);
