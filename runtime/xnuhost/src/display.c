@@ -34,7 +34,7 @@ xh_display *xh_display_get(void) { return display.pixels ? &display : NULL; }
 // Wire format, little-endian, one SOCK_SEQPACKET message each:
 //   hello  { "XHD1", u32 width, u32 height, u32 stride, u32 format } + the memfd (SCM_RIGHTS); format 1: B,G,R,X 8-bit
 //          sRGB, 2: R,G,B,A half floats, linear extended sRGB (include/xnuhost/pixels.h, display-format=)
-//   flush  { "XHDF", u32 x, u32 y, u32 w, u32 h }
+//   flush  { "XHDF", u32 x, u32 y, u32 w, u32 h } + optional 20-byte v1 or 44-byte v2 timing tail
 // and from the helper, once, straight after it connects, whatever xnuhost does with it:
 //   panel  { "XHDP", u32 width, u32 height, u32 hz, u32 0 }   the mode surfaceflinger runs the panel in
 struct shm_message { char magic[4]; uint32_t a, b, c, d; };
@@ -283,7 +283,13 @@ int xh_display_init(const xh_config *c, unsigned *width, unsigned *height, unsig
   return 0;
 }
 
-void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h)
+bool xh_display_trace_enabled(void)
+{
+  return frame_trace_enabled;
+}
+
+void xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
+                              const struct xh_frame_scanout *scanout)
 {
   xh_input_frame_shown();                        // input.c's touch-to-frame measurement
   if (backend == BACK_DRM) drm_flush(x, y, w, h);
@@ -292,6 +298,7 @@ void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h)
   if (client_fd >= 0) {
     struct shm_message m = { { 'X', 'H', 'D', 'F' }, x, y, w, h };
     struct xh_frame_trace_packet traced = { 0 };
+    struct xh_frame_trace_packet_v2 traced_scanout = { 0 };
     const void *record = &m;
     size_t record_bytes = sizeof m;
     if (frame_trace_enabled) {
@@ -302,6 +309,21 @@ void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h)
       traced.flush_mono_ns = display_mono_ns();
       record = &traced;
       record_bytes = sizeof traced;
+      // Do not attach stale/invalid copy samples or guess GPU fence ownership.
+      if (scanout && scanout->start_ns &&
+          scanout->start_ns <= scanout->copied_ns &&
+          scanout->copied_ns <= traced.flush_mono_ns &&
+          (scanout->kind == XH_FRAME_SCANOUT_BLOB || scanout->kind == XH_FRAME_SCANOUT_2D) &&
+          scanout->resource_id) {
+        traced_scanout.base = traced;
+        traced_scanout.base.version = XH_FRAME_TRACE_VERSION_SCANOUT;
+        traced_scanout.scanout_start_ns = scanout->start_ns;
+        traced_scanout.scanout_copied_ns = scanout->copied_ns;
+        traced_scanout.scanout_kind = scanout->kind;
+        traced_scanout.resource_id = scanout->resource_id;
+        record = &traced_scanout;
+        record_bytes = sizeof traced_scanout;
+      }
     }
     // Only a helper that is gone loses its socket. A full queue (EAGAIN) or a passing shortage (ENOBUFS, ENOMEM)
     // drops this flush only: the next one names the damage again. On 2026-11-12 (15:35 session) the helper's socket
@@ -317,6 +339,11 @@ void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h)
     }
   }
   pthread_mutex_unlock(&client_lock);
+}
+
+void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h)
+{
+  xh_display_flush_scanout(x, y, w, h, NULL);
 }
 
 void xh_display_close(void)
