@@ -299,6 +299,7 @@ void xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
     struct shm_message m = { { 'X', 'H', 'D', 'F' }, x, y, w, h };
     struct xh_frame_trace_packet traced = { 0 };
     struct xh_frame_trace_packet_v2 traced_scanout = { 0 };
+    struct xh_frame_trace_packet_v3 traced_provenance = { 0 };
     const void *record = &m;
     size_t record_bytes = sizeof m;
     if (frame_trace_enabled) {
@@ -323,6 +324,17 @@ void xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
         traced_scanout.resource_id = scanout->resource_id;
         record = &traced_scanout;
         record_bytes = sizeof traced_scanout;
+        // v3 only when the source resource has a validated creation serial.
+        // This is NOT a link to a Metal command, GPU fence or panel presentation.
+        if (scanout->resource_generation) {
+          traced_provenance.base = traced_scanout;
+          traced_provenance.base.base.version = XH_FRAME_TRACE_VERSION_PROVENANCE;
+          traced_provenance.queue_generation = scanout->queue_generation;
+          traced_provenance.resource_generation = scanout->resource_generation;
+          traced_provenance.owner_context = scanout->owner_context;
+          record = &traced_provenance;
+          record_bytes = sizeof traced_provenance;
+        }
       }
     }
     // Only a helper that is gone loses its socket. A full queue (EAGAIN) or a passing shortage (ENOBUFS, ENOMEM)
