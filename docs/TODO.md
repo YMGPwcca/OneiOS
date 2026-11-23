@@ -8,6 +8,12 @@
 > **Current release gate: BLOCKED.** Hosted iOS booted, rendered its first frame and ran ~600.6 s, but the phone lagged badly and became very hot. Neither the OneiOS thermal guard nor the exact unattended reboot-return path is qualified. **Do not run another long takeover just to obtain performance metrics.**
 
 
+## Performance workstream: XNUHost-first 60 FPS
+
+**Active implementation:** [SM8850 60 FPS / XNUHost P0-P4 tracker](SM8850_60FPS_XNUHOST_PERFORMANCE_TRACKER.md) — 29 performance items; first code fix addresses the `task.c` zero-count deferred-order timeout diagnostic with a host regression test. This is the **performance work ordering** requested for SM8850, not a revision of the independently documented physical-device release/safety gates below. Thermal guard and return policy have not been modified. Do not infer 60 FPS from peak posted-buffer rate.
+
+**Immediate local-first gate:** `make -C runtime/xnuhost build/host/test_task_order_diag` then `ASAN_OPTIONS=detect_leaks=0 runtime/xnuhost/build/host/test_task_order_diag`, followed by `make -C runtime/xnuhost test`, `make -C runtime/display test`, and the repo's normal CachyOS `scripts/ci-local.sh` suite. No phone takeover in CI.
+
 ## 2026-11-24 latest physical evidence: 180s **uncapped** full bridges, not the prior 28% capped EPROTO session
 
 **Current session:** OneiOS `f244b5cdfdedd592cc68bcbbb0770762def9e140` + OneOS `f5c1b4a44fc45d78987694a230f7ffabb213e99c`, `framework.launch=7434ae27f8e84b76806f7a4b506e90c9`. Root software thermal guard **OFF**, root CPU cap **OFF**; kernel/firmware thermal policy unchanged.
