@@ -298,6 +298,11 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
     log_frame_perf(&perf, finished_ns);
     if (trace.active) log_frame_trace(&perf, finished_ns);
   }
+  if (trace.active && trace.pending.traced)
+    fprintf(stderr, "oneios-display: frame-trace: unposted_on_stop=%llu first_seq=%llu last_seq=%llu; not counted as presented frames\n",
+            (unsigned long long)trace.pending.traced,
+            (unsigned long long)trace.pending.first_seq,
+            (unsigned long long)trace.pending.last_seq);
   ANativeWindow_release(window);
   fprintf(stderr, "oneios-display: %s after %lu frames\n", result == 0 ? "the socket closed" : result == 1 ? "asked to stop" : "error", frames);
   return result;
