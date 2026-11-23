@@ -38,7 +38,12 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('fw_seconds=$FW_DURATION', source)
         self.assertIn('FW_DURATION=600', source)
         self.assertIn('FW_DURATION=${6:-600}', source)
-        self.assertIn('--set cpu-affinity-bench=1 --set cpu-pin=1', source)
+        # Full-bridges takeover does not use the older affinity-only benchmark.
+        # It must opt in to actual CPU and device bridges, with vCPU pinning.
+        self.assertIn('--set cpu-affinity-bench=0 --set cpu-pin=1', source)
+        self.assertIn('--set bridges=1 --set sm8850-full-bridges=1', source)
+        self.assertIn('ONEIOS_CPU_PLACEMENT_BRIDGE=ACTIVE_BRIDGES_1_CPU_PIN_1', source)
+        self.assertNotIn('--set bridges=0', source)
         self.assertIn('root thermal sensor manifest not qualified on current boot', source)
         self.assertIn('if [ "$FW_MODE" = run ]; then', source)
         self.assertIn('exec "/data/runtime/$R_XNUHOST" --session-abi 1 --mode bench', source)
@@ -62,14 +67,17 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         input_source = (ROOT / 'runtime/xnuhost/src/input.c').read_text()
         input_header = (ROOT / 'runtime/xnuhost/src/xnuhost.h').read_text()
         native_test = (ROOT / 'runtime/xnuhost/tests/test_xnuhost.c').read_text()
-        # Android's healthy input service gets exactly one WAKEUP BEFORE
-        # stopping the Framework. No unsafe sysfs or watchdog write.
+        # Both guarded and explicitly risk-accepted 180s modes send WAKEUP
+        # before stopping Android's input service; the 180s mode additionally
+        # uses bounded pre-stop pulses. No Android input after system_server exits.
         before = switch.index('input keyevent KEYCODE_WAKEUP')
         stop = switch.index('if ! stop_android_framework; then')
         self.assertLess(before, stop)
         self.assertIn('FRAMEWORK_PANEL_WAKE=ANDROID_KEYCODE_WAKEUP_PRE_STOP', switch)
         self.assertIn('switch-panel-wake-refused', switch)
-        self.assertIn('--set bridges=0', switch)
+        self.assertIn('while [ "$wake_pulses" -lt 4 ]; do', switch)
+        self.assertIn('FRAMEWORK_FINAL_WAKE=KEYCODE_WAKEUP_IMMEDIATELY_PRE_STOP', switch)
+        self.assertIn('--set bridges=1 --set sm8850-full-bridges=1', switch)
         self.assertIn('bool have_touch = false, have_power = false;', input_source)
         self.assertIn('keys = !have_power && bit(key, KEY_POWER);', input_source)
         self.assertIn('sources[nfds].power_only = true;', input_source)
@@ -130,9 +138,16 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('THERMAL_SAFETY=ROOT_GUARD_AND_MONOTONIC_THROTTLE_REQUIRED', wrapper)
         self.assertIn('CPU_AFFINITY=BENCH_ONLY_EIGHT_DISTINCT_HOST_CORES_REQUIRED', wrapper)
         self.assertIn('WARNING=GPU_3D_REQUIRED_NO_2D_FALLBACK', wrapper)
-        self.assertIn('SM8850_FULL_RUN_THERMAL_BRIDGE=INACTIVE_BENCH_BRIDGES_0_ROOT_MONITOR_MANDATORY', root_switch)
-        self.assertIn('ONEIOS_BENCH_THERMAL_BRIDGE=INACTIVE_ROOT_GUARD_SEPARATE', root_switch)
-        self.assertIn('ONEIOS_CPU_PLACEMENT_BRIDGE=INACTIVE_AFFINITY_BENCH_REQUIRED', root_switch)
+        # Sensor/CPU bridges enabled in guest do not certify the independent
+        # root-side thermal guard: guarded and exact 180s no-soft-guard modes
+        # must remain separately identified, never conflated.
+        self.assertIn('SM8850_FULL_RUN_THERMAL_BRIDGE=ACTIVE_BRIDGES_1_ROOT_MONITOR_MANDATORY', root_switch)
+        self.assertIn('SM8850_FULL_RUN_THERMAL_BRIDGE=NO_ROOT_THERMAL_GUARD; HOST_READ_ONLY_TELEMETRY_ONLY', root_switch)
+        self.assertIn('ONEIOS_BENCH_THERMAL_BRIDGE=ACTIVE_READ_ONLY_ROOT_GUARD_SEPARATE', root_switch)
+        self.assertIn('ONEIOS_BENCH_THERMAL_BRIDGE=ACTIVE_WITH_NO_ROOT_THERMAL_MONITOR', root_switch)
+        self.assertIn('ONEIOS_CPU_PLACEMENT_BRIDGE=ACTIVE_BRIDGES_1_CPU_PIN_1', root_switch)
+        self.assertIn('sm8850_no_userspace_thermal()', root_switch)
+        self.assertIn('disabled-180s', root_switch)
         self.assertIn('framework_thermal_guard_healthy()', root_switch)
         self.assertIn('framework_thermal_cap_healthy()', root_switch)
         self.assertIn('SM8850_FULL_RUN_RECOVERY=DEADLINE_AND_UNASSISTED_RETURN_NOT_FULLY_VERIFIED', root_switch)
@@ -219,7 +234,7 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('root_only "$sr_archive"', source)
         self.assertIn('root_only "$sr_outcome_path"', source)
         self.assertIn('SM8850_SMOKE_PROOF_SOURCE=$smoke_proof', source)
-        self.assertIn('verified original smoke proof missing from current or archived session', source)
+        self.assertIn('verified original smoke proof missing from root-owned current or archived session; full run refused', source)
         self.assertIn('smoke_proof=archived', source)
 
     def test_bounded_duration_telemetry_has_no_hardcoded_600s_timeline(self):
