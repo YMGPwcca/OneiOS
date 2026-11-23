@@ -612,12 +612,17 @@ def main() -> int:
             ap.error("no-userspace-thermal preflight requires --duration 180")
         prefix = ("ONEIOS_SM8850_EXPERIMENT_NO_SOFT_THERMAL=I_ACCEPT_SOFT_GUARD_OFF_180S "
                   if no_guard else "")
+        profile_token = " I_ACCEPT_SOFT_GUARD_OFF_180S" if no_guard else ""
         result = adb_shell(
             args.adb, args.serial,
-            prefix + "/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run " + str(args.duration),
+            prefix + "/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run " +
+            str(args.duration) + profile_token,
             root=True, timeout=120,
         )
         print(result, end="" if result.endswith("\n") else "\n")
+        acknowledged_off = "SM8850_SOFT_THERMAL_GUARD=OFF_NOT_SPAWNED" in result
+        if no_guard != acknowledged_off:
+            raise RuntimeError("root preflight thermal profile mismatch; no Framework stop or data consumption")
         if no_guard:
             print("NO_USERSPACE_THERMAL_180S_PREFLIGHT=PASS_NO_FRAMEWORK_STOP_NO_DATA_CONSUMPTION")
         else:

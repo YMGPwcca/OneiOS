@@ -533,22 +533,35 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
     shell = f"/system/bin/sh {STAGE}/oneios_switch.sh"
     session_mode = "reboot-smoke" if reboot_only else mode
     check = phone.root(f"{experimental_prefix}{shell} --framework-check {session_mode}" +
-                       (f" {duration}" if mode == "run" else ""), timeout=120)
+                       (f" {duration}" if mode == "run" else "") +
+                       (" I_ACCEPT_SOFT_GUARD_OFF_180S" if passive_soft_thermal else ""),
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+    check_output = check.stdout.decode("utf-8", "replace") if isinstance(check.stdout, bytes) else (check.stdout or "")
+    if check_output:
+        print(check_output, end="" if check_output.endswith("\n") else "\n", flush=True)
     if check.returncode:
         return check.returncode
+    expected_off = "SM8850_SOFT_THERMAL_GUARD=OFF_NOT_SPAWNED" in check_output
+    if passive_soft_thermal != expected_off:
+        print("BLOCKED: root preflight thermal profile disagrees with the requested host profile; "
+              "nothing was launched", file=sys.stderr, flush=True)
+        return 2
     baseline = status(phone)
     (output / "baseline.txt").write_text(baseline)
     boot = re.search(r"^boot=(.+)$", baseline, re.M).group(1)
     token = uuid.uuid4().hex
     risk_token = " I_ACCEPT_LEGACY_WATCHDOG_FULL_600S_RISK" if mode == "run" else ""
     duration_token = f" {duration}" if mode == "run" else ""
+    # Explicit positional thermal profile survives detached su -> setsid -> sh -c.
+    # A lost command-scoped env must NOT silently change the live profile.
+    thermal_profile_token = " I_ACCEPT_SOFT_GUARD_OFF_180S" if passive_soft_thermal else ""
     if phone.root(f"""set -eu
 umask 077
 cd {STAGE}
 mkdir -p launches
 mkdir launches/{token}
 /data/adb/ksu/bin/busybox setsid /system/bin/sh -c '
-    {experimental_prefix}{shell} --framework-session {session_mode} {ACK} {token}{risk_token}{duration_token}
+    {experimental_prefix}{shell} --framework-session {session_mode} {ACK} {token}{risk_token}{duration_token}{thermal_profile_token}
     rc=$?
     printf "%s\n" "$rc" > launches/{token}/exit
 ' </dev/null > launches/{token}/switch.log 2>&1 &

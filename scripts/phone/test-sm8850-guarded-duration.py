@@ -56,6 +56,23 @@ class BoundedTimingTest(unittest.TestCase):
             self.assertIn("NO_FRAMEWORK_STOP", stdout.getvalue())
             self.assertIn("--framework-check run 300", root.call_args.args[2])
 
+    def test_explicit_off_mode_preflight_rejects_wrong_effective_mode(self):
+        mod = load("sm8850_tel_mode_check", TELEMETRY)
+        with tempfile.TemporaryDirectory() as td:
+            adb = Path(td) / "fake-adb"
+            adb.write_text("no executable needed")
+            argv = ["sm8850-600s-thermal-telemetry.py", "--repo", str(ROOT),
+                    "--adb", str(adb), "--preflight-only", "--duration", "180"]
+            with patch("sys.argv", argv), \
+                 patch.dict(mod.os.environ,
+                            {"ONEIOS_SM8850_SOFT_THERMAL_OFF": "I_ACCEPT_SOFT_GUARD_OFF_180S"}), \
+                 patch.object(mod, "stock_identity", return_value={"boot_id": "test"}), \
+                 patch.object(mod, "adb_shell", return_value="PREFLIGHT OK\n") as root:
+                with self.assertRaisesRegex(RuntimeError, "thermal profile mismatch"):
+                    mod.main()
+            self.assertIn("--framework-check run 180 I_ACCEPT_SOFT_GUARD_OFF_180S",
+                          root.call_args.args[2])
+
     def test_previous_boot_session_markers_are_never_current_boot_proof(self):
         mod = load("sm8850_tel_stale_test", TELEMETRY)
         self.assertIn('[ "$ctl_boot" = "$current_boot" ]', mod.PROBE)

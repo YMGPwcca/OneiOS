@@ -104,6 +104,21 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('feat/oneios-sm8850-m3q|feat/sm8850-full-bridges-takeover)', local_ci)
         self.assertNotIn('feat/oneios-sm8850-m3q|feat/sm8850-guarded-duration-tracing)', wrapper)
 
+    def test_no_guard_detached_run_token_is_pinned_before_apfs_consumption(self):
+        switch = ONEOS_SWITCH.read_text()
+        host = TAKEOVER_SOURCE.read_text()
+        telemetry = (ROOT / "scripts/phone/sm8850-600s-thermal-telemetry.py").read_text()
+        self.assertIn('FW_PROFILE_ARG=${7:-}', switch)
+        self.assertIn('FW_PROFILE_ARG=${4:-}', switch)
+        self.assertIn('SM8850_LIVE_THERMAL_PROFILE=NO_SOFT_GUARD_EXPLICIT_180S', switch)
+        self.assertIn('no-soft-guard env was set but live thermal profile token is missing', switch)
+        self.assertLess(switch.index('FW_PROFILE_ARG=${7:-}'),
+                        switch.index('APFS_DATA_CLONE=CONSUMED_ONE_SHOT_BEFORE_FRAMEWORK_STOP'))
+        self.assertIn('{duration_token}{thermal_profile_token}', host)
+        self.assertIn('BLOCKED: root preflight thermal profile disagrees', host)
+        self.assertIn('str(args.duration) + profile_token', telemetry)
+        self.assertIn('root preflight thermal profile mismatch', telemetry)
+
     def test_reboot_return_is_still_native_oneos_without_inplace_handback(self):
         switch = ONEOS_SWITCH.read_text()
         returner = ONEOS_RETURN.read_text()

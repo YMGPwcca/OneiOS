@@ -42,6 +42,42 @@ class TakeoverTest(unittest.TestCase):
         self.assertIn('--no-userspace-thermal-180', src)
         self.assertIn('I_ACCEPT_SOFT_GUARD_OFF_180S', src)
 
+    def test_no_guard_preflight_marker_must_match_before_device_launch(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(TAKEOVER, "audit", return_value=0), \
+             patch.object(TAKEOVER, "upload", return_value=0):
+            device = unittest.mock.Mock()
+            device.root.return_value = subprocess.CompletedProcess([], 0, b"PREFLIGHT OK\n")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = TAKEOVER.launch(device, "run", Path(folder), duration=180,
+                                     passive_soft_thermal=True)
+            self.assertEqual(2, rc)
+            commands = [c.args[0] for c in device.root.call_args_list]
+            self.assertEqual(1, len(commands))
+            self.assertIn("--framework-check run 180 I_ACCEPT_SOFT_GUARD_OFF_180S", commands[0])
+            self.assertFalse(any("--framework-session" in command for command in commands))
+
+    def test_detached_run_carries_explicit_no_guard_profile_token(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(TAKEOVER, "audit", return_value=0), \
+             patch.object(TAKEOVER, "upload", return_value=0), \
+             patch.object(TAKEOVER, "status", return_value="boot=mock-boot\n"), \
+             patch.object(TAKEOVER.time, "monotonic", side_effect=[0.0, 1000.0]):
+            device = unittest.mock.Mock()
+            device.root.side_effect = [
+                subprocess.CompletedProcess([], 0, b"SM8850_SOFT_THERMAL_GUARD=OFF_NOT_SPAWNED\nPREFLIGHT OK\n"),
+                subprocess.CompletedProcess([], 0, b""),
+            ]
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = TAKEOVER.launch(device, "run", Path(folder), duration=180,
+                                     passive_soft_thermal=True)
+            self.assertEqual(4, rc)  # host-only fake never starts a guest
+            commands = [c.args[0] for c in device.root.call_args_list]
+            self.assertEqual(2, len(commands))
+            self.assertIn("--framework-check run 180 I_ACCEPT_SOFT_GUARD_OFF_180S", commands[0])
+            self.assertIn("--framework-session run", commands[1])
+            self.assertIn("I_ACCEPT_LEGACY_WATCHDOG_FULL_600S_RISK 180 I_ACCEPT_SOFT_GUARD_OFF_180S", commands[1])
+
     def test_xnuhost_and_oneos_agree_on_no_thermal_guard_stage_proof(self):
         # The 2026-11-23 failed physical run exposed a cross-repo mismatch:
         # OneOS deliberately removed the required thermal worker markers,

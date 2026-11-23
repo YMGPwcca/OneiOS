@@ -32,6 +32,11 @@ echo "===== SYNTAX + OFFLINE TESTS ====="
 sh -n app/switcher/assets/oneios_switch.sh
 python3 -m py_compile app/tests/test_sm8850_guarded_full.py
 python3 app/tests/test_sm8850_guarded_full.py -v
+echo "===== HOST TAKEOVER / THERMAL PROFILE HANDOFF REGRESSIONS ====="
+python3 scripts/phone/test-sm8850-takeover.py -v
+python3 scripts/phone/test-sm8850-full-takeover.py -v
+python3 scripts/phone/test-sm8850-guarded-duration.py -v
+
 echo "===== READ-ONLY GPU/RESPRING PARSER REGRESSION ====="
 python3 scripts/phone/test-sm8850-gpu-respring-forensics.py -v
 
