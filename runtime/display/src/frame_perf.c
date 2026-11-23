@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #define _POSIX_C_SOURCE 200809L
 #include "frame_perf.h"
+#include "xhd.h"
 #include <string.h>
 #include <time.h>
 
@@ -50,6 +51,24 @@ void xhd_perf_record(struct xhd_frame_perf *p, uint64_t post_time_ns,
   observe(&p->lock, lock_ns / 1000);
   observe(&p->copy, copy_ns / 1000);
   observe(&p->post, post_ns / 1000);
+}
+
+void xhd_perf_record_trace(struct xhd_frame_perf *p, const struct xhd_trace_pending *batch, uint64_t post_done_ns)
+{
+  if (!batch) return;
+  p->traced_bad += batch->bad;
+  p->traced_legacy += batch->legacy;
+  p->traced_gaps += batch->seq_gaps;
+  if (!batch->traced) return;
+  p->traced_posts++;
+  p->traced_flushes += batch->traced;
+  p->traced_coalesced += batch->traced - 1;
+  if (batch->oldest_flush_ns && post_done_ns >= batch->oldest_flush_ns)
+    observe(&p->flush_to_post_oldest, (post_done_ns - batch->oldest_flush_ns) / 1000);
+  if (batch->newest_flush_ns && post_done_ns >= batch->newest_flush_ns)
+    observe(&p->flush_to_post_latest, (post_done_ns - batch->newest_flush_ns) / 1000);
+  if (batch->newest_flush_ns && batch->newest_recv_ns >= batch->newest_flush_ns)
+    observe(&p->flush_to_helper, (batch->newest_recv_ns - batch->newest_flush_ns) / 1000);
 }
 
 bool xhd_perf_due(const struct xhd_frame_perf *p, uint64_t now_ns)
