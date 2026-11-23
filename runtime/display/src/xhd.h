@@ -36,7 +36,7 @@ int xhd_dataspace_parse(const char *name);
 
 // One SOCK_SEQPACKET message, little-endian:
 //   hello  { "XHD1", width, height, stride, format } + the frame memfd (SCM_RIGHTS)
-//   flush  { "XHDF", x, y, w, h }
+//   flush  { "XHDF", x, y, w, h } optionally with v1 (40 bytes) or v2 scanout (64 bytes)
 // and from the helper, straight after connecting (xnuhost waits for it before it sizes the frame in a session):
 //   panel  { "XHDP", width, height, hz, 0 }
 struct xhd_message { char magic[4]; uint32_t a, b, c, d; };
@@ -67,6 +67,8 @@ struct xhd_trace_pending {
   uint64_t traced, legacy, bad, seq_gaps;
   uint64_t oldest_flush_ns, newest_flush_ns, newest_recv_ns;
   uint64_t first_seq, last_seq;
+  uint64_t scanout_packets, scanout_blob, scanout_2d;
+  uint64_t scanout_copy_sum_ns, scanout_copy_max_ns, oldest_scanout_start_ns;
 };
 struct xhd_trace_state {
   uint64_t last_seq;                 // survives per-post pending resets
@@ -74,7 +76,7 @@ struct xhd_trace_state {
   struct xhd_trace_pending pending;
 };
 // Extended packets are optional: a legacy XHDF remains valid, and older helpers
-// receive the exact 20-byte prefix even when the sender writes 40 bytes.
+// receive the exact 20-byte prefix even when the sender writes 40 or 64 bytes.
 int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace);
 // Read every pending flush without blocking, adding each (clipped to the frame) to *damage.
 // 0 the socket is open, -1 it closed.
