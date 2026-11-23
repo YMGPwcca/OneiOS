@@ -1769,6 +1769,11 @@ static void test_config(const char *dir)
   // with the existing input= boolean. Live EVIOCGRAB requires the phone.
   xh_config_defaults(&c);
   CHECK(!c.touch_exclusive && c.input && !c.cpu_affinity_bench);
+  // Per-task profiling is strictly opt-in: leave the default trap/map hot path unchanged.
+  CHECK(!c.perf_task);
+  CHECK(xh_config_set(&c, "perf-task", "invalid") != 0 && !c.perf_task);
+  CHECK(xh_config_set(&c, "perf-task", "1") == 0 && c.perf_task);
+  CHECK(xh_config_set(&c, "perf-task", "0") == 0 && !c.perf_task);
   CHECK(xh_config_set(&c, "cpu-affinity-bench", "wrong") != 0);
   CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0 && c.cpu_affinity_bench);
   CHECK(xh_config_set(&c, "cpu-affinity-bench", "0") == 0 && !c.cpu_affinity_bench);
