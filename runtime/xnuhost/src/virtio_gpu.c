@@ -8,6 +8,7 @@
 // fences (a fenced command is returned when its fence retires). The renderer is behind gpu3d.h (drm2kgsl on KGSL).
 #include "xnuhost.h"
 #include "xnuhost/frame_trace.h"
+#include "gpu_fence_perf.h"
 #include "gpu3d.h"
 #include <errno.h>
 #include <pthread.h>
@@ -84,14 +85,18 @@ typedef struct pending {
   uint16_t head;
   uint32_t written, ctx, ring;
   uint64_t fence, gen;
+  uint64_t fence_started_ns;           // opt-in: from submit_fence to backend callback
+  bool fence_fast;                     // xnu:backboardd at enqueue, never inferred at retirement
 } pending;
 
 typedef struct {
   unsigned width, height;
   resource res[MAX_RES];
   uint32_t scanout_resource;
-  bool first_frame, trace;
+  bool first_frame, trace, fence_trace;
   uint64_t resource_serial;
+  struct xh_fence_perf fence_perf;     // guarded by pl, separate from actual scanout/post timings
+  uint64_t fence_report_since_ns;      // guarded by pl; 5-second monotonic windows
   // 3D. Both lanes change the resource tables under cmd. pl guards pending fences and worker bookkeeping.
   // gen changes under the device lock; state_gen is the generation of the tables under cmd.
   xh_gpu3d *b;
@@ -361,23 +366,71 @@ static void push_pending(gpu_state *g, pending *p)
   free(p);
 }
 
-// Takes the pending fences that match off the list and returns their commands. ring < 0: every ring of the context.
-static void retire(gpu_state *g, uint32_t ctx, int ring, uint64_t fence)
+// A callback can retire many mergeable fences on a (context, ring).
+// This is a VirtIO wait report, not a Metal/KGSL frame timing or panel FPS.
+static void gpu_fence_perf_report(const struct xh_fence_perf *p, uint64_t now_ns, uint64_t window_ns)
+{
+  if (!p->fast.count && !p->other.count && !p->rejected && !p->canceled && !p->invalid_time) return;
+  LOGI("gpu-fence-trace: mono_ms=%llu window_ms=%llu "
+       "render_wait_n=%llu mean_us=%llu p95_le_us=%llu p99_le_us=%llu max_us=%llu "
+       "other_wait_n=%llu mean_us=%llu p95_le_us=%llu p99_le_us=%llu max_us=%llu "
+       "released_on_refusal=%llu canceled_on_destroy_or_reset=%llu invalid_clocks=%llu "
+       "origin=virtio_submit_fence_to_backend_callback_not_GPU_execution_or_panel_present",
+       (unsigned long long)(now_ns / UINT64_C(1000000)),
+       (unsigned long long)(window_ns / UINT64_C(1000000)),
+       (unsigned long long)p->fast.count,
+       (unsigned long long)(p->fast.count ? p->fast.sum_us / p->fast.count : 0),
+       (unsigned long long)xh_fence_perf_quantile_le_us(&p->fast, 95),
+       (unsigned long long)xh_fence_perf_quantile_le_us(&p->fast, 99),
+       (unsigned long long)p->fast.max_us,
+       (unsigned long long)p->other.count,
+       (unsigned long long)(p->other.count ? p->other.sum_us / p->other.count : 0),
+       (unsigned long long)xh_fence_perf_quantile_le_us(&p->other, 95),
+       (unsigned long long)xh_fence_perf_quantile_le_us(&p->other, 99),
+       (unsigned long long)p->other.max_us,
+       (unsigned long long)p->rejected,
+       (unsigned long long)p->canceled,
+       (unsigned long long)p->invalid_time);
+}
+
+// Takes only matching pending commands off the list: a retirement of another
+// (context, ring) cannot be attributed here. Context teardown and a refused
+// fence release commands but are NOT actual GPU backend completions.
+static void retire(gpu_state *g, uint32_t ctx, int ring, uint64_t fence,
+                   enum xh_fence_outcome outcome)
 {
   pending *done = NULL, **tail = &done;
+  struct xh_fence_perf report = { 0 };
+  uint64_t window_ns = 0;
+  bool report_ready = false;
   pthread_mutex_lock(&g->pl);
   for (pending **link = &g->fences; *link;) {
     pending *p = *link;
-    if (p->ctx == ctx && (ring < 0 || (p->ring == (uint32_t)ring && p->fence <= fence))) { *link = p->next; p->next = NULL; *tail = p; tail = &p->next; }
-    else link = &p->next;
+    if (p->ctx == ctx && (ring < 0 || (p->ring == (uint32_t)ring && p->fence <= fence))) {
+      *link = p->next; p->next = NULL; *tail = p; tail = &p->next;
+    } else link = &p->next;
+  }
+  if (g->fence_trace && done) {
+    const uint64_t now_ns = scanout_now_ns();
+    for (pending *p = done; p; p = p->next)
+      xh_fence_perf_record(&g->fence_perf, outcome, p->fence_fast, p->fence_started_ns, now_ns);
+    if (g->fence_report_since_ns && now_ns >= g->fence_report_since_ns &&
+        now_ns - g->fence_report_since_ns >= UINT64_C(5000000000)) {
+      report = g->fence_perf;
+      window_ns = now_ns - g->fence_report_since_ns;
+      g->fence_perf = (struct xh_fence_perf){ 0 };
+      g->fence_report_since_ns = now_ns;
+      report_ready = true;
+    }
   }
   pthread_mutex_unlock(&g->pl);
+  if (report_ready) gpu_fence_perf_report(&report, scanout_now_ns(), window_ns);
   while (done) { pending *p = done; done = p->next; push_pending(g, p); }
 }
 
 static void gpu_retire(xh_virtio *dev, uint32_t ctx, uint32_t ring, uint64_t fence)
 {
-  retire(xh_virtio_opaque(dev), ctx, (int)ring, fence);
+  retire(xh_virtio_opaque(dev), ctx, (int)ring, fence, XH_FENCE_COMPLETED);
 }
 
 // The 3D commands and the blob ones. 0: not one of them (command() goes on to the 2D ones).
@@ -428,7 +481,7 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     if (!slot) return RESP_ERR_INVALID_CONTEXT_ID;
     b->ctx_destroy(b, h->ctx);
     *slot = 0;
-    retire(g, h->ctx, -1, 0);                        // its rings are gone: nothing would retire these
+    retire(g, h->ctx, -1, 0, XH_FENCE_CANCELED);  // ctx destroy is not a GPU completion
     return RESP_OK_NODATA;
   }
   case CMD_SUBMIT_3D: {
@@ -811,6 +864,9 @@ static void teardown(gpu_state *g)
   pthread_mutex_lock(&g->pl);
   pending *list = g->fences;
   g->fences = NULL;
+  if (g->fence_trace)
+    for (pending *p = list; p; p = p->next)
+      xh_fence_perf_record(&g->fence_perf, XH_FENCE_CANCELED, p->fence_fast, 0, 0);
   pthread_mutex_unlock(&g->pl);
   while (list) { pending *p = list; list = p->next; free(p); }                // their chains were the old queue's
 }
@@ -891,12 +947,18 @@ static uint32_t work(gpu_state *g, uint16_t head, xh_viov *iov, unsigned n, uint
   if (!p) return status;                             // the chain is lost; so is the guest's command
   *p = (pending){ .head = head, .written = (uint32_t)written, .ctx = in.ctx, .ring = in.ring, .fence = in.fence, .gen = gen };
   if (!hold) { push_pending(g, p); return status; }
+  if (g->fence_trace) {
+    uint32_t *slot = ctx_find(g, in.ctx);
+    p->fence_fast = slot && g->ctx_fast[slot - g->ctx];
+    p->fence_started_ns = scanout_now_ns();
+  }
   pthread_mutex_lock(&g->pl);
   p->next = g->fences;
   g->fences = p;
   pthread_mutex_unlock(&g->pl);
   // May retire it before it returns. A refused fence is retired here.
-  if (g->b->submit_fence(g->b, in.ctx, in.ring, in.fence)) retire(g, in.ctx, (int)in.ring, in.fence);
+  if (g->b->submit_fence(g->b, in.ctx, in.ring, in.fence))
+    retire(g, in.ctx, (int)in.ring, in.fence, XH_FENCE_REJECTED);
   return status;
 }
 
@@ -1039,6 +1101,8 @@ xh_virtio *xh_virtio_gpu_create_3d(uint64_t base, unsigned spi, unsigned width, 
   g->width = width;
   g->height = height;
   g->trace = getenv("ONEIOS_GPU_TRACE") != NULL;
+  g->fence_trace = xh_display_trace_enabled();
+  if (g->fence_trace) g->fence_report_since_ns = scanout_now_ns();
   g->b = b;
   g->blobs = calloc(BLOB_SLOTS, sizeof *g->blobs);
   g->wake = eventfd(0, EFD_CLOEXEC);
