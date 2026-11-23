@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Optional XHDF extension: legacy 20-byte rectangle prefix stays byte-for-byte identical.
 // SOCK_SEQPACKET receivers reading only 20 bytes still accept this record and show the frame.
-// New helpers read the full 40 bytes to correlate host flush -> Android buffer post.
+// v1 carries a 40-byte flush timeline; v2 has 64 bytes and adds VirtIO CPU scanout copy timing.
 // All timestamps are CLOCK_MONOTONIC nanoseconds on the same Linux/Android host.
 #ifndef XNUHOST_FRAME_TRACE_H
 #define XNUHOST_FRAME_TRACE_H
