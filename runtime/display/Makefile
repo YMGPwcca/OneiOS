@@ -12,7 +12,7 @@ CFLAGS ?= -O2 -g
 A := build/android
 H := build/host
 # The frame formats are xnuhost's (pixels.h): both sides of display.sock read the same header.
-XHD_H := src/xhd.h ../xnuhost/include/xnuhost/pixels.h
+XHD_H := src/xhd.h ../xnuhost/include/xnuhost/pixels.h ../xnuhost/include/xnuhost/frame_trace.h
 
 all: $(A)/oneios-display $(A)/liboneios-display.so $(A)/oneios-display.dex $(A)/displayctl
 
