@@ -15,8 +15,9 @@
 
 ## P0 — XNUHost correctness and attribution
 
-- [ ] **PERF-P0-01 — Safe deferred-only task order error diagnostic.** `runtime/xnuhost/src/task.c`: fix `order(t,NULL,0)` log dereference, cover -ETIMEDOUT, >=1000ms, explicit op and empty batch; preserve wait rc and mapping synchronization. **Status: implementation in progress on `feat/sm8850-xnuhost-perf-p0`; local project test pending.** Existing tracker: ONI-P1-01.
+- [ ] **PERF-P0-01 — Safe deferred-only task order error diagnostic.** `runtime/xnuhost/src/task.c`: fix `order(t,NULL,0)` log dereference, cover -ETIMEDOUT, >=1000ms, explicit op and empty batch; preserve wait rc and mapping synchronization. **Status: source fix + 11-check diagnostic unit test + Android ARM64 build and complete CachyOS local CI PASS on `7ee2743a` (operator log 2026-11-24). Integrated service-thread timeout injection is still pending; no performance gain claimed.** Existing tracker: ONI-P1-01.
 - [ ] **PERF-P0-02 — XNUHost low-overhead profiler.** Add opt-in bounded counters/histograms by vCPU, guest pid/thread and event kind for syscall, VM fault, map/unmap, timer and futex; no per-event default logs, measure instrumentation overhead.
+  - **First source slice committed; local CI pending:** `--set perf-task=1` enables bounded, atomic-relaxed counters in `task.c` for task-process host PID and vCPU: syscall/fault/IRQ/other trap kinds, deferred/ordered maps/unmaps and futex waits/sleeps. Prints top eight *active* host task processes by cumulative activity at each `perf-log` report. Default is OFF; absent opt-in produces no counter writes. Host-only process IDs are **not yet mapped to guest XNU PID/name**, retired processes are not included and guest-thread/timer attribution plus overhead A/B are outstanding. No per-event logs or hardware state changes.
 - [ ] **PERF-P0-03 — End-to-end frame critical-path IDs.** Connect guest render/scanout, `virtio_gpu.c`, `xh_display_flush`, display seqpacket, Android lock/copy/post, and actual presentation/VSync where supported; document clock domains and trace loss.
 - [ ] **PERF-P0-04 — VM fault and deferred map attribution.** Histogram queue occupancy, joined operations, ordered unmaps, unmaps by release, stall times; never remove `map-defer` or weaken TLB ordering without concurrency proofs.
 - [ ] **PERF-P0-05 — Syscall/trap hotspot and long tails.** Group syscall/fault classes by guest pid and vCPU and time-correlate the 286.6ms syscall / 596.2ms VM-fault outliers with frame IDs before blaming a frame.
@@ -59,9 +60,22 @@
 
 ## First implementation sprint
 
-1. Fix and test `task.c` deferred-only diagnostic without changing happy-path service order performance. **This branch has an implementation and a new portable unit-test target; not yet CachyOS-validated.**
+1. Fix and test `task.c` deferred-only diagnostic without changing happy-path service order performance. **Operator's CachyOS CI PASSED at commit `7ee2743a` (11 focused checks; full `ci-local.sh all` PASS). Additional integrated timeout fault injection remains open.**
 2. Add bounded per-vCPU, per-guest-process VM/map/syscall/timer attribution with measurable profiler overhead.
 3. Add frame IDs and common timeline across `virtio_gpu.c`, `display.c` and `runtime/display`; keep actual presentation as a separate, explicitly optional observable.
 4. Prioritize the verified critical-path long tail, then A/B at identical workload; do not extrapolate 60 FPS from peak buffer post rate.
+
+## New opt-in profiler: host-side test and expected output
+
+```bash
+# On CachyOS; no ADB and no physical framework takeover.
+make -C runtime/xnuhost build/host/test_task_profile
+ASAN_OPTIONS=detect_leaks=0 runtime/xnuhost/build/host/test_task_profile
+make -C runtime/xnuhost test
+make -C runtime/display test
+JOBS=8 ./scripts/ci-local.sh all 0.0.0-ci
+```
+
+`--set perf-task=1` is intended to be passed **explicitly to an already approved XNUHost session**. It adds `perf-task:` cumulative top-active-host-task lines to the normal `perf:` report; `perf-task=0` is the default. It is not a capture of real presented FPS and its current host PIDs are not guest process names. Compare profiler OFF vs ON for overhead before using its tails as an optimization baseline. This branch has not been validated on the actual SM8850 device.
 
 **Source evidence:** [180s findings](SM8850_180S_UNCAPPED_SESSION_FINDINGS_2026_11_24.md) · [original findings tracker](SM8850_180S_UNCAPPED_ENGINEERING_TRACKER_2026_11_24.md) · [OneOS fixed-duration/root policy](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-no-root-cpu-cap-180s/docs/SM8850_180S_UNCAPPED_ROOT_POLICY_2026_11_24.md).
