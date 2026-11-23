@@ -2,7 +2,17 @@
 // Pure host regression: bounded vCPU/host buckets, atomic counters, no device needed.
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
 #include "task_profile.h"
+
+enum { THREADS = 4, LOOPS = 25000 };
+static void *count_concurrently(void *arg)
+{
+  xh_task_profile *p = arg;
+  for (unsigned i = 0; i < LOOPS; i++)
+    xh_task_profile_add(p, 2, XH_TP_TRAP_OTHER);
+  return NULL;
+}
 
 static unsigned checks, failed;
 #define CHECK(x) do { checks++; if (!(x)) { failed++; fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); } } while (0)
@@ -49,6 +59,15 @@ int main(void)
   memcpy(&snapshot, &p, sizeof p);
   CHECK(xh_task_profile_read(&snapshot, 0, XH_TP_TRAP_SYSCALL) == 2);
   CHECK(xh_task_profile_read(&snapshot, XH_TP_HOST_BUCKET, XH_TP_MAP_ORDERED) == 2);
+
+  // Shared task counters are atomic even when multiple host/vCPU threads update.
+  pthread_t workers[THREADS];
+  unsigned started = 0;
+  for (; started < THREADS; started++)
+    if (pthread_create(&workers[started], NULL, count_concurrently, &p)) break;
+  for (unsigned i = 0; i < started; i++) pthread_join(workers[i], NULL);
+  CHECK(started == THREADS);
+  CHECK(xh_task_profile_read(&p, 2, XH_TP_TRAP_OTHER) == (uint64_t)THREADS * LOOPS);
 
   printf("task profile: %u checks, %u failed\n", checks, failed);
   return failed != 0;
