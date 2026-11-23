@@ -3,11 +3,13 @@
 // docs/booter.md 2.8), the letterbox fit, and the row copy. No Android here, so the host tests run it.
 #ifndef ONEIOS_XHD_H
 #define ONEIOS_XHD_H
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
 
 #include "../../xnuhost/include/xnuhost/pixels.h"
+#include "../../xnuhost/include/xnuhost/frame_trace.h"
 
 // The hello's format: what the frame's pixels hold (xnuhost's pixels.h says it in full).
 #define XHD_FORMAT_BGRX    XH_PIXELS_BGRX8      // bytes B,G,R,X, 8-bit sRGB: iOS's 'BGRA' framebuffer
@@ -59,6 +61,21 @@ int xhd_send_panel(int fd, uint32_t width, uint32_t height, uint32_t hz);
 // Receive the hello and map the frame. 0 or -errno.
 int xhd_recv_hello(int fd, struct xhd_frame *frame, int timeout_ms);
 void xhd_frame_close(struct xhd_frame *frame);
+// Trace metadata describes flushes which MAY be merged into a single Android post.
+// These are host buffer-post times, never physical display-present timestamps.
+struct xhd_trace_pending {
+  uint64_t traced, legacy, bad, seq_gaps;
+  uint64_t oldest_flush_ns, newest_flush_ns, newest_recv_ns;
+  uint64_t first_seq, last_seq;
+};
+struct xhd_trace_state {
+  uint64_t last_seq;                 // survives per-post pending resets
+  bool active;                       // a valid extended XHDF has been observed
+  struct xhd_trace_pending pending;
+};
+// Extended packets are optional: a legacy XHDF remains valid, and older helpers
+// receive the exact 20-byte prefix even when the sender writes 40 bytes.
+int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace);
 // Read every pending flush without blocking, adding each (clipped to the frame) to *damage.
 // 0 the socket is open, -1 it closed.
 int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage);
