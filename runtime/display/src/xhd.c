@@ -142,11 +142,12 @@ static uint64_t xhd_mono_ns(void)
   return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
 }
 
-static void xhd_trace_note(struct xhd_trace_state *state, const struct xh_frame_trace_packet_v2 *packet,
+static void xhd_trace_note(struct xhd_trace_state *state, const struct xh_frame_trace_packet_v3 *packet,
                            bool valid, uint64_t received_ns)
 {
   struct xhd_trace_pending *p = &state->pending;
-  const struct xh_frame_trace_packet *base = &packet->base;
+  const struct xh_frame_trace_packet *base = &packet->base.base;
+  const struct xh_frame_trace_packet_v2 *scanout = &packet->base;
   // Never attribute malformed, future or out-of-order timestamps to a post.
   if (!valid || base->flush_mono_ns > received_ns || !received_ns ||
       (state->last_seq && base->seq <= state->last_seq)) {
@@ -165,22 +166,37 @@ static void xhd_trace_note(struct xhd_trace_state *state, const struct xh_frame_
   p->last_seq = base->seq;
   p->traced++;
 
-  if (base->version != XH_FRAME_TRACE_VERSION_SCANOUT) return;
-  if (!p->scanout_packets || packet->scanout_start_ns < p->oldest_scanout_start_ns)
-    p->oldest_scanout_start_ns = packet->scanout_start_ns;
-  const uint64_t copy_ns = packet->scanout_copied_ns - packet->scanout_start_ns;
+  if (base->version != XH_FRAME_TRACE_VERSION_SCANOUT &&
+      base->version != XH_FRAME_TRACE_VERSION_PROVENANCE) return;
+  if (!p->scanout_packets || scanout->scanout_start_ns < p->oldest_scanout_start_ns)
+    p->oldest_scanout_start_ns = scanout->scanout_start_ns;
+  const uint64_t copy_ns = scanout->scanout_copied_ns - scanout->scanout_start_ns;
   p->scanout_copy_sum_ns += copy_ns;
   if (copy_ns > p->scanout_copy_max_ns) p->scanout_copy_max_ns = copy_ns;
   p->scanout_packets++;
-  if (packet->scanout_kind == XH_FRAME_SCANOUT_BLOB) p->scanout_blob++;
+  if (scanout->scanout_kind == XH_FRAME_SCANOUT_BLOB) p->scanout_blob++;
   else p->scanout_2d++;
+
+  if (base->version != XH_FRAME_TRACE_VERSION_PROVENANCE) return;
+  if (!p->provenance_packets) {
+    p->provenance_queue_gen = packet->queue_generation;
+    p->provenance_resource_gen = packet->resource_generation;
+    p->provenance_resource_id = scanout->resource_id;
+    p->provenance_owner_ctx = packet->owner_context;
+  } else if (p->provenance_queue_gen != packet->queue_generation ||
+             p->provenance_resource_gen != packet->resource_generation ||
+             p->provenance_resource_id != scanout->resource_id ||
+             p->provenance_owner_ctx != packet->owner_context) {
+    p->provenance_mixed = true;
+  }
+  p->provenance_packets++;
 }
 
 int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace)
 {
   // Bounded, nonblocking drain: an overactive guest cannot starve posting.
   for (int i = 0; i < 4096; i++) {
-    struct xh_frame_trace_packet_v2 packet;
+    struct xh_frame_trace_packet_v3 packet;
     ssize_t n = recv(fd, &packet, sizeof packet, MSG_DONTWAIT);
     if (n < 0) {
       if (errno == EINTR) continue;
@@ -189,18 +205,22 @@ int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *dama
       return -1;
     }
     if (n == 0) { fprintf(stderr, "oneios-display: xnuhost closed the socket\n"); return -1; }
-    if (n != 20 && n != (ssize_t)sizeof packet.base && n != (ssize_t)sizeof packet) continue;
-    // First 20 bytes are unchanged in legacy, v1 and v2 packets.
-    if (memcmp(packet.base.magic, "XHDF", 4)) continue;
-    struct xhd_rect r = { packet.base.x, packet.base.y, packet.base.w, packet.base.h };
+    if (n != 20 && n != (ssize_t)sizeof packet.base.base &&
+        n != (ssize_t)sizeof packet.base && n != (ssize_t)sizeof packet) continue;
+    // First 20 bytes are unchanged in legacy, v1, v2 and v3 packets.
+    if (memcmp(packet.base.base.magic, "XHDF", 4)) continue;
+    struct xhd_rect r = { packet.base.base.x, packet.base.base.y,
+                          packet.base.base.w, packet.base.base.h };
     if (!xhd_rect_clip(&r, frame->width, frame->height)) continue;
     xhd_rect_union(damage, &r);
     if (!trace) continue;
-    if (n == (ssize_t)sizeof packet.base)
-      xhd_trace_note(trace, &packet, xh_frame_trace_valid(&packet.base), xhd_mono_ns());
+    if (n == (ssize_t)sizeof packet.base.base)
+      xhd_trace_note(trace, &packet, xh_frame_trace_valid(&packet.base.base), xhd_mono_ns());
+    else if (n == (ssize_t)sizeof packet.base)
+      xhd_trace_note(trace, &packet, xh_frame_trace_v2_valid(&packet.base), xhd_mono_ns());
     else if (n == (ssize_t)sizeof packet)
-      xhd_trace_note(trace, &packet, xh_frame_trace_v2_valid(&packet), xhd_mono_ns());
-    else if (trace->active) trace->pending.legacy++;
+      xhd_trace_note(trace, &packet, xh_frame_trace_v3_valid(&packet), xhd_mono_ns());
+    else trace->pending.legacy++;
   }
   return 0;
 }
