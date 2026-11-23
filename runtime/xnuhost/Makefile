@@ -147,7 +147,7 @@ $(H)/test_task_order_diag: tests/test_task_order_diag.c src/task_order_diag.h st
 
 $(H)/test_task_profile: tests/test_task_profile.c src/task_profile.h src/xnuhost.h
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_task_profile.c -o $@
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined -pthread tests/test_task_profile.c -o $@
 
 $(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
