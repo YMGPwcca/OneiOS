@@ -400,7 +400,7 @@ static void retire(gpu_state *g, uint32_t ctx, int ring, uint64_t fence,
                    enum xh_fence_outcome outcome)
 {
   pending *done = NULL, **tail = &done;
-  struct xh_fence_perf report = { 0 };
+  struct xh_fence_perf report;        // assigned only at the reporting boundary; no default-path zeroing
   uint64_t window_ns = 0;
   bool report_ready = false;
   pthread_mutex_lock(&g->pl);
