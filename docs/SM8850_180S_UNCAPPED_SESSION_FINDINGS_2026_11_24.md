@@ -2,7 +2,7 @@
 
 > **Evidence report, not a release or safety certification.** This document records the operator's read-only admission, actual physical observations, archived session analysis, source inspection and outstanding hypotheses discussed after the 2026-11-23 UTC session. It **does not** report new code fixes, device runs, local CI or any independently qualified unattended recovery. **Do not rerun guard-OFF/cap-OFF takeover to fill evidence gaps:** a previously summarized CPU sensor sample reached **104.8 °C**.
 
-[Roadmap](TODO.md) · [Previous GPU EPROTO/respring investigation](SM8850_GPU_RESPRING_TRIAGE_2026_11_23.md) · [Performance methodology](SM8850_IOS_INTERACTIVE_PERF_CAPTURE.md) · [OneOS ownership and policy](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-no-root-cpu-cap-180s/docs/SM8850_180S_UNCAPPED_ROOT_POLICY_2026_11_24.md)
+[Engineering tracker: 11 open ONI findings](SM8850_180S_UNCAPPED_ENGINEERING_TRACKER_2026_11_24.md) · [Roadmap](TODO.md) · [Previous GPU EPROTO/respring investigation](SM8850_GPU_RESPRING_TRIAGE_2026_11_23.md) · [Performance methodology](SM8850_IOS_INTERACTIVE_PERF_CAPTURE.md) · [OneOS ownership and policy](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-no-root-cpu-cap-180s/docs/SM8850_180S_UNCAPPED_ROOT_POLICY_2026_11_24.md)
 
 ## 0. Evidence classification and scope
 
