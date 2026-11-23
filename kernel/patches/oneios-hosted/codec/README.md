@@ -1,5 +1,9 @@
 # codec/: the video encoder and decoder (hevc-encoder, 2026-11-15)
 
+**OneiOS · SM8850 · Kernel / driver implementation**
+
+[← Handbook](../../../../docs/README.md) · [Latest evidence](../../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: the encoder agent. The host side: `runtime/bridges/encoder`. The whole path and the route: `docs/hardware.md`,
 section 7g ("Video encoder").
 

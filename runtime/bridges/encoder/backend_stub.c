@@ -50,6 +50,11 @@ static br_enc_session *stub_open(uint32_t codec, uint32_t width, uint32_t height
 
 static int stub_feed(br_enc_session *s, const uint8_t *nv12, uint32_t len, int64_t pts_us, int force_key) {
   (void)force_key;
+#ifdef ONEIOS_ENCODER_STUB_ONLY
+  const char *fault = getenv("ONEIOS_ENCODER_TEST_FAULT");
+  if (fault && !strcmp(fault, "feed")) return -EINVAL;
+  if (fault && !strcmp(fault, "crash")) _Exit(97); // test a dead helper without killing the caller
+#endif
   if (s->head - s->tail >= STUB_RING) return -ENOSPC;
   bool hevc = s->codec == MEDIA_PIXFMT_HEVC;
   // Parameter sets: a VPS (hevc), an SPS padded so its profile_tier_level offsets exist, a PPS.
@@ -82,10 +87,21 @@ static int stub_feed(br_enc_session *s, const uint8_t *nv12, uint32_t len, int64
   return 0;
 }
 
-static int stub_drain(br_enc_session *s) { s->draining = true; return 0; }
+static int stub_drain(br_enc_session *s) {
+#ifdef ONEIOS_ENCODER_STUB_ONLY
+  const char *fault = getenv("ONEIOS_ENCODER_TEST_FAULT");
+  if (fault && !strcmp(fault, "drain")) return -EIO;
+#endif
+  s->draining = true;
+  return 0;
+}
 
 static int stub_poll(br_enc_session *s, uint8_t *buf, uint32_t cap, int *key, int64_t *pts_us, int *eos) {
   *key = 0; *eos = 0; *pts_us = 0;
+#ifdef ONEIOS_ENCODER_STUB_ONLY
+  const char *fault = getenv("ONEIOS_ENCODER_TEST_FAULT");
+  if (fault && !strcmp(fault, "poll")) return -EIO;
+#endif
   if (s->tail != s->head) {
     struct coded *c = &s->ring[s->tail % STUB_RING];
     if (c->size > cap) return -ENOSPC;
@@ -97,6 +113,9 @@ static int stub_poll(br_enc_session *s, uint8_t *buf, uint32_t cap, int *key, in
     s->tail++;
     return (int)c->size;
   }
+#ifdef ONEIOS_ENCODER_STUB_ONLY
+  if (fault && !strcmp(fault, "timeout")) return 0;
+#endif
   if (s->draining && !s->eos_done) { s->eos_done = true; *eos = 1; return 0; }
   return 0;
 }

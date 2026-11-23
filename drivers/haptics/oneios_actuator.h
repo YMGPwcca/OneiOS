@@ -35,10 +35,12 @@
 #define OA_QUIET_MS    10u
 #define OA_LEVEL_STEP  100u
 
-enum { OA_NONE = 0, OA_VIB = 1, OA_STOP = 2 };
+enum { OA_NONE = 0, OA_VIB = 1, OA_STOP = 2, OA_IMPACT = 3 };
 
 struct oa_state {
 	bool on;                /* a request is in flight */
+	bool native_taps;       /* opt-in; only if the host advertised native impacts */
+	uint32_t short_peak;    /* strongest PCM sample in a not-yet-classified tap */
 	uint32_t now_us;        /* the periods given so far, in microseconds */
 	uint32_t until_us;      /* when the request in flight ends */
 	uint32_t level, hz;     /* what it asked */
@@ -82,6 +84,7 @@ oa_period(struct oa_state *s, const int16_t *frames, uint32_t count, uint32_t ch
 		s->on = false;          /* the request ran out by itself */
 	}
 	if (peak > OA_SILENT) {
+		if (peak > s->short_peak) s->short_peak = peak;
 		s->run_us += period_us;
 		s->run_crossings += crossings;
 		s->quiet_us = 0;
@@ -90,6 +93,12 @@ oa_period(struct oa_state *s, const int16_t *frames, uint32_t count, uint32_t ch
 		uint32_t hz = s->run_us >= 10000u ? (uint32_t)((uint64_t)s->run_crossings * 1000000u / (2u * s->run_us)) : 0u;
 		uint32_t moved = intensity > s->level ? intensity - s->level : s->level - intensity;
 		bool renew = s->on && s->until_us - s->now_us < OA_RENEW_MS * 1000u;
+		/* When opted in, hold a newly started run for at most 30 ms. A
+		 * short run confirmed by silence becomes ONE impact rather than
+		 * several 20 ms motor starts; longer runs keep VIB/STOP semantics. */
+		if (s->native_taps && !s->on && s->run_us < OA_LONG_MS * 1000u) {
+			return r;
+		}
 		if (!s->on || renew || moved > OA_LEVEL_STEP) {
 			r.action = OA_VIB;
 			r.ms = s->run_us > OA_TAP_MS * 1000u ? OA_SEGMENT_MS : OA_TAP_MS;
@@ -102,6 +111,16 @@ oa_period(struct oa_state *s, const int16_t *frames, uint32_t count, uint32_t ch
 		}
 	} else {
 		s->quiet_us += period_us;
+		if (s->native_taps && !s->on && s->run_us > 0 &&
+		    s->run_us < OA_LONG_MS * 1000u &&
+		    s->quiet_us >= OA_QUIET_MS * 1000u) {
+			r.action = OA_IMPACT;
+			r.intensity = s->short_peak * 1000u / 32768u;
+			if (r.intensity == 0) r.intensity = 1;
+			if (r.intensity > 1000) r.intensity = 1000;
+			s->short_peak = 0;
+			s->sign = 0;
+		}
 		if (s->quiet_us >= OA_QUIET_MS * 1000u) {
 			if (s->on && s->run_us >= OA_LONG_MS * 1000u) {
 				r.action = OA_STOP;
@@ -109,6 +128,7 @@ oa_period(struct oa_state *s, const int16_t *frames, uint32_t count, uint32_t ch
 			}
 			s->run_us = 0;
 			s->run_crossings = 0;
+			if (s->native_taps) { s->short_peak = 0; s->sign = 0; }
 		}
 	}
 	/* a session of hours: keep the clock away from the 32-bit wrap */

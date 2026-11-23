@@ -56,6 +56,7 @@ enum { F_VIRGL = 1u << 0, F_RESOURCE_BLOB = 1u << 3, F_CONTEXT_INIT = 1u << 4, F
 #define MAX_BACKING 16384              // as MAX_BLOB_ENTRIES: a 2D surface of scattered 4 KiB pages (1440x3120 has 4388)
 typedef struct {
   uint32_t id, format, width, height;
+  uint64_t serial;
   uint8_t *pixels;                 // host copy, in the display's pixels (dformat: B,G,R,X 8-bit or R,G,B,A half floats)
   unsigned dformat, dbpp;
   gpu_entry *backing;
@@ -71,7 +72,7 @@ typedef struct {
 // segments, so a blob can be a scanout; HOST3D blobs (a context's shmem) are the renderer's alone.
 typedef struct {
   uint32_t id, ctx, mem;
-  uint64_t size;
+  uint64_t size, serial;
   gpu_entry *entries;
   unsigned nentries;
 } blob;
@@ -88,9 +89,10 @@ typedef struct {
   unsigned width, height;
   resource res[MAX_RES];
   uint32_t scanout_resource;
-  bool first_frame;
-  // 3D. The worker is the only thread that changes the state above and the tables below. `pl` guards the list of
-  // pending fences and the worker's bookkeeping; `gen` (bumped at every device reset) changes under the device's lock.
+  bool first_frame, trace;
+  uint64_t resource_serial;
+  // 3D. Both lanes change the resource tables under cmd. pl guards pending fences and worker bookkeeping.
+  // gen changes under the device lock; state_gen is the generation of the tables under cmd.
   xh_gpu3d *b;
   xh_virtio *dev;
   uint32_t ctx[MAX_CTX];               // live context ids
@@ -104,8 +106,7 @@ typedef struct {
   pthread_mutex_t pl;
   pthread_cond_t idle;
   pending *fences;
-  uint64_t gen, kicks, served;
-  bool reset_requested;
+  uint64_t gen, state_gen, kicks, served;
   int wake;                            // eventfd: the control queue was kicked (written from the trap handler)
   // Two lanes. The queue's thread serves the render server's contexts and every command of no context (the display,
   // the 2D commands) at once, and hands every other context's commands, in their order, to the slow lane's thread.
@@ -334,7 +335,12 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
 static void push_pending(gpu_state *g, pending *p)
 {
   xh_virtio_lock(g->dev);
-  if (p->gen == g->gen) xh_virtio_push(g->dev, 0, p->head, p->written);       // a chain from before a reset is the old queue's
+  bool current = p->gen == g->gen;
+  if (g->trace)
+    LOGI("gpu trace: %s queue_gen=%llu head=%u context=%u ring=%u fence=%llu bytes=%u",
+         current ? "complete" : "discard", (unsigned long long)p->gen, p->head, p->ctx, p->ring,
+         (unsigned long long)p->fence, p->written);
+  if (current) xh_virtio_push(g->dev, 0, p->head, p->written);       // a chain from before a reset is the old queue's
   xh_virtio_unlock(g->dev);
   free(p);
 }
@@ -391,6 +397,9 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     for (unsigned i = 0; i < MAX_CTX && !slot; i++) if (!g->ctx[i]) slot = &g->ctx[i];
     if (!slot) return RESP_ERR_OUT_OF_MEMORY;
     int r = b->ctx_create(b, h->ctx, a[1] & 0xff, (const char *)body + 8, name);
+    if (g->trace)
+      LOGI("gpu trace: context-create queue_gen=%llu context=%u process=%.*s capset=%u backend_status=%d",
+           (unsigned long long)g->state_gen, h->ctx, (int)name, (const char *)body + 8, a[1] & 0xff, r);
     if (r) return r == -ENOMEM ? RESP_ERR_OUT_OF_MEMORY : RESP_ERR_UNSPEC;
     *slot = h->ctx;
     g->ctx_fast[slot - g->ctx] = name >= 14 && !memcmp(body + 8, "xnu:backboardd", 14);
@@ -441,6 +450,7 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     int r = b && (host || (a[2] & XH_GPU_BLOB_FLAG_GUEST_HANDLE)) ? b->create_blob(b, host ? h->ctx : 0, a[0], a[1], a[2], wide[0], wide[1], entries, a[3]) : 0;
     if (r && host) { nb->entries = entries; blob_del(g, nb); return r == -ENOMEM ? RESP_ERR_OUT_OF_MEMORY : RESP_ERR_UNSPEC; }
     nb->ctx = host ? h->ctx : 0; nb->mem = a[1]; nb->size = wide[1]; nb->entries = entries; nb->nentries = a[3];
+    if (g->trace) nb->serial = ++g->resource_serial;
     g->blob_bytes += wide[1];
     g->blobs_made++;
     return RESP_OK_NODATA;
@@ -560,6 +570,7 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
     r->pixels = calloc((size_t)a[2] * a[3], r->dbpp);
     if (!r->pixels) return RESP_ERR_OUT_OF_MEMORY;
     r->id = a[0]; r->format = a[1]; r->width = a[2]; r->height = a[3];
+    if (g->trace) r->serial = ++g->resource_serial;
     return RESP_OK_NODATA;
   }
   case CMD_RESOURCE_UNREF: {
@@ -662,9 +673,38 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
   return RESP_ERR_UNSPEC;
 }
 
+static const char *trace_operation(uint32_t type, size_t *offset)
+{
+  *offset = 0;
+  switch (type) {
+  case CMD_RESOURCE_CREATE_2D: return "create-2d";
+  case CMD_RESOURCE_CREATE_BLOB: return "create-blob";
+  case CMD_RESOURCE_ATTACH_BACKING: return "attach-backing";
+  case CMD_RESOURCE_DETACH_BACKING: return "detach-backing";
+  case CMD_RESOURCE_UNREF: return "unref";
+  case CMD_CTX_ATTACH_RESOURCE: return "context-attach";
+  case CMD_CTX_DETACH_RESOURCE: return "context-detach";
+  case CMD_RESOURCE_MAP_BLOB: return "map-blob";
+  case CMD_RESOURCE_UNMAP_BLOB: return "unmap-blob";
+  case CMD_SET_SCANOUT: case CMD_SET_SCANOUT_BLOB: *offset = 20; return "scanout";
+  case CMD_CTX_DESTROY: return "context-destroy";
+  case CMD_SUBMIT_3D: return "submit";
+  default: return NULL;
+  }
+}
+
+static uint64_t trace_serial(gpu_state *g, uint32_t id, uint32_t *owner)
+{
+  if (!id) return 0;
+  blob *bl = g->blobs ? blob_find(g, id) : NULL;
+  if (bl) { *owner = bl->ctx; return bl->serial; }
+  resource *r = find(g, id);
+  return r ? r->serial : 0;
+}
+
 // Runs the command of a chain and writes its response. Returns the response's length (0: a chain that is no command)
 // and the command's header in `in`.
-static int64_t serve(gpu_state *g, unsigned queue, xh_viov *iov, unsigned n, gpu_hdr *in, uint32_t *status)
+static int64_t serve(gpu_state *g, unsigned queue, uint16_t head, xh_viov *iov, unsigned n, gpu_hdr *in, uint32_t *status)
 {
   // Gather the readable parts (the command), find the writable ones (the response).
   size_t req_size = 0, resp_max = 0;
@@ -677,7 +717,21 @@ static int64_t serve(gpu_state *g, unsigned queue, xh_viov *iov, unsigned n, gpu
   size_t resp_size = sizeof(gpu_hdr);
   gpu_hdr out = { 0 };
   memcpy(in, req, sizeof *in);
+  size_t offset;
+  const char *event = g->trace && queue == 0 ? trace_operation(in->type, &offset) : NULL;
+  uint32_t id = 0, owner = 0;
+  uint64_t serial = 0;
+  if (event && in->type != CMD_CTX_DESTROY && in->type != CMD_SUBMIT_3D && req_size >= sizeof *in + offset + sizeof id) {
+    memcpy(&id, req + sizeof *in + offset, sizeof id);
+    serial = trace_serial(g, id, &owner);
+  }
   out.type = queue == 0 ? command(g, req, req_size, resp, resp_max, &resp_size) : RESP_OK_NODATA;     // cursor queue: accepted, not drawn
+  if (event) {
+    if (!serial) serial = trace_serial(g, id, &owner);
+    LOGI("gpu trace: %s queue_gen=%llu head=%u context=%u resource=%u resource_gen=%llu owner=%u ring=%u fence=%llu status=%#x",
+         event, (unsigned long long)g->state_gen, head, in->ctx, id, (unsigned long long)serial,
+         owner, in->ring, (unsigned long long)in->fence, out.type);
+  }
   if (in->flags & FLAG_FENCE) { out.flags = in->flags & (FLAG_FENCE | FLAG_RING_IDX); out.fence = in->fence; out.ctx = in->ctx; out.ring = in->ring; }
   memcpy(resp, &out, sizeof out);
   if (resp_size > resp_max) resp_size = resp_max;
@@ -696,10 +750,15 @@ static int64_t serve(gpu_state *g, unsigned queue, xh_viov *iov, unsigned n, gpu
 
 static int64_t gpu_handle(xh_virtio *dev, unsigned queue, uint16_t head, xh_viov *iov, unsigned n)
 {
-  (void)head;
-  gpu_hdr in;
+  gpu_state *g = xh_virtio_opaque(dev);
+  gpu_hdr in = { 0 };
   uint32_t status;
-  return serve(xh_virtio_opaque(dev), queue, iov, n, &in, &status);
+  int64_t written = serve(g, queue, head, iov, n, &in, &status);
+  if (g->trace && !g->b && queue == 0)
+    LOGI("gpu trace: complete queue_gen=%llu head=%u context=%u ring=%u fence=%llu bytes=%lld",
+         (unsigned long long)g->state_gen, head, in.ctx, in.ring,
+         (unsigned long long)in.fence, (long long)written);
+  return written;
 }
 
 static uint32_t gpu_config(xh_virtio *dev, uint32_t offset, unsigned size)
@@ -731,27 +790,47 @@ static void teardown(gpu_state *g)
   while (list) { pending *p = list; list = p->next; free(p); }                // their chains were the old queue's
 }
 
-static void gpu_reset(xh_virtio *dev) { teardown(xh_virtio_opaque(dev)); }
+static void gpu_reset(xh_virtio *dev)
+{
+  gpu_state *g = xh_virtio_opaque(dev);
+  teardown(g);
+  g->state_gen++;
+  if (g->trace) LOGI("gpu trace: reset queue_gen=%llu", (unsigned long long)g->state_gen);
+}
 
 // ---- the 3D device's control queue: its own thread -------------------------------------------------------------------
-static void wake(gpu_state *g, bool reset)
+static void wake(gpu_state *g)
 {
   pthread_mutex_lock(&g->pl);
   g->kicks++;
-  if (reset) g->reset_requested = true;
   pthread_mutex_unlock(&g->pl);
   uint64_t one = 1;
   while (write(g->wake, &one, 8) < 0 && errno == EINTR) {}
 }
 
-static void gpu_kick(xh_virtio *dev, unsigned queue) { (void)queue; wake(xh_virtio_opaque(dev), false); }
+static void gpu_kick(xh_virtio *dev, unsigned queue) { (void)queue; wake(xh_virtio_opaque(dev)); }
 
 // With the device's lock held (virtio.c): the queues are already gone; the worker forgets the rest before its next command.
 static void gpu_reset_3d(xh_virtio *dev)
 {
   gpu_state *g = xh_virtio_opaque(dev);
   g->gen++;
-  wake(g, true);
+  wake(g);
+}
+
+// Called with cmd held. A reset can arrive after a wake or while either lane
+// waits for cmd. Reconcile the tables before either lane classifies or runs work.
+static uint64_t sync_generation(gpu_state *g)
+{
+  xh_virtio_lock(g->dev);
+  uint64_t gen = g->gen;
+  xh_virtio_unlock(g->dev);
+  if (g->state_gen != gen) {
+    teardown(g);
+    g->state_gen = gen;
+    if (g->trace) LOGI("gpu trace: reset queue_gen=%llu", (unsigned long long)gen);
+  }
+  return gen;
 }
 
 // A command of the fast lane that names a resource the slow lane has not made yet (an app's IOSurface the render
@@ -775,9 +854,10 @@ static bool slow_pending(gpu_state *g)
 // the slow lane may still be making is not answered: RESP_PENDING_RETRY, and the caller runs it again later.
 static uint32_t work(gpu_state *g, uint16_t head, xh_viov *iov, unsigned n, uint64_t gen, bool may_wait)
 {
-  gpu_hdr in;
+  if (sync_generation(g) != gen) return 0;           // the old queue's chain was invalidated by reset
+  gpu_hdr in = { 0 };
   uint32_t status = 0;
-  int64_t written = serve(g, 0, iov, n, &in, &status);
+  int64_t written = serve(g, 0, head, iov, n, &in, &status);
   if (may_wait && missing_resource(status) && slow_pending(g)) return RESP_PENDING_RETRY;
   // A command fenced on a context's ring is returned when the ring passes the fence; any other at once (a fence on
   // the device's own ring has nothing to wait for: the 2D commands are done when they return).
@@ -827,14 +907,9 @@ static void *slow_worker(void *arg)
     g->slow_head = j->next;
     if (!g->slow_head) g->slow_tail = &g->slow_head;
     pthread_mutex_unlock(&g->pl);
-    xh_virtio_lock(g->dev);
-    bool current = j->gen == g->gen;                 // a chain from before a reset is the old queue's: dropped
-    xh_virtio_unlock(g->dev);
-    if (current) {
-      pthread_mutex_lock(&g->cmd);
-      work(g, j->head, j->iov, j->n, j->gen, false);
-      pthread_mutex_unlock(&g->cmd);
-    }
+    pthread_mutex_lock(&g->cmd);
+    work(g, j->head, j->iov, j->n, j->gen, false);
+    pthread_mutex_unlock(&g->cmd);
     free(j);
     pthread_mutex_lock(&g->pl);
     g->slow_done++;
@@ -853,10 +928,10 @@ static void *worker(void *arg)
     if (read(g->wake, &count, 8) < 0 && errno != EINTR) break;
     pthread_mutex_lock(&g->pl);
     uint64_t upto = g->kicks;
-    bool reset = g->reset_requested;
-    g->reset_requested = false;
     pthread_mutex_unlock(&g->pl);
-    if (reset) { pthread_mutex_lock(&g->cmd); teardown(g); pthread_mutex_unlock(&g->cmd); }
+    pthread_mutex_lock(&g->cmd);
+    sync_generation(g);
+    pthread_mutex_unlock(&g->cmd);
     for (;;) {
       uint16_t head;
       xh_virtio_lock(g->dev);
@@ -866,8 +941,10 @@ static void *worker(void *arg)
       if (!n) break;
       gpu_hdr h;
       pthread_mutex_lock(&g->cmd);
-      bool slow = peek_hdr(iov, n, &h) && slow_lane(g, &h);
+      bool current = sync_generation(g) == gen;
+      bool slow = current && peek_hdr(iov, n, &h) && slow_lane(g, &h);
       pthread_mutex_unlock(&g->cmd);
+      if (!current) continue;
       if (slow) {
         slow_job *j = malloc(sizeof *j + n * sizeof *iov);
         if (!j) continue;                            // the chain is lost; so is the guest's command
@@ -924,6 +1001,7 @@ xh_virtio *xh_virtio_gpu_create(uint64_t base, unsigned spi, unsigned width, uns
   if (!g) return NULL;
   g->width = width;
   g->height = height;
+  g->trace = getenv("ONEIOS_GPU_TRACE") != NULL;
   return xh_virtio_create(base, spi, &gpu_ops, g, "virtio-gpu");
 }
 
@@ -935,6 +1013,7 @@ xh_virtio *xh_virtio_gpu_create_3d(uint64_t base, unsigned spi, unsigned width, 
   if (!g) return NULL;
   g->width = width;
   g->height = height;
+  g->trace = getenv("ONEIOS_GPU_TRACE") != NULL;
   g->b = b;
   g->blobs = calloc(BLOB_SLOTS, sizeof *g->blobs);
   g->wake = eventfd(0, EFD_CLOEXEC);

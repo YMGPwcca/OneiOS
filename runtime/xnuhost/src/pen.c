@@ -48,6 +48,8 @@ static bool byte_bit(const uint8_t *bits, size_t size, unsigned n) { return n / 
 int xh_pen_rank(const char *name, const uint8_t *keys, size_t nkeys, const uint8_t *abs, size_t nabs, const char **why)
 {
   const char *no = NULL;
+  // Android getevent prints EV_KEY 0x140 as BTN_DIGI; Linux's BTN_TOOL_PEN
+  // is an alias for the same numeric code. SM8850 hover supplies it normally.
   if (byte_bit(keys, nkeys, KEY_POWER_) || byte_bit(keys, nkeys, KEY_VOLUMEUP_) || byte_bit(keys, nkeys, KEY_VOLUMEDOWN_))
     no = "it has side keys (never taken)";
   else if (byte_bit(abs, nabs, ABS_MT_POSITION_X_)) no = "a multitouch device";

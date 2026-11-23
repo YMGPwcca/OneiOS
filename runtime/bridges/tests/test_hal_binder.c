@@ -209,6 +209,40 @@ static void test_haptics(void)
   h = br_haptic_open_as("/nonexistent", BR_HW_TREBLE, NULL);
   CHECK(h != NULL && logged("no amplitude control"));
   if (h) { br_haptic_vib(h, 20, 300, 0); br_haptic_flush(h); CHECK(!strcmp(vib_log(), "on 20\n")); br_haptic_close(h); vib_log(); }
+  // Explicit native impact mode, never used by default. HAL advertises all
+  // three standard presets in fake_hal, and perform() is serialized through
+  // the same worker as ordinary VIB and STOP.
+  setenv("ONEIOS_HAPTIC_NATIVE_IMPACTS", "1", 1);
+  put("vibrator", "36\n");       // amplitude + compose
+  h = br_haptic_open_as("/nonexistent", BR_HW_TREBLE, NULL);
+  CHECK(h != NULL && br_haptic_impacts_available(h));
+  if (h) {
+    CHECK(br_haptic_impact(h, BR_HAPTIC_IMPACT_HEAVY) == 0);
+    br_haptic_flush(h);
+    CHECK(!strcmp(vib_log(), "perform 5 2\n"));
+    br_haptic_stats st;
+    br_haptic_stats_get(h, &st);
+    CHECK(st.impacts == 1 && st.played == 1 && st.failed == 0);
+    usleep(120000);                   // fake HAL says 60ms; it finished naturally
+    br_haptic_stop(h);
+    br_haptic_flush(h);
+    CHECK(!strcmp(vib_log(), ""));  // no late off() to interrupt One UI
+    br_haptic_close(h);
+    CHECK(!strcmp(vib_log(), ""));  // no unconditional off() after an impact
+  }
+  put("vibrator_effects_no_heavy_click", "1\n");
+  h = br_haptic_open_as("/nonexistent", BR_HW_TREBLE, NULL);
+  CHECK(h && !br_haptic_impacts_available(h));
+  if (h) {
+    CHECK(br_haptic_impact(h, BR_HAPTIC_IMPACT_HEAVY) == -EOPNOTSUPP);
+    br_haptic_close(h);
+    CHECK(!strstr(vib_log(), "perform"));
+  }
+  char disabled_path[300];
+  snprintf(disabled_path, sizeof disabled_path, "%s/vibrator_effects_no_heavy_click", values);
+  unlink(disabled_path);
+  unsetenv("ONEIOS_HAPTIC_NATIVE_IMPACTS");
+
   // Not registered: the missing line, off; with the fallback the evdev search (nothing under /nonexistent here).
   char path[300];
   snprintf(path, sizeof path, "%s/vibrator", values);

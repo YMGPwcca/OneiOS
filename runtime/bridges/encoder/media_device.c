@@ -43,7 +43,7 @@ struct media_session {
   uint64_t slot_base, slot_size, bump;     // the session's pool slice
   uint32_t codec, width, height;           // codec from the CAPTURE format, size from OUTPUT
   bool output_fmt, capture_fmt;
-  bool output_on, capture_on, draining, eos_sent;
+  bool output_on, capture_on, draining, eos_sent, failed;
   struct buf output[MEDIA_OUTPUT_BUFS];
   unsigned output_count;
   struct buf capture[MEDIA_MAX_BUFS];
@@ -232,7 +232,20 @@ static int do_ioctl(media_state *m, struct media_session *s, uint32_t nr, uint8_
     if (len < 4) return EINVAL;
     uint32_t cmd;
     memcpy(&cmd, payload, 4);
-    if (cmd == MEDIA_ENC_CMD_STOP && s->enc && !s->draining) { s->draining = true; s->eos_sent = false; m->backend->drain(s->enc); }
+    if (cmd == MEDIA_ENC_CMD_STOP && s->enc && !s->draining) {
+      int drain_rc = m->backend->drain(s->enc);
+      br_log(drain_rc ? 0 : 1, "encoder: session %u: drain request %s (rc %d)",
+             s->id, drain_rc == 0 ? "accepted" : "not accepted", drain_rc);
+      if (drain_rc) {
+        uint32_t err = drain_rc < 0 ? (uint32_t)(-drain_rc) : EIO;
+        m->stats.errors++;
+        s->failed = true;
+        push_event(m, MEDIA_EVT_ERROR, s->id, &err, sizeof err);
+        return (int)err;
+      }
+      s->draining = true;
+      s->eos_sent = false;
+    }
     return 0;
   }
   case MEDIA_VIDIOC_ENUM_FRAMESIZES:
@@ -373,7 +386,7 @@ static void flush_events(media_state *m) {
 static void pump(media_state *m) {
   for (unsigned i = 0; i < MEDIA_SLOTS; i++) {
     struct media_session *s = &m->sessions[i];
-    if (!s->used || !s->enc || !s->capture_on) continue;
+    if (!s->used || !s->enc || !s->capture_on || s->failed) continue;
     for (;;) {
       unsigned index = s->capture_count;
       for (unsigned b = 0; b < s->capture_count; b++) if (s->capture[b].queued) { index = b; break; }
@@ -383,7 +396,14 @@ static void pump(media_state *m) {
       int key = 0, eos = 0;
       int64_t pts = 0;
       int bytes = m->backend->poll(s->enc, dst, (uint32_t)s->capture[index].size, &key, &pts, &eos);
-      if (bytes < 0) { m->stats.errors++; break; }
+      if (bytes < 0) {
+        uint32_t err = (uint32_t)(-bytes);
+        m->stats.errors++;
+        s->failed = true;
+        push_event(m, MEDIA_EVT_ERROR, s->id, &err, sizeof err);
+        br_log(0, "encoder: session %u: backend poll error %u", s->id, err);
+        break;
+      }
       if (bytes == 0 && !eos) break;                               // nothing ready yet
       uint32_t flags = (key ? MEDIA_BUF_FLAG_KEYFRAME : 0) | (eos ? MEDIA_BUF_FLAG_LAST : 0);
       s->capture[index].queued = false;

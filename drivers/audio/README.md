@@ -1,5 +1,9 @@
 # Audio: speaker and microphone
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Implementation reference**
+
+[← Handbook](../../docs/README.md) · [Current evidence](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 No source here. The kernel side is UniXNU-droidvm's (f9121cd): `package/DroidVMAudio.cpp` (two `IOAudio2Device`s,
 "Speaker" and "Mic") over `DroidVMVirtioSnd.c` (virtio-snd: 48 kHz S16, stereo out, mono in, 240-frame periods).
 They are built into the hosted kernel by its audio archive, `oneios-tool kernel gen audio`

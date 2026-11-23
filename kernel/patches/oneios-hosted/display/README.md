@@ -1,5 +1,9 @@
 # The display: IOMobileFramebuffer over xnuhost's virtio-gpu scanout
 
+**OneiOS · SM8850 · Kernel / session interface**
+
+[← Handbook](../../../../docs/README.md) · [Current evidence](../../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: q4a-framebuffer. Date: 2026-11-11. The guest's display driver, in the hosted kernel: what `backboardd`
 opens as the main display, and how its frames reach `session/display.sock`.
 
@@ -85,7 +89,7 @@ so those archives keep their own names.
 ## The mode, the scale, vsync, swaps
 
 - **Mode.** The boot video: `boot_args.Video`, which xnuhost makes the size of the phone panel's native mode
-  (1440x3120 on the Galaxy S24 Ultra; `--width/--height` for another, `docs/booter.md` 2.8), 32 bit B,G,R,X. The
+  (1440x3120 on the earlier reference device; `--width/--height` for another, `docs/booter.md` 2.8), 32 bit B,G,R,X. The
   guest renders every pixel of the panel; nothing is scaled between its frame and the glass. One layer
   (`IOMFBNumLayers` `MaxNumLayers` 1). A surface of scattered 4 KiB pages has 4388 backing entries at this size.
 - **Scale.** `/chosen display-scale` = 3 or 2 and `display-rotation` = 0. xnuhost writes both into the device
@@ -222,7 +226,7 @@ The real iPhone18,2 tree's panel and brightness values [F, 16.16 numbers divided
 `EDRPotentialHeadroom` 8.0, `EDRReferenceHeadroom` 12.0, `edr-max-nits` 1600, `user-accessible-max-nits` 1060,
 `override-boot-brightness-nits` 80, `panel-gamma` 2200 (2.2); `/exbright` `LmaxProduct` 3000, `LminProduct` 10,
 `DBVMin` 117, `DBVMax` 2047; `/arm-io/disp0` `display-default-color` 0, `max-avg-bpp`/`max-peak-bpp` 891290
-(13.6 bits a pixel, DCP's compressed budget). The S24 Ultra's panel's own numbers are what the display helper's
+(13.6 bits a pixel, DCP's compressed budget). The earlier reference device's panel's own numbers are what the display helper's
 `panel colour mode ...; HDR types ..., luminance max ...` line reports.
 
 ### The fix (ours), and what it does not do yet
@@ -349,7 +353,7 @@ and by reading the family's code in the 24A446 v54 kernelcache:
   the gated setter at 0xfffffe000a18a428), which the power manager calls. The word beside it, +7184, is what
   `NativeLegacyDisplay`'s start announces.
 - The backend registers two power states and asks for state 1 at start. Under this kernel the power manager never
-  calls back: `pm stage 2 calls 2 callbacks 0`, `+7180 0 +7184 1`, the same on the PC and on the S24 Ultra.
+  calls back: `pm stage 2 calls 2 callbacks 0`, `+7180 0 +7184 1`, the same on the PC and on the earlier reference device.
   **Why it does not call is not known.**
 - User space cannot switch it on: the user client's power request (selector 12, 0xfffffe000a17c6e0) answers
   `kIOReturnUnsupported` unless the display object's byte at +140 is set, which only a platform subclass does.
@@ -359,5 +363,5 @@ The fix, in `OneiOSDisplay.cpp` (`oneios_display_power_on`, at the end of the la
 same arguments. Log: `oneios-display: power: ...; the family's power word was 0 and is 1`.
 `oneios-display-power=0` leaves it out. The offset 7180 is this kernelcache's.
 
-Run on the phone (S24 Ultra, `a472a41`): `power: the power manager did not call setPowerState in 2 s: called here; the family's power word was 0 and is 1`, then swap submits (selector 5) for the first time and the Apple boot logo on the panel (screen capture and the glass). Not run on the PC. Not known: whether anything
+Run on the phone (earlier reference device, `a472a41`): `power: the power manager did not call setPowerState in 2 s: called here; the family's power word was 0 and is 1`, then swap submits (selector 5) for the first time and the Apple boot logo on the panel (screen capture and the glass). Not run on the PC. Not known: whether anything
 else in the family asks the power manager for the state (IOService's own `getPowerState()` still says 0).

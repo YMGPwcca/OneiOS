@@ -127,7 +127,12 @@ static void from_guest(bridge_state *s, const struct ob_header *h, const uint8_t
                                                        (s->config.brightness ? 1u << OB_CH_BRIGHTNESS : 0) |
                                                        (s->config.battery ? 1u << OB_CH_BATTERY : 0) |
                                                        (s->config.thermal ? 1u << OB_CH_THERMAL : 0) };
-      to_guest(s, OB_CH_CONTROL, OB_CTL_HELLO, &hello, sizeof hello);
+      if (br_haptic_impacts_available(s->config.haptic)) {
+        struct ob_ctl_hello_ext ext = { hello.version, hello.channels, OB_FEAT_HAPTIC_IMPACT };
+        to_guest(s, OB_CH_CONTROL, OB_CTL_HELLO, &ext, sizeof ext);
+      } else {
+        to_guest(s, OB_CH_CONTROL, OB_CTL_HELLO, &hello, sizeof hello);
+      }
     }
     break;
   case OB_CH_HAPTIC:
@@ -136,6 +141,15 @@ static void from_guest(bridge_state *s, const struct ob_header *h, const uint8_t
       memcpy(&vib, payload, sizeof vib);
       br_haptic_vib(s->config.haptic, vib.on_ms, vib.intensity, vib.frequency_hz);
     } else if (h->type == OB_HAPTIC_STOP) br_haptic_stop(s->config.haptic);
+    else if (h->type == OB_HAPTIC_IMPACT &&
+             h->length == sizeof(struct ob_haptic_impact) &&
+             br_haptic_impacts_available(s->config.haptic)) {
+      struct ob_haptic_impact impact;
+      memcpy(&impact, payload, sizeof impact);
+      if (impact.kind >= OB_IMPACT_LIGHT && impact.kind <= OB_IMPACT_HEAVY)
+        (void)br_haptic_impact(s->config.haptic, impact.kind);
+      // Malformed/unsupported impacts are never silently mapped to VIB.
+    }
     break;
   case OB_CH_HCI:
     if (!s->config.hci_factory) break;

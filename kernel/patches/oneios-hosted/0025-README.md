@@ -1,5 +1,9 @@
 # 0025-text-fixup-once: user pages that fail their signature or change under a process (Q6)
 
+**OneiOS · SM8850 · Kernel / driver implementation**
+
+[← Handbook](../../../docs/README.md) · [Latest evidence](../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: fable-user. Date: 2026-11-11. A diff on top of the series up to `0024`. It goes with a change in
 xnuhost (`runtime/xnuhost/src/task.c`, same commit), which is where the worst of the three causes was.
 

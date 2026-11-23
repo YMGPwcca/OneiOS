@@ -1,5 +1,9 @@
 # Camera (kernel side)
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Implementation reference**
+
+[← Handbook](../../docs/README.md) · [Current evidence](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: fable-camera. The whole path: `docs/hardware.md` section 7. Host: `runtime/bridges/camera`. iOS user space:
 `userland/camera`.
 

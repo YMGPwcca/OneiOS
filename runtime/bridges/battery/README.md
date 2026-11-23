@@ -1,5 +1,9 @@
 # runtime/bridges/battery: the phone's battery for iOS
 
+**OneiOS · SM8850 · Runtime engineering**
+
+[← Handbook](../../../docs/README.md) · [Physical status](../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 The iOS side: `drivers/battery/`. The mapping table: `docs/hardware.md` section 7c.
 
 iOS's battery UI comes from `powerd`, which reads an `IOPMPowerSource`. This bridge reads Android's `power_supply`

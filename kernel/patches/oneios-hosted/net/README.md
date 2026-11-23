@@ -1,5 +1,12 @@
 # kernel/patches/oneios-hosted/net: the Wi-Fi, en0 on the phone's radio
 
+> [!NOTE]
+> Earlier “not booted yet” language below records a **prior net-driver implementation checkpoint**. The full physical SM8850 iOS guest later reached first frame; that result does **not** independently prove that this network bridge operated.
+
+**OneiOS · SM8850 · Kernel / session interface**
+
+[← Handbook](../../../../docs/README.md) · [Current evidence](../../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: radio, then radio2 (2026-11-12). One archive of the hosted kernel, `build/oneios-net/liboneiosnet.a`, hooked
 into `kernel/build-hosted.sh` like `hid/`. There is no numbered patch: the start, `oneios_net_start`, is called from
 `oneios_drivers_start` (`drivers/bridge/OneiOSBridge.c`, a weak default there). The design, the host's side and what

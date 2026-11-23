@@ -129,6 +129,67 @@ static int incoming(void *ctx, uint64_t object, uint32_t code, uint32_t flags, a
       ab_put_i32(reply, caps);
       return 0;
     }
+    // One-shot active preset test. Unlike getters, perform() is logged so
+    // tests can prove it was called once, with the right parcel and no off().
+    case HAL_VIB_PERFORM: {
+      int32_t effect = ab_get_i32(r), strength = ab_get_i32(r);
+      uint32_t handle = 0;
+      uint64_t local = 0;
+      bool callback = ab_get_binder(r, &handle, &local);
+      bool click = effect == HAL_VIB_EFFECT_CLICK && strength == HAL_VIB_STRENGTH_MEDIUM;
+      bool tick = effect == HAL_VIB_EFFECT_TICK && strength == HAL_VIB_STRENGTH_LIGHT;
+      bool heavy = effect == HAL_VIB_EFFECT_HEAVY_CLICK && strength == HAL_VIB_STRENGTH_STRONG;
+      if (r->bad || callback || (!click && !heavy && !tick) ||
+          (click && file_text("vibrator_effects_no_click", text, sizeof text)) ||
+          (heavy && file_text("vibrator_effects_no_heavy_click", text, sizeof text))) {
+        ab_put_service_error(reply, 1);
+        return 0;
+      }
+      note("perform %d %d", effect, strength);
+      ab_put_ok(reply);
+      ab_put_i32(reply, heavy ? 60 : tick ? 20 : 20);
+      return 0;
+    }
+    // Read-only AIDL capability/primitive queries. Do NOT call note() for
+    // these methods: the phone-test asserts they never request actuation.
+    case HAL_VIB_SUPPORTED_EFFECTS:
+      ab_put_ok(reply);
+      if (file_text("vibrator_effects_no_click", text, sizeof text)) {
+        ab_put_i32(reply, 2);
+        ab_put_i32(reply, 2); // TICK
+        ab_put_i32(reply, 5); // HEAVY_CLICK
+      } else if (file_text("vibrator_effects_no_heavy_click", text, sizeof text)) {
+        ab_put_i32(reply, 2);
+        ab_put_i32(reply, 0); // CLICK
+        ab_put_i32(reply, 2); // TICK
+      } else {
+        ab_put_i32(reply, 3);
+        ab_put_i32(reply, 0); // CLICK
+        ab_put_i32(reply, 2); // TICK
+        ab_put_i32(reply, 5); // HEAVY_CLICK
+      }
+      return 0;
+    case HAL_VIB_COMPOSE_DELAY_MAX:
+      ab_put_ok(reply); ab_put_i32(reply, 500); return 0;
+    case HAL_VIB_COMPOSE_SIZE_MAX:
+      ab_put_ok(reply); ab_put_i32(reply, 16); return 0;
+    case HAL_VIB_SUPPORTED_PRIMITIVES:
+      ab_put_ok(reply);
+      ab_put_i32(reply, 3);
+      ab_put_i32(reply, 0); // NOOP
+      ab_put_i32(reply, 1); // CLICK
+      ab_put_i32(reply, 7); // LIGHT_TICK
+      return 0;
+    case HAL_VIB_PRIMITIVE_DURATION: {
+      int32_t primitive = ab_get_i32(r);
+      if (r->bad || (primitive != 0 && primitive != 1 && primitive != 7)) {
+        ab_put_service_error(reply, 1);
+        return 0;
+      }
+      ab_put_ok(reply);
+      ab_put_i32(reply, primitive == 0 ? 0 : primitive == 1 ? 20 : 9);
+      return 0;
+    }
     case HAL_VIB_OFF: note("off"); ab_put_ok(reply); return 0;
     case HAL_VIB_ON: {
       int32_t ms = ab_get_i32(r);

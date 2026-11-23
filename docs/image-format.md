@@ -1,5 +1,13 @@
 # The OneiOS image set (format 1)
 
+
+**OneiOS · Galaxy S26 Ultra / SM8850 · Image format and integrity**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This is a detailed implementation reference. Any old example or externally sourced configuration must be checked against the live SM8850 firmware; a passing host build or a historical source reference is not a new phone acceptance.
+
 Owner: image-build. Code: `profiles/`, `scripts/fetch/`, `scripts/image/`. Tests: `scripts/image/tests/run.sh`.
 
 The image set is to OneiOS what `system.raw` plus its overlays are to OneOS: the guest system, built on the
@@ -51,7 +59,7 @@ This is the plan's choice (section 4: UniXNU's release layout, `os.img` and `sys
   use UniXNU's verified-root scheme as it is.
 - Unchanged bytes are the same for everyone who builds from the same IPSW, so one size and SHA-256 per build
   pin them, as `Images.kt` pins a MysticGSI image.
-- arm64e binaries and the dyld shared cache stay as Apple built them; the S24 Ultra's cores have PAC. No
+- arm64e binaries and the dyld shared cache stay as Apple built them; the earlier reference device's cores have PAC. No
   rewrite step.
 
 `manifest.json` records for each: the container's offset in the file (0), block size, container UUID and

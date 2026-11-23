@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #ifdef __linux__
 #include <linux/input.h>
@@ -50,6 +51,14 @@ void br_haptic_map(unsigned intensity, unsigned frequency_hz, unsigned *period_m
   *magnitude = intensity ? LEVEL_FLOOR + (LEVEL_MAX - LEVEL_FLOOR) * intensity / 1000 : 0;
 }
 
+enum { HREQ_VIB = 1, HREQ_STOP = 2, HREQ_IMPACT = 3 };
+static uint64_t haptic_ms(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
 struct br_haptic {
   const br_haptic_backend *backend;
   void *ctx;
@@ -58,7 +67,9 @@ struct br_haptic {
   pthread_cond_t wake, idle;
   bool quit, pending, busy;
   uint32_t on_ms;
-  unsigned intensity, frequency_hz;
+  unsigned intensity, frequency_hz, impact_kind, request, active_kind;
+  bool impact_enabled;             // HAL preset inventory + explicit opt-in
+  uint64_t impact_until_ms;        // bound off(): never cancel an already-finished native tick
   int effect;                 // -1 until the first upload
   bool playing;
   unsigned failures;
@@ -71,41 +82,99 @@ static void *worker(void *arg)
   br_haptic *h = arg;
   pthread_mutex_lock(&h->lock);
   for (;;) {
-    while (!h->pending && !h->quit) { h->busy = false; pthread_cond_broadcast(&h->idle); pthread_cond_wait(&h->wake, &h->lock); }
+    while (!h->pending && !h->quit) {
+      h->busy = false;
+      pthread_cond_broadcast(&h->idle);
+      pthread_cond_wait(&h->wake, &h->lock);
+    }
     if (h->quit && !h->pending) break;
     uint32_t on_ms = h->on_ms;
     unsigned intensity = h->intensity, frequency = h->frequency_hz;
+    unsigned request = h->request, kind = h->impact_kind;
     h->pending = false;
     h->busy = true;
     pthread_mutex_unlock(&h->lock);
 
-    unsigned period, magnitude;
+    unsigned period = 0, magnitude = 0, duration = 0;
     br_haptic_map(intensity, frequency, &period, &magnitude);
     int rc = 0;
+    const char *step = "stop";
+    int effect_id = h->effect;
     bool played = false, stopped = false;
-    if (!on_ms || !magnitude) {
-      if (h->playing && h->effect >= 0) { rc = h->backend->play(h->ctx, h->effect, false); stopped = rc == 0; }
+    // HAL preset effects finish by themselves. A later guest STOP must never
+    // issue off() after the vendor's reported duration, because One UI could
+    // already be playing a different vibration.
+    if (h->playing && h->active_kind == HREQ_IMPACT &&
+        haptic_ms() >= h->impact_until_ms) {
       h->playing = false;
+      h->active_kind = 0;
+    }
+    if (request == HREQ_STOP || (request == HREQ_VIB && (!on_ms || !magnitude))) {
+      if (h->playing) {
+        rc = h->backend->play(h->ctx, h->effect < 0 ? 0 : h->effect, false);
+        stopped = rc == 0;
+      }
+      h->playing = false;
+      h->active_kind = 0;
+    } else if (request == HREQ_IMPACT) {
+      step = "native impact";
+      if (!h->impact_enabled || !h->backend->impact ||
+          kind < BR_HAPTIC_IMPACT_LIGHT || kind > BR_HAPTIC_IMPACT_HEAVY) rc = -EOPNOTSUPP;
+      // A continuous buzz is explicitly stopped before the new discrete tap.
+      if (!rc && h->playing && h->active_kind == HREQ_VIB) {
+        rc = h->backend->play(h->ctx, h->effect < 0 ? 0 : h->effect, false);
+        stopped = rc == 0;
+        if (!rc) { h->playing = false; h->active_kind = 0; }
+      }
+      if (!rc) {
+        rc = h->backend->impact(h->ctx, kind, &duration);
+        if (!rc && (duration < 1 || duration > 1000)) rc = -EPROTO;
+        if (!rc) {
+          h->playing = played = true;
+          h->active_kind = HREQ_IMPACT;
+          h->impact_until_ms = haptic_ms() + duration;
+        }
+      }
     } else {
-      int id = h->backend->upload(h->ctx, h->effect, on_ms > LENGTH_MAX_MS ? LENGTH_MAX_MS : on_ms, period, magnitude);
-      if (id < 0) rc = id;
-      else {
-        h->effect = id;
-        rc = h->backend->play(h->ctx, id, true);
-        h->playing = played = rc == 0;
+      step = "effect upload";
+      // Switching from a currently running preset back to a continuous
+      // waveform cancels that preset; otherwise no spurious off() call.
+      if (h->playing && h->active_kind == HREQ_IMPACT) {
+        rc = h->backend->play(h->ctx, h->effect < 0 ? 0 : h->effect, false);
+        stopped = rc == 0;
+        if (!rc) { h->playing = false; h->active_kind = 0; }
+      }
+      if (!rc) {
+        int id = h->backend->upload(h->ctx, h->effect,
+                                   on_ms > LENGTH_MAX_MS ? LENGTH_MAX_MS : on_ms, period, magnitude);
+        if (id < 0) rc = id;
+        else {
+          h->effect = effect_id = id;
+          step = "effect play";
+          rc = h->backend->play(h->ctx, id, true);
+          h->playing = played = rc == 0;
+          h->active_kind = played ? HREQ_VIB : 0;
+        }
       }
     }
-    if (rc < 0 && h->failures++ < 8) br_log(0, "haptics: request (%u ms, intensity %u) failed: %s", on_ms, intensity, strerror(-rc));
+    if (rc < 0 && h->failures++ < 8)
+      br_log(0, "haptics: %s failed: %s (%u ms, intensity %u, impact %u, period %u ms, level %u, effect id %d)",
+             step, strerror(-rc), on_ms, intensity, kind, period, magnitude, effect_id);
     pthread_mutex_lock(&h->lock);
     if (played) h->stats.played++;
     if (stopped) h->stats.stopped++;
     if (rc < 0) h->stats.failed++;
     uint64_t n = h->stats.played;
     pthread_mutex_unlock(&h->lock);
-    // The first effects one by one, then at 16, 32, 64, ...: what reached the force-feedback device.
-    if (played && (n <= 8 || !(n & (n - 1))))
-      br_log(1, "haptics: effect %llu played on %s: %u ms, period %u ms, level %u (intensity %u, %u Hz asked)", (unsigned long long)n, h->name,
-             on_ms > LENGTH_MAX_MS ? LENGTH_MAX_MS : on_ms, period, magnitude, intensity, frequency);
+    if (played && (n <= 8 || !(n & (n - 1)))) {
+      if (request == HREQ_IMPACT)
+        br_log(1, "haptics: native impact %u played on %s: HAL duration %u ms (effect %llu)",
+               kind, h->name, duration, (unsigned long long)n);
+      else
+        br_log(1, "haptics: effect %llu played on %s: %u ms, period %u ms, level %u (intensity %u, %u Hz asked)",
+               (unsigned long long)n, h->name, on_ms > LENGTH_MAX_MS ? LENGTH_MAX_MS : on_ms,
+               period, magnitude, intensity, frequency);
+    }
     if (played && n > 8 && !(n & (n - 1))) br_haptic_report(h);
     pthread_mutex_lock(&h->lock);
   }
@@ -122,11 +191,18 @@ br_haptic *br_haptic_open_backend(const br_haptic_backend *backend, void *ctx)
   h->backend = backend;
   h->ctx = ctx;
   h->effect = -1;
+  // Custom/fake backends can opt in explicitly. The Treble backend overrides
+  // this after querying getSupportedEffects() on the real vendor HAL.
+  const char *opt = getenv("ONEIOS_HAPTIC_NATIVE_IMPACTS");
+  h->impact_enabled = backend && backend->impact && opt && !strcmp(opt, "1");
   snprintf(h->name, sizeof h->name, "the back end");
   pthread_mutex_init(&h->lock, NULL);
   pthread_cond_init(&h->wake, NULL);
   pthread_cond_init(&h->idle, NULL);
-  if (backend->gain) (void)backend->gain(ctx, 10000);
+  if (backend->gain) {
+    int rc = backend->gain(ctx, 10000);
+    if (rc < 0) br_log(0, "haptics: initial gain setting failed: %s", strerror(-rc));
+  }
   if (pthread_create(&h->thread, NULL, worker, h)) { free(h); return NULL; }
   return h;
 }
@@ -146,9 +222,9 @@ void br_haptic_report(br_haptic *h)
   if (!h) return;
   br_haptic_stats_get(h, &s);
   br_log(1, "haptics: counters: %llu requests from the guest (%llu vibrate, %llu stop; %llu replaced before they started), "
-         "%llu effects played, %llu stopped, %llu failed on %s", (unsigned long long)(s.vib + s.stop), (unsigned long long)s.vib,
+         "%llu effects played, %llu stopped, %llu failed on %s (%llu discrete impacts)", (unsigned long long)(s.vib + s.stop + s.impacts), (unsigned long long)s.vib,
          (unsigned long long)s.stop, (unsigned long long)s.replaced, (unsigned long long)s.played, (unsigned long long)s.stopped,
-         (unsigned long long)s.failed, h->name);
+         (unsigned long long)s.failed, h->name, (unsigned long long)s.impacts);
 }
 
 // ---- the stand-in actuator (haptics=sim: a PC boot, which has no vibrator) --------------------------------
@@ -179,9 +255,31 @@ void br_haptic_vib(br_haptic *h, uint32_t on_ms, unsigned intensity, unsigned fr
   if (on_ms) h->stats.vib++;
   else h->stats.stop++;
   h->on_ms = on_ms; h->intensity = intensity; h->frequency_hz = frequency_hz;
+  h->request = on_ms && intensity ? HREQ_VIB : HREQ_STOP;
   h->pending = true;
   pthread_cond_signal(&h->wake);
   pthread_mutex_unlock(&h->lock);
+}
+
+bool br_haptic_impacts_available(br_haptic *h)
+{
+  return h && h->impact_enabled && h->backend && h->backend->impact;
+}
+
+int br_haptic_impact(br_haptic *h, unsigned kind)
+{
+  if (!br_haptic_impacts_available(h) || kind < BR_HAPTIC_IMPACT_LIGHT ||
+      kind > BR_HAPTIC_IMPACT_HEAVY) return -EOPNOTSUPP;
+  pthread_mutex_lock(&h->lock);
+  if (h->pending) h->stats.replaced++;
+  h->stats.impacts++;
+  h->impact_kind = kind;
+  h->on_ms = 0;
+  h->request = HREQ_IMPACT;
+  h->pending = true;
+  pthread_cond_signal(&h->wake);
+  pthread_mutex_unlock(&h->lock);
+  return 0;
 }
 
 void br_haptic_stop(br_haptic *h) { br_haptic_vib(h, 0, 0, 0); }
@@ -297,7 +395,13 @@ static br_haptic *open_evdev(const char *dev_dir) { (void)dev_dir; return NULL; 
 // ---- the vibrator HAL back end (treble) ----------------------------------------------------------
 // The effect is a length and a level: on(length) then, with amplitude control, setAmplitude(level / 255 x gain), as
 // AOSP's vibrator service orders them. The period has no place in IVibrator's on(): the HAL plays at its own resonance.
-typedef struct { br_hal *hal; int32_t caps; unsigned length_ms, magnitude, gain; } vib_ctx;
+typedef struct {
+  br_hal *hal;
+  int32_t caps;
+  unsigned length_ms, magnitude, gain;
+  uint32_t preset_mask;            // validated at open, only with explicit opt-in
+  bool native_requested, native_enabled, continuous; // opt-in inspection must never emit an unused off()
+} vib_ctx;
 
 static int vib_simple(vib_ctx *v, uint32_t code)
 {
@@ -317,12 +421,17 @@ static int vib_play(void *ctx, int id, bool on)
 {
   vib_ctx *v = ctx;
   (void)id;
-  if (!on) return vib_simple(v, HAL_VIB_OFF);
+  if (!on) {
+    int rc = vib_simple(v, HAL_VIB_OFF);
+    if (!rc) v->continuous = false;
+    return rc;
+  }
   ab_parcel p;
   br_hal_parcel(&p, HAL_VIBRATOR);
   ab_put_i32(&p, (int32_t)v->length_ms);
   ab_put_null_binder(&p);                    // no callback: the worker does not wait for the end
   int rc = br_hal_call(v->hal, HAL_VIB_ON, &p, NULL, NULL);
+  if (!rc) v->continuous = true;  // even if a later setAmplitude() fails
   if (rc || !(v->caps & HAL_VIB_CAP_AMPLITUDE)) return rc;
   float amplitude = (float)v->magnitude / (float)LEVEL_MAX * (float)v->gain / 10000.0f;
   if (amplitude > 1.0f) amplitude = 1.0f;
@@ -331,15 +440,65 @@ static int vib_play(void *ctx, int id, bool on)
   ab_put_float(&p, amplitude);
   return br_hal_call(v->hal, HAL_VIB_SET_AMPLITUDE, &p, NULL, NULL);
 }
+static int vib_take_i32(void *ctx, ab_reader *r)
+{
+  *(int32_t *)ctx = ab_get_i32(r);
+  return r->bad ? -EPROTO : 0;
+}
+
+static int vib_take_effects(void *ctx, ab_reader *r)
+{
+  uint32_t *mask = ctx;
+  int32_t n = ab_get_i32(r);
+  if (r->bad || n < 0 || n > 32) return -EPROTO;
+  for (int32_t i = 0; i < n; ++i) {
+    int32_t e = ab_get_i32(r);
+    if (e >= 0 && e < 32) *mask |= 1u << e;
+  }
+  return r->bad ? -EPROTO : 0;
+}
+
+// Explicit one-shot impact: the calibrated vendor preset is separate from
+// the legacy duration/frequency path. No EVIOCSFF or Samsung trigger indices.
+static int vib_impact(void *ctx, unsigned kind, unsigned *duration_ms)
+{
+  vib_ctx *v = ctx;
+  if (!v->native_enabled) return -EOPNOTSUPP;
+  int32_t effect, strength;
+  switch (kind) {
+  case BR_HAPTIC_IMPACT_LIGHT:  effect = HAL_VIB_EFFECT_TICK; strength = HAL_VIB_STRENGTH_LIGHT; break;
+  case BR_HAPTIC_IMPACT_MEDIUM: effect = HAL_VIB_EFFECT_CLICK; strength = HAL_VIB_STRENGTH_MEDIUM; break;
+  case BR_HAPTIC_IMPACT_HEAVY:  effect = HAL_VIB_EFFECT_HEAVY_CLICK; strength = HAL_VIB_STRENGTH_STRONG; break;
+  default: return -EINVAL;
+  }
+  if (!(v->preset_mask & (1u << effect))) return -EOPNOTSUPP;
+  ab_parcel p;
+  br_hal_parcel(&p, HAL_VIBRATOR);
+  ab_put_i32(&p, effect);
+  ab_put_i32(&p, strength);
+  ab_put_null_binder(&p);
+  int32_t duration = -1;
+  int rc = br_hal_call(v->hal, HAL_VIB_PERFORM, &p, vib_take_i32, &duration);
+  if (rc) return rc;
+  if (duration < 1 || duration > 1000) return -EPROTO;
+  *duration_ms = (unsigned)duration;
+  return 0;
+}
 static int vib_gain(void *ctx, unsigned gain) { ((vib_ctx *)ctx)->gain = gain > 10000 ? 10000 : gain; return 0; }
 static void vib_close(void *ctx)
 {
   vib_ctx *v = ctx;
-  (void)vib_simple(v, HAL_VIB_OFF);
+  // Keep legacy shutdown behavior when native mode was not requested.
+  // During explicit native opt-in, closing an unused or completed bridge
+  // must NOT send off(): One UI could currently own the same actuator.
+  // A continuous on(ms) started by this bridge still needs to be stopped.
+  if (!v->native_requested || v->continuous) (void)vib_simple(v, HAL_VIB_OFF);
   br_hal_close(v->hal);
   free(v);
 }
-static const br_haptic_backend hal_backend = { .upload = vib_upload, .play = vib_play, .gain = vib_gain, .close = vib_close };
+static const br_haptic_backend hal_backend = {
+  .upload = vib_upload, .play = vib_play, .gain = vib_gain, .impact = vib_impact, .close = vib_close
+};
 
 static int take_caps(void *ctx, ab_reader *r) { *(int32_t *)ctx = ab_get_i32(r); return r->bad ? -EPROTO : 0; }
 
@@ -356,9 +515,29 @@ static br_haptic *open_hal(const char *binder, char *why, size_t size)
   int rc = br_hal_call(v->hal, HAL_VIB_GET_CAPABILITIES, &p, take_caps, &v->caps);
   if (rc) { snprintf(why, size, "%s: getCapabilities: %s", HAL_VIBRATOR_INSTANCE, br_hal_error(rc)); br_hal_close(v->hal); free(v); return NULL; }
   int32_t version = br_hal_version(v->hal);
+  const char *opt = getenv("ONEIOS_HAPTIC_NATIVE_IMPACTS");
+  v->native_requested = opt && !strcmp(opt, "1");
+  if (v->native_requested) {
+    uint32_t mask = 0;
+    br_hal_parcel(&p, HAL_VIBRATOR);
+    rc = br_hal_call(v->hal, HAL_VIB_SUPPORTED_EFFECTS, &p, vib_take_effects, &mask);
+    const uint32_t required = (1u << HAL_VIB_EFFECT_TICK) |
+                              (1u << HAL_VIB_EFFECT_CLICK) |
+                              (1u << HAL_VIB_EFFECT_HEAVY_CLICK);
+    if (!rc && (mask & required) == required) {
+      v->preset_mask = mask;
+      v->native_enabled = true;
+    } else {
+      br_log(0, "haptics: native impacts unavailable: %s (supported preset mask %#x), continuous path unchanged",
+             rc ? br_hal_error(rc) : "not all TICK/CLICK/HEAVY_CLICK presets advertised", mask);
+    }
+  }
   br_haptic *h = br_haptic_open_backend(&hal_backend, v);
   if (!h) { br_hal_close(v->hal); free(v); snprintf(why, size, "no worker thread"); return NULL; }
+  h->impact_enabled = v->native_enabled;
   snprintf(h->name, sizeof h->name, "the vibrator HAL");
+  if (h->impact_enabled)
+    br_log(1, "haptics: native impacts enabled (explicit opt-in; TICK/CLICK/HEAVY_CLICK preflight PASS)");
   br_log(1, "haptics: on: the vibrator HAL %s (version %d, capabilities 0x%x: %s; level %u..%u as the amplitude)", HAL_VIBRATOR_INSTANCE, version,
          (unsigned)v->caps, v->caps & HAL_VIB_CAP_AMPLITUDE ? "amplitude control" : "no amplitude control, every effect at the HAL's own strength", LEVEL_FLOOR, LEVEL_MAX);
   return h;

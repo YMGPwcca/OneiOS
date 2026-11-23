@@ -33,7 +33,7 @@ struct AAudioStreamStruct {
   int mmap;                                             // 0 a mixer track; 1 MMAP (exclusive: the DSP, shared: AAudio's endpoint)
   pthread_mutex_t lock;
   pthread_t server;
-  bool server_on, filled, closed;
+  bool server_on, filled, closed, prefilled_at_start, blocked_at_start;
   atomic_bool quit;
   struct timespec t0;                                   // the microphone's start; the speaker's first write
   bool started;
@@ -67,6 +67,8 @@ static int mmap_policy_set = -1, fake_mmap_used;        // fake_mmap_used: a mix
 // what there is), and its timestamp presents a frame `mmap_below` frames after its read (the HAL and the DSP).
 enum { HAL_NO_MMAP, HAL_MMAP_SHARED, HAL_MMAP_EXCLUSIVE };
 static int fake_hal = HAL_NO_MMAP, mmap_burst = 192, mmap_capacity = 3072, mmap_below = 240;
+static bool fake_force_no_timestamp; // AAudio can refuse a timestamp even while consuming silence.
+static bool fake_requires_prestart_buffer; // Model a device that stalls permanently on an underfilled START.
 
 static double elapsed(const struct timespec *t0) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (t.tv_sec - t0->tv_sec) + (t.tv_nsec - t0->tv_nsec) / 1e9; }
 static int16_t mark_value(int k) { return (int16_t)(3001 + 7 * k); }
@@ -79,6 +81,15 @@ bool AAudioStream_isMMapUsed(AAudioStream *s) { return s->mmap || fake_mmap_used
 static void *server(void *arg)
 {
   AAudioStream *s = arg;
+  // Deliberately model the failure diagnosed on m3q: starting output before
+  // its buffer was full leaves FramesRead at zero even if writes arrive later.
+  if (s->blocked_at_start) {
+    while (!atomic_load(&s->quit)) {
+      struct timespec nap = { 0, 2000000 };
+      nanosleep(&nap, NULL);
+    }
+    return NULL;
+  }
   double period = (double)s->pull / s->rate / (1 + dac_ppm / 1e6);
   struct timespec start;
   for (; !s->mmap;) {                                    // AudioFlinger's start threshold: the buffer filled once
@@ -160,7 +171,13 @@ aaudio_result_t AAudioStream_requestStart(AAudioStream *s)
 {
   clock_gettime(CLOCK_MONOTONIC, &s->t0);
   s->started = s->direction == AAUDIO_DIRECTION_INPUT;
-  if (s->direction == AAUDIO_DIRECTION_OUTPUT) s->server_on = pthread_create(&s->server, NULL, server, s) == 0;
+  if (s->direction == AAUDIO_DIRECTION_OUTPUT) {
+    pthread_mutex_lock(&s->lock);
+    s->prefilled_at_start = s->written - s->read >= s->buffer;
+    s->blocked_at_start = fake_requires_prestart_buffer && !s->prefilled_at_start;
+    pthread_mutex_unlock(&s->lock);
+    s->server_on = pthread_create(&s->server, NULL, server, s) == 0;
+  }
   return AAUDIO_OK;
 }
 aaudio_result_t AAudioStream_requestStop(AAudioStream *s) { (void)s; return AAUDIO_OK; }
@@ -227,7 +244,7 @@ aaudio_result_t AAudioStream_getTimestamp(AAudioStream *s, clockid_t clock, int6
 {
   (void)clock;
   pthread_mutex_lock(&s->lock);
-  bool ok = s->pulls_done > 0 && (!s->mmap || s->read >= mmap_below);
+  bool ok = !fake_force_no_timestamp && s->pulls_done > 0 && (!s->mmap || s->read >= mmap_below);
   *position = s->mmap ? s->read - mmap_below : s->read;      // MMAP: the HAL and the DSP after the read
   *time_ns = (int64_t)(s->last_pull * 1e9);
   pthread_mutex_unlock(&s->lock);
@@ -376,6 +393,8 @@ static void speaker_case(double ppm)
   // of 576, and the level ends within 10 ms of its aim. Not checked: the count of slips each way (the writer's late
   // wakes move the level both ways). These and "no underrun" need the host to run the test's threads on time.
   long net = ((long)s.slips_down - (long)s0.slips_down) - ((long)s.slips_up - (long)s0.slips_up);
+  fprintf(stderr, "   drift: guest %+.0f ppm, net slips %ld, level %d -> %d frames, ring %u, queued %lld frames\n",
+          ppm, net, s0.margin, s.margin, fill, (long long)queued);
   if (host_on_time("no underrun, the slips and the level")) {
     CHECK(s.underruns == 0);
     CHECK(dac->dac_underflows == 0);
@@ -391,6 +410,9 @@ static pthread_t helper;
 static void helper_up(const char *linger)
 {
   static int pair[2];
+  // Each fake helper thread stands in for a fresh OS process. Do not
+  // leak the previous process\x27s AU_TOLD output latency into a new probe.
+  told_frames = 0;
   setenv("ONEIOS_AUDIO_LINGER_S", linger, 1);
   CHECK(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, pair) == 0);
   guest_fd = pair[0];
@@ -462,6 +484,9 @@ int main(void)
   helper_up("0");
   int opens_before = out_opens;
   dac_ppm = 0; speaker_case(0);
+  // Ordinary AU_START remains the pre-existing path; only AU_PROBE pre-fills
+  // before START. This keeps drift accounting comparable to the baseline.
+  CHECK(!last_out->prefilled_at_start);
   CHECK(mmap_policy_set == 2 && last_out->perf == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY && out_opens == opens_before + 1);
   CHECK(out_path == PATH_LEGACY && !continuous && target_ms == 20);
   dac_ppm = 2000; speaker_case(-2000);                    // the server 2000 ppm fast: the guest is slow against it
@@ -713,6 +738,79 @@ int main(void)
   send_header(AU_STOP, true, 0, 0);
   helper_down();
 
+  // Enable the optional fixed-size startup trace during the strict prefill
+  // regression, exercising probe/start/stop telemetry without changing PCM.
+  setenv("ONEIOS_AUDIO_TRACE_STARTUP", "1", 1);
+  // 10a. Samsung-style strict START: the output stream cannot begin
+  // consuming if requestStart was issued before its full buffer was primed.
+  // Exercise both MMAP exclusive and a regular mixer, then play real PCM
+  // without reopening. The old helper hung at read=0 during AU_PROBE.
+  fprintf(stderr, "-- probe: requires full prefill before requestStart\n");
+  fake_requires_prestart_buffer = true;
+  for (int mode = 0; mode < 2; mode++) {
+    fake_hal = mode ? HAL_NO_MMAP : HAL_MMAP_EXCLUSIVE;
+    helper_up("60");
+    opens = out_opens;
+    send_header(AU_PROBE, true, 0, 0);
+    struct au_header primed = { 0 };
+    for (clock_gettime(CLOCK_MONOTONIC, &t0); elapsed(&t0) < 3.0 && primed.kind != AU_LATENCY;) {
+      struct pollfd wait = { .fd = guest_fd, .events = POLLIN };
+      if (poll(&wait, 1, 100) > 0 && recv(guest_fd, &primed, sizeof primed, 0) < (ssize_t)sizeof primed)
+        primed.kind = 0;
+    }
+    CHECK(primed.kind == AU_LATENCY && primed.value > 0 && out_opens == opens + 1);
+    CHECK(last_out && last_out->prefilled_at_start && !last_out->blocked_at_start);
+    // The helper must include prefilled silence in the cumulative AAudio
+    // frame timeline; otherwise end-to-end latency collapses to near zero.
+    CHECK(last_out && out_dir.frames >= (uint64_t)last_out->buffer);
+    if (last_out) CHECK(AAudioStream_getFramesRead(last_out) > 0);
+    send_header(AU_TOLD, true, 0, primed.value);
+    send_header(AU_START, true, 2, 48000);
+    play(0.2, 0);
+    wait_in(9600);
+    CHECK(told_frames == primed.value && out_opens == opens + 1);
+    send_header(AU_STOP, true, 0, 0);
+    helper_down();
+  }
+  fake_requires_prestart_buffer = false;
+  unsetenv("ONEIOS_AUDIO_TRACE_STARTUP");
+
+  // 10b. A silent stream that consumes frames but has no presentation
+  // timestamp must return AU_LATENCY=0 without fabricating a value; the
+  // caller can still START the same AAudio stream afterward. This matches
+  // the real S26 probe failure observed with both MMAP and legacy paths.
+  fprintf(stderr, "-- probe: timestamp unavailable despite consumed frames\n");
+  fake_hal = HAL_MMAP_EXCLUSIVE;
+  fake_force_no_timestamp = true;
+  helper_up("60");
+  opens = out_opens;
+  send_header(AU_PROBE, true, 0, 0);
+  struct au_header unavailable = { 0 };
+  for (clock_gettime(CLOCK_MONOTONIC, &t0); elapsed(&t0) < 3.0 && unavailable.kind != AU_LATENCY;) {
+    struct pollfd wait = { .fd = guest_fd, .events = POLLIN };
+    if (poll(&wait, 1, 100) > 0 && recv(guest_fd, &unavailable, sizeof unavailable, 0) < (ssize_t)sizeof unavailable)
+      unavailable.kind = 0;
+  }
+  CHECK(unavailable.kind == AU_LATENCY && unavailable.value == 0 && out_opens == opens + 1);
+  CHECK(told_frames == 0);  // The failed probe must not reuse the prior helper\x27s latency.
+  CHECK(last_out != NULL);
+  if (last_out) {
+    pthread_mutex_lock(&last_out->lock);
+    bool silence_consumed = last_out->written > 0 && last_out->read > 0;
+    pthread_mutex_unlock(&last_out->lock);
+    CHECK(silence_consumed);
+  }
+  send_header(AU_START, true, 2, 48000);
+  play(0.2, 0);
+  wait_in(9600);
+  CHECK(told_frames == 0);  // Subsequent playback without AU_TOLD still has no latency claim.
+  pthread_mutex_lock(&ring_lock);
+  CHECK(ostat.in >= 9600);
+  pthread_mutex_unlock(&ring_lock);
+  send_header(AU_STOP, true, 0, 0);
+  helper_down();
+  fake_force_no_timestamp = false;
+
   // 11. MMAP exclusive, the guest late by 40 ms every 0.5 s: underruns (the level's floor of 5 ms is far below)
   // raise the target; on time again it comes back to 5 ms.
   fprintf(stderr, "-- MMAP exclusive: the guest late by 40 ms every 0.5 s, then on time\n");
@@ -742,6 +840,31 @@ int main(void)
   helper_down();
   unsetenv("ONEIOS_AUDIO_TARGET_DECAY_S");
   fake_hal = HAL_NO_MMAP;
+
+  // 12. One SM8850-style MMAP starvation burst must not cause 18
+  // consecutive +5-ms target adjustments in less than a guest period.
+  // Raw AAudio XRun accounting remains independent of this policy check.
+  fprintf(stderr, "-- coalesce a burst of 18 XRun reports plus one ring underrun in <5 ms\n");
+  pthread_mutex_lock(&ring_lock);
+  const unsigned saved_target = target;
+  const double saved_last = audio_target_raise_last_s;
+  target = MS_FRAMES(10);
+  audio_target_raise_last_s = -1.0;
+  unsigned raised_count = 0;
+  const double simulated_start = 12345.0;
+  for (unsigned i = 0; i < 18; i++) {
+    if (audio_target_raise_for_starvation(simulated_start + i * 0.00002)) raised_count++;
+  }
+  // The ring and AAudio report the same starvation episode.
+  if (audio_target_raise_for_starvation(simulated_start + 0.00038)) raised_count++;
+  CHECK(raised_count == 1 && target == MS_FRAMES(15));
+  // A genuinely sustained shortage past the next guest period can
+  // increase the target again rather than being ignored indefinitely.
+  if (audio_target_raise_for_starvation(simulated_start + 0.006)) raised_count++;
+  CHECK(raised_count == 2 && target == MS_FRAMES(20));
+  target = saved_target;
+  audio_target_raise_last_s = saved_last;
+  pthread_mutex_unlock(&ring_lock);
 
   printf("test_audio_helper: %d checks, %d failed\n", checks, failures);
   return failures != 0;

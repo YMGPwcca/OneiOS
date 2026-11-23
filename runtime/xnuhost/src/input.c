@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: MIT
-// Touch and the side keys, read straight from /dev/input/event* as OneOS's root session leaves
-// them: zygote and system_server are gone, so there is no InputDispatcher and nothing else reads
-// the touchscreen. The devices are not grabbed (EVIOCGRAB): the switch's own Volume Up + Volume
-// Down watcher reads the key device beside us (oneos/interface.md, section 6).
+// Touch and side keys, read from /dev/input/event*. During normal takeover,
+// zygote and system_server are gone; the touchscreen is not grabbed, allowing
+// the separate switcher's Volume Up + Down watcher to continue receiving keys.
+// The explicitly opted-in bench+SHM touch-exclusive mode is different: only
+// Samsung's native sec_touchscreen is EVIOCGRABbed to prevent simultaneous
+// touches in Android underneath the preview. Side keys are NEVER grabbed.
+// For the bounded exclusive bench, a separate Power key source is observed
+// without grabbing, so iOS can wake after locking; Volume remains reserved
+// for the root recovery watchers.
+// Closing the xnuhost fd (including SIGKILL) releases the touch for One UI.
 //
 // Each touch frame goes to the guest with its scan time: an EV_MSC / MSC_TIMESTAMP event before the
 // SYN_REPORT whose value is the low 32 bits of the time the kernel stamped the frame with, in counter
@@ -42,6 +48,20 @@ static int64_t last_shown_ns;         // the guest's last frame (CLOCK_MONOTONIC
 static int64_t down_ns;               // a touch-down on a still screen that waits for its frame, 0 = none
 static int64_t down_frame_ns = -1;       // the wait of the last such touch-down, -1 = none measured
 static int64_t monotonic_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec; }
+
+// Choose the phone's own direct touchscreen when present. An attached wearable
+// can advertise INPUT_PROP_DIRECT and multi-touch axes too (e.g. HUAWEI Band 11
+// on the S26 Ultra): evdev event numbers are not stable across reconnects.
+bool xh_input_accept_touch(const char *name, bool direct, bool have_touch, bool native_present)
+{
+  return direct && !have_touch && (!native_present || (name && strcmp(name, "sec_touchscreen") == 0));
+}
+
+// The exclusive preview never falls back to a wearable or secondary pointer.
+bool xh_input_exclusive_touch_allowed(const char *name, bool direct, bool have_touch)
+{
+  return direct && !have_touch && name && strcmp(name, "sec_touchscreen") == 0;
+}
 
 // The screen counts as still when the guest showed no frame for this long before a touch-down.
 #define STILL_NS 100000000
@@ -168,7 +188,10 @@ static void resync(xh_input_source *s, int64_t now_ns, uint64_t now_counter, uin
     send_event(s, EV_KEY_, BTN_TOUCH_, contacts(s) > 0);
   }
   for (unsigned k = 0; k < 3; k++)
-    if ((st.keys ^ s->sent_keys) & 1u << k) send_event(s, EV_KEY_, side_keys[k], (st.keys >> k) & 1);
+    if ((!s->power_only || side_keys[k] == KEY_POWER_) &&
+        (!s->suppress_volume || side_keys[k] == KEY_POWER_) &&
+        ((st.keys ^ s->sent_keys) & 1u << k))
+      send_event(s, EV_KEY_, side_keys[k], (st.keys >> k) & 1);
   if (s->touch) send_event(s, EV_MSC_, MSC_TIMESTAMP_, (int32_t)scan_ticks(now_ns, now_ns, now_counter, hz));
   send_event(s, EV_SYN_, SYN_REPORT_, 0);
   if (s->touch) count_frame(s, now_ns, now_ns);
@@ -193,7 +216,11 @@ void xh_input_feed(xh_input_source *s, const xh_input_ev *ev, unsigned n, int64_
     } else if (v->type == EV_KEY_) {
       // The side keys, and the two the guest also takes from a host that has them (OneiOSSideKeys.inc): Home, the ringer.
       bool side = v->code == KEY_VOLUMEDOWN_ || v->code == KEY_VOLUMEUP_ || v->code == KEY_POWER_ || v->code == KEY_MUTE_ || v->code == KEY_HOMEPAGE_;
-      if (side || (s->touch && v->code == BTN_TOUCH_)) send_event(s, EV_KEY_, v->code, v->value);
+      if ((((!s->power_only && side) ||
+            (s->power_only && v->code == KEY_POWER_)) &&
+           (!s->suppress_volume || (v->code != KEY_VOLUMEUP_ && v->code != KEY_VOLUMEDOWN_))) ||
+          (s->touch && v->code == BTN_TOUCH_))
+        send_event(s, EV_KEY_, v->code, v->value);
       if (v->code == KEY_POWER_ && v->value == 1 && xh_input_power_key) xh_input_power_key();
     } else if (v->type == EV_ABS_ && s->touch) {
       if (v->code == ABS_MT_SLOT_ || v->code == ABS_MT_TRACKING_ID_ || v->code == ABS_MT_POSITION_X_ || v->code == ABS_MT_POSITION_Y_ ||
@@ -225,8 +252,45 @@ static xh_pen_source pen_source;        // the pen (pen.c): read on this thread 
 static int pen_index = -1;             // its place in fds, -1 = none
 static pthread_t thread;
 static volatile bool running;
+static int exclusive_touch_fd = -1;
+
+// Release the exclusive touchscreen before closing other evdev descriptors.
+static void close_input_sources(void)
+{
+  if (exclusive_touch_fd >= 0) {
+    if (ioctl(exclusive_touch_fd, EVIOCGRAB, 0)) LOGE("input: touch-exclusive: explicit release failed: %s", strerror(errno));
+    else LOGI("input: touch-exclusive: sec_touchscreen released to Android");
+    exclusive_touch_fd = -1;
+  }
+  for (unsigned i = 0; i < nfds; i++) close(fds[i].fd);
+  nfds = 0;
+  pen_index = -1;
+}
 
 static bool bit(const unsigned long *bits, unsigned n) { return bits[n / (8 * sizeof(long))] >> (n % (8 * sizeof(long))) & 1; }
+
+// Prefer Samsung's own direct touchscreen over a connected wearable's direct
+// virtual display, regardless of which eventN was allocated first. Read-only.
+static bool native_touch_present(void)
+{
+  for (unsigned i = 0; i < 32; i++) {
+    char path[32], name[64] = "";
+    snprintf(path, sizeof path, "/dev/input/event%u", i);
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) continue;
+    ioctl(fd, EVIOCGNAME(sizeof name - 1), name);
+    if (strcmp(name, "sec_touchscreen") != 0) { close(fd); continue; }
+    unsigned long abs[(ABS_MAX + 8 * sizeof(long)) / (8 * sizeof(long))] = { 0 };
+    unsigned long props[(INPUT_PROP_MAX + 8 * sizeof(long)) / (8 * sizeof(long))] = { 0 };
+    bool valid = ioctl(fd, EVIOCGBIT(EV_ABS, sizeof abs), abs) >= 0 &&
+                 ioctl(fd, EVIOCGPROP(sizeof props), props) >= 0 &&
+                 bit(abs, ABS_MT_POSITION_X) && bit(abs, ABS_MT_POSITION_Y) &&
+                 bit(props, INPUT_PROP_DIRECT);
+    close(fd);
+    if (valid) return true;
+  }
+  return false;
+}
 
 // The device's state now, by ioctl (after SYN_DROPPED).
 static int read_state(xh_input_source *s, xh_input_state *st)
@@ -276,10 +340,11 @@ static void *input_main(void *arg)
   return NULL;
 }
 
-int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height)
+int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive)
 {
   (void)width; (void)height;
-  bool have_touch = false;
+  bool have_touch = false, have_power = false;
+  const bool native_touch = native_touch_present();
   for (unsigned i = 0; i < 32 && nfds < MAX_DEVICES - 1; i++) {     // one place kept for the pen
     char path[32], name[64] = "";
     snprintf(path, sizeof path, "/dev/input/event%u", i);
@@ -291,14 +356,25 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
     ioctl(fd, EVIOCGNAME(sizeof name - 1), name);
     bool touch = bit(abs, ABS_MT_POSITION_X) && bit(abs, ABS_MT_POSITION_Y);
     bool keys = bit(key, KEY_VOLUMEDOWN) || bit(key, KEY_VOLUMEUP) || bit(key, KEY_POWER);
+    // Exclusive bench: keep recovery Volume keys with Android/root watcher,
+    // but observe exactly one Power key device WITHOUT grabbing it. Without
+    // this, an iOS lock-screen sleep cannot be reversed by the side key.
+    // At most one key-only source is admitted, leaving room for a late
+    // eventN sec_touchscreen and the pen.
+    if (touch_exclusive) keys = !have_power && bit(key, KEY_POWER);
     // One touchscreen: the multitouch device that is the screen itself (INPUT_PROP_DIRECT). The S24 Ultra also has
     // "sec_touchpad", a multitouch pointer device with the same axes: its events went into the same guest device as
     // the screen's (one slot state for two sources) and its ranges replaced the screen's. Not taken.
     if (touch) {
       unsigned long props[(INPUT_PROP_MAX + 8 * sizeof(long)) / (8 * sizeof(long))] = { 0 };
       bool direct = ioctl(fd, EVIOCGPROP(sizeof props), props) >= 0 && bit(props, INPUT_PROP_DIRECT);
-      if (!direct || have_touch) {
-        LOGI("input: %s \"%s\": multitouch, not taken (%s)", path, name, direct ? "a touchscreen is already taken" : "not the screen: no INPUT_PROP_DIRECT");
+      if (!xh_input_accept_touch(name, direct, have_touch, native_touch) ||
+          (touch_exclusive && !xh_input_exclusive_touch_allowed(name, direct, have_touch))) {
+        const char *reason = !direct ? "not the screen: no INPUT_PROP_DIRECT" :
+                             have_touch ? "a touchscreen is already taken" :
+                             touch_exclusive ? "exclusive preview only permits sec_touchscreen" :
+                             "the native sec_touchscreen takes priority over a virtual direct touchscreen";
+        LOGI("input: %s \"%s\": multitouch, not taken (%s)", path, name, reason);
         touch = false;
       }
     }
@@ -309,6 +385,17 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
     bool monotonic = ioctl(fd, EVIOCSCLOCKID, &clock) == 0;
     char ranges[160] = "";
     if (touch) {
+      if (touch_exclusive) {
+        if (ioctl(fd, EVIOCGRAB, 1)) {
+          LOGE("input: touch-exclusive: EVIOCGRAB %s \"%s\" refused: %s; guest will not boot",
+               path, name, strerror(errno));
+          close(fd);
+          close_input_sources();
+          return -1;
+        }
+        exclusive_touch_fd = fd;
+        LOGI("input: touch-exclusive: sec_touchscreen grabbed for bounded guest; Android input hidden until release");
+      }
       have_touch = true;
       // The guest gets the panel's own coordinate ranges and scales them to its frame.
       static const unsigned axes[] = { ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_PRESSURE, ABS_MT_TOUCH_MAJOR };
@@ -328,9 +415,20 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
     }
     LOGI("input: %s \"%s\"%s%s%s", path, name, touch ? " touch" : "", ranges, keys ? " keys" : "");
     xh_input_source_init(&sources[nfds], dev, touch ? "touch" : name, touch);
+    sources[nfds].suppress_volume = touch_exclusive;
+    if (touch_exclusive && keys && !touch) {
+      sources[nfds].power_only = true;
+      have_power = true;
+      LOGI("input: touch-exclusive: observing Power (not grabbed); Volume remains with recovery");
+    }
     sources[nfds].fd = fd;
     sources[nfds].read_state = read_state;
     fds[nfds++] = (struct pollfd){ .fd = fd, .events = POLLIN };
+  }
+  if (touch_exclusive && !have_touch) {
+    LOGE("input: touch-exclusive: native sec_touchscreen not available; guest will not boot");
+    close_input_sources();
+    return -1;
   }
   // The pen (pen.c): found and opened before (main.c, xh_pen_lookup), read here beside the others, its own filter.
   if (pen && pen->dev && pen->device.fd >= 0 && nfds < MAX_DEVICES) {
@@ -341,7 +439,12 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
   }
   if (!nfds) { LOGI("input: no touchscreen or key device under /dev/input"); return 0; }
   running = true;
-  return pthread_create(&thread, NULL, input_main, NULL) ? -1 : 0;
+  if (pthread_create(&thread, NULL, input_main, NULL)) {
+    running = false;
+    close_input_sources();
+    return -1;
+  }
+  return 0;
 }
 
 void xh_input_stop(void)
@@ -349,9 +452,10 @@ void xh_input_stop(void)
   if (!running) return;
   running = false;
   pthread_join(thread, NULL);
-  for (unsigned i = 0; i < nfds; i++) close(fds[i].fd);
+  close_input_sources();
 }
 #else
-int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height) { (void)dev; (void)pen; (void)width; (void)height; return 0; }
+int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive)
+{ (void)dev; (void)pen; (void)width; (void)height; return touch_exclusive ? -1 : 0; }
 void xh_input_stop(void) {}
 #endif

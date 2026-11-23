@@ -97,7 +97,9 @@ typedef struct {
   char  text_fixups[1024];  // text-fixup=FILE,OFFSET,ORIGINAL,REPLACEMENT entries for /chosen text-fixups, NUL-separated
   unsigned text_fixups_length;
   bool  input;              // read /dev/input
+  bool  touch_exclusive;    // bench/shm only: EVIOCGRAB the real sec_touchscreen; never grab side keys
   bool  touch_sleep;        // touch-sleep=0: the brightness bridge never puts the touch IC to sleep (ONEIOS_TSP_OFF=0)
+  bool  sm8850_full_bridges; // explicit SM8850 stopped-Framework bench: bridges=1 + exclusive raw touch, under root admission
   char  input_script[512];  // a file of scripted touches and keys (input_script.c), "" = none
   char  pen[8];             // pen=off (the default until a phone session proves it) | auto: the host's pen digitizer (pen.c,
                             // xh_pen_lookup) or the script's pen as the guest's pen device /arm-io/input-1, and oneios-pen=1
@@ -113,6 +115,8 @@ typedef struct {
   int   perf_log;           // perf.c: seconds between two "perf:" reports; 0 = only at the stop and on SIGQUIT; -1 = unset (30)
   int   spin_host, spin_task;   // task.c: microseconds a vCPU (spin-host) and an iOS thread (spin-task) spin for the other
                             // side of a hand-off before they sleep in a futex; -1 = unset (the defaults in task.c)
+  bool  cpu_affinity_bench; // strictly bench/shm/exclusive-touch/bridges=0: opt-in one host core per vCPU + its guest threads;
+                             // only sched_setaffinity on our threads (no cpu governor/uclamp/frequency/thermal mutations)
   int   cpu_pin;            // main.c: a vCPU and the iOS thread it runs share one host CPU of the vCPU's mask: 1, 0, -1 = unset (1);
                             // 2 = also with no CPU plan (a bench run): vCPU i on host CPU i
   int   map_defer;          // task.c: task_map orders ride on the next release of one of the task's threads: 1, 0, -1 = unset (1)
@@ -123,6 +127,7 @@ typedef struct {
                             // "virtual" (no controller, transport 10), "hidl" (the phone's controller, transport 1, H4)
                             // or "sim" (a stand-in controller, bridges/bt/hci_sim.c, transport 1: a boot with no phone;
                             // works with the bridges off)
+  int   haptics_native_impacts; // explicit session opt-in: 1 enables Treble HAL presets and guest boot arg; 0 off, -1 unset
   char  haptics[8];         // "auto" (the phone's force-feedback device when the bridges are on), "off" (none: the guest
                             // has no actuator, no Actuator audio device, no /product/haptics) or "sim" (a stand-in
                             // actuator, bridges/haptics/haptic.c, that counts and logs: a boot with no phone; works
@@ -221,6 +226,7 @@ xh_panel_mode xh_display_mode(const xh_config *c, const xh_panel_mode *panel);
 // offline-legacy-unit-scale=SCALE (/chosen display-scale) and sheng-vsync=HZ (the vsync tick and, above 60 Hz,
 // the refresh properties). -1: no room.
 int  xh_display_boot_args(char *args, size_t size, unsigned scale, unsigned hz, unsigned format);
+int  xh_gpu_boot_args(char *args, size_t size, bool drm_native);
 // True when the boot arguments' owner-hide-vmm=NAME[,NAME...] (the kernel's per-process vmm-present switch) names
 // `name`. xnuhost warns for bluetoothd: 24A446's bluetoothd crashes in a loop with the virtual machine hidden.
 bool xh_boot_args_hides_vmm_from(const char *args, const char *name);
@@ -637,10 +643,13 @@ void  xh_display_close(void);
 // Input (input.c): /dev/input/event* into the virtio-input device; with `pen` (NULL: none) the pen's device too, read on
 // the same thread into its own guest device (pen.c).
 struct xh_input_pen;
-int   xh_input_start(xh_virtio *dev, const struct xh_input_pen *pen, unsigned width, unsigned height);
+int   xh_input_start(xh_virtio *dev, const struct xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive);
 void  xh_input_stop(void);
 // The display showed a guest frame (display.c): the end of input.c's touch-to-frame measurement.
 void  xh_input_frame_shown(void);
+// A candidate evdev direct touchscreen, against a native Samsung touchscreen when present.
+bool  xh_input_accept_touch(const char *name, bool direct, bool have_touch, bool native_present);
+bool  xh_input_exclusive_touch_allowed(const char *name, bool direct, bool have_touch);
 // Called on the input thread at each press of the power key (KEY_POWER down) that is passed to the guest: the brightness
 // bridge wakes the touch IC (br_bright_key). NULL: nothing.
 extern void (*xh_input_power_key)(void);
@@ -659,7 +668,7 @@ typedef struct {
 typedef struct xh_input_source {
   xh_virtio *dev;
   char       name[24];
-  bool       touch, dropping;                     // dropping: after SYN_DROPPED, until the next SYN_REPORT
+  bool       touch, dropping, power_only, suppress_volume; // exclusive bench: Power only; Volume stays with recovery
   int        fd;
   int      (*read_state)(struct xh_input_source *s, xh_input_state *state);   // 0 when read
   unsigned   slot, sent_keys, began, frame_began, drops;

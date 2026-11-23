@@ -27,7 +27,8 @@ typedef struct {
   unsigned nfreq;
   uint32_t boost_khz;                     // the highest of scaling_boost_frequencies (also in freq_khz), 0 = none listed
   uint32_t scaling_max_khz;               // scaling_max_freq when read (a cap someone set: logged, never written)
-  unsigned part;                          // MIDR part number (0xd80 A520, 0xd81 A720, 0xd82 X4), 0 = unknown
+  unsigned part;                          // MIDR part number (Arm: 0xd80 A520, 0xd81 A720, 0xd82 X4), 0 = unknown
+  unsigned implementer;                   // MIDR implementer: 0x41 Arm, 0x51 Qualcomm Oryon, 0 = unknown
   uint32_t l1d_bytes, l1i_bytes, l2_bytes, l3_bytes;
   char     type;                          // 'P' or 'E', set by br_cpu_read
 } br_host_cpu;
@@ -39,7 +40,9 @@ typedef struct {
 } br_cpu_topology;
 
 // Reads <root>/devices/system/cpu (root = "/sys" on the phone; tests pass a fixture). Returns 0, or
-// -1 when no CPU was found. CPUs of the lowest capacity are E when capacities differ, else all P.
+// -1 when no CPU was found. Lowest-capacity cores are E unless MIDR identifies
+// Qualcomm Oryon (0x51), where all physical cores are P and guest E cores are lent
+// from slower P cores by br_cpu_plan_make. Unknown MIDR remains unqualified.
 int br_cpu_read(const char *sysfs_root, br_cpu_topology *out);
 
 typedef struct {
@@ -59,9 +62,11 @@ typedef struct {
   br_vcpu  v[BR_MAX_VCPUS];
 } br_cpu_plan;
 
-// vCPUs for the guest: E vCPUs first (the boot CPU is an E core on iPhones), then P. With pin = true
-// and nvcpu == host CPUs each vCPU gets one host CPU; otherwise a vCPU may run on any core of its
-// kind and Linux places it. Returns 0, -1 on bad arguments.
+// vCPUs for the guest: E vCPUs first (the boot CPU is an E core on iPhones), then P.
+// A physical all-P host with unequal core capacities (Oryon) lends the slowest
+// cores as guest E vCPUs, retaining at least one P core. With pin=true and
+// nvcpu == host CPUs each vCPU gets one host CPU; otherwise Linux places it.
+// This is a guest topology model, NOT a host cpufreq or governor override.
 int br_cpu_plan_make(const br_cpu_topology *t, unsigned nvcpu, bool pin, br_cpu_plan *out);
 // Sets the affinity of Linux thread `tid` (0 = caller) to vCPU `index`'s mask. Returns 0 or -errno.
 int br_cpu_place(int tid, const br_cpu_plan *plan, unsigned index);
@@ -104,6 +109,9 @@ typedef struct {
   int  (*upload)(void *ctx, int id, unsigned length_ms, unsigned period_ms, unsigned magnitude);
   int  (*play)(void *ctx, int id, bool on);
   int  (*gain)(void *ctx, unsigned gain);            // 0..10000 (Samsung's scale)
+  // An EXPLICIT single impact, not a 20/50ms fragment of a long vibration.
+  // 0 and duration_ms (1..1000), or a negative errno. NULL: unsupported.
+  int  (*impact)(void *ctx, unsigned kind, unsigned *duration_ms);
   void (*close)(void *ctx);
 } br_haptic_backend;
 
@@ -120,6 +128,12 @@ br_haptic *br_haptic_open_backend(const br_haptic_backend *backend, void *ctx);
 // Vibrate from now for on_ms (0 = stop) at intensity 0..1000 and frequency_hz (0 = resonance).
 // Never blocks: the newest request replaces one that has not started.
 void br_haptic_vib(br_haptic *h, uint32_t on_ms, unsigned intensity, unsigned frequency_hz);
+// Explicit semantic impact events, using the same host-side queue as VIB and STOP.
+// Only offered after opt-in and a successful native HAL preset inventory.
+// LIGHT/medium mappings are experimental; only HEAVY has a tactile S26 acceptance.
+enum { BR_HAPTIC_IMPACT_LIGHT = 1, BR_HAPTIC_IMPACT_MEDIUM = 2, BR_HAPTIC_IMPACT_HEAVY = 3 };
+bool br_haptic_impacts_available(br_haptic *h);
+int  br_haptic_impact(br_haptic *h, unsigned kind);
 void br_haptic_stop(br_haptic *h);
 // Waits until the worker has carried out everything asked so far (tests, shutdown).
 void br_haptic_flush(br_haptic *h);
@@ -130,7 +144,7 @@ br_haptic *br_haptic_open_sim(void);
 // What reached this side: requests from the guest (vibrate, stop, and those a newer one replaced before the worker
 // started them) and what the device then did. br_haptic_report logs them as one "haptics: counters:" line; the
 // worker also logs the first 8 effects and every power of two after that.
-typedef struct { uint64_t vib, stop, replaced, played, stopped, failed; } br_haptic_stats;
+typedef struct { uint64_t vib, stop, replaced, played, stopped, failed, impacts; } br_haptic_stats;
 void br_haptic_stats_get(br_haptic *h, br_haptic_stats *out);
 void br_haptic_report(br_haptic *h);
 // The mapping, exposed for tests: iOS intensity/frequency to the effect's parameters.

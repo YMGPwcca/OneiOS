@@ -1,8 +1,15 @@
 # iOS 27.0.1 on an iPhone18,2 identity: the kernel profile
 
+**OneiOS · SM8850 · Kernel / session interface**
+
+[← Handbook](../../docs/README.md) · [Current evidence](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
+> [!NOTE]
+> Historical kernel/profile measurements in this reference are not the current SM8850 acceptance. The new physical full-run has observed guest-ready and first frame, while thermal and recovery remain unresolved.
+
 What an **iOS** profile needs compared with UniXNU's **iPadOS** 27.0.1 profile, which is the only 27.0.1 profile
 UniXNU and Droid-VM publish. Marks: **[F]** read from the linked source, **[I]** inference, **[U]** unknown until
-measured. Nothing here has booted.
+measured. This profile began as a design note; a subsequent root-only SM8850 full-run did boot iOS 27.0.1 and draw a frame. Earlier source comparisons below remain historical.
 
 Sources, at the pins of `kernel/pins.sh`:
 
@@ -27,7 +34,7 @@ The profile itself: `kernel/unixnu/profiles/os/ios-27.0.1-24A446/` (OS layer) an
 - [F] Upstream's iPadOS 27 OS series does not apply on upstream's arm64e series alone: `zzz-boot-progress.patch`
   expects a hunk (`XNU_SHENG_PMGR`) that upstream's SM8550 SoC series adds (tried 2026-11-10 at `1446f44`).
 - [F] Droid-VM's board patches apply on its fork's series (all 24) and not on upstream's (10 of 24 fail).
-- [F] That fork plus that board is what brought iPadOS 27.0.1 up to the lock and home screen on SM8650
+- [F] That fork plus that board is what brought iPadOS 27.0.1 up to the lock and home screen on earlier reference SoC
   ([state table](https://github.com/Droid-VM/UniXNU-droidvm/blob/f9121cdc629d64cbd148980cdeef1f069c7f0068/README.md#state)).
 
 So OneiOS builds from `external/Droid-VM-UniXNU`: its arm64e series (68 patches of `patches/xnu-12377`), the four
@@ -90,9 +97,9 @@ kexts) is made there.
 
 | | iPadOS board [F] | iOS |
 |---|---|---|
-| Canvas | 2048x2732 pixels, 1024x1366 points | the S24 Ultra panel's native mode, 1440x3120 pixels: 480x1040 points at @3x (default) or 720x1560 at @2x. (iPhone18,2's own is 1320x2868, 440x956 points.) `docs/userland.md` 5.1 |
+| Canvas | 2048x2732 pixels, 1024x1366 points | the earlier reference device panel's native mode, 1440x3120 pixels: 480x1040 points at @3x (default) or 720x1560 at @2x. (iPhone18,2's own is 1320x2868, 440x956 points.) `docs/userland.md` 5.1 |
 | Scale | `offline-legacy-unit-scale=2`; QuartzCore runs any panel taller than 1080 pixels, and every panel of a virtual device, at @2x whatever `display-scale` says | 3 or 2 (xnuhost's `scale`). The same QuartzCore rule holds for the phone (one cache): @2x unchanged, @3x by two text fixups xnuhost adds; not verified running |
-| Refresh | `droidvm-display-hz=120`, `ca-triple-buffer=1` | the S24 Ultra's panel is 1440x3120 at 1 to 120 Hz: 120 [I] |
+| Refresh | `droidvm-display-hz=120`, `ca-triple-buffer=1` | the earlier reference device's panel is 1440x3120 at 1 to 120 Hz: 120 [I] |
 | Orientation | landscape and portrait, pointer rendering fixes | portrait only at first; the iPad pointer work (`0c3fa5d`, `b7396ee`, `8d8f023`) is dropped |
 | Backend | `GopFramebuffer` under the original `IOMobileFramebufferLegacy` | `HostDisplay` (booter) under the same original class; the boot arguments `offline-mobile-graphics-load=1`, `offline-mobile-graphics-client=1`, `offline-legacy-register=1`, `offline-legacy-phase=4`, `offline-legacy-pm=1`, `offline-legacy-validate=1`, `offline-legacy-transfer=1`, `offline-key-events=1` carry over; `offline-legacy-gop=1` and `offline-legacy-cpu-present=1` are the GOP backend's |
 
@@ -127,7 +134,7 @@ kexts) is made there.
 |---|---|
 | `non-apple-vcpu-park`, `non-apple-vcpu-start-flush`, `non-apple-idle-wfi`, `non-apple-sigp-recover` | Gunyah vCPU behaviour (WFE, start-up caches, lost IPIs). xnuhost's vCPUs are Linux threads |
 | `droidvm-sched-trace`, `droidvm-early-panic` | the rig's readers through guest RAM. xnuhost has the host hooks |
-| Mi A3 (laurel_sprout) series of iOSPlus10 | makes iOS 26 run on ARMv8.0 cores without PAC (instruction emulation, shared-cache rewrite). The S24 Ultra has PAC; not ported (owner's decision, `docs/agents.md`) |
+| Mi A3 (laurel_sprout) series of iOSPlus10 | makes iOS 26 run on ARMv8.0 cores without PAC (instruction emulation, shared-cache rewrite). The earlier reference device has PAC; not ported (owner's decision, `docs/agents.md`) |
 | iOSPlus10 `patches/xnu-12377/0001`-`0004` (NEGRONI machine config and drivers) | the OnePlus 10 Pro's SoC layer on darwin-xnu-build's tree. Same role as UniXNU's `BCM2837` layer, which the Apple kexts are prelinked against |
 
 ### iOSPlus10's PAC path (OnePlus 10 Pro, stage 2)

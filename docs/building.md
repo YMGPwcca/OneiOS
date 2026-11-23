@@ -1,5 +1,16 @@
 # Building and testing OneiOS
 
+> [!IMPORTANT]
+> **Current S26 Ultra policy:** CachyOS local-first tests on `YMGPwcca/OneiOS` branch `feat/oneios-sm8850-m3q`; `app/` is the pinned `YMGPwcca/OneOS` commit from `feat/sm8850-reboot-smoke`. The release workflow is **manual, self-hosted and runtime-only**. Older `akshaynexus`, `oneios`, APK/macOS CI and main-tag sections below are **historical**, not instructions for this branch.
+
+
+**OneiOS · Galaxy S26 Ultra / SM8850 · Build and test reference**
+
+[← Handbook](README.md) · [Current status](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md)
+
+> [!NOTE]
+> This is a detailed implementation reference. Any old example or externally sourced configuration must be checked against the live SM8850 firmware; a passing host build or a historical source reference is not a new phone acceptance.
+
 Everything builds on a Linux x86_64 PC, iOS user-space code included (section 9); no Mac is needed. The runtime
 (section 4: xnuhost, the helpers, the phone tools, the package) also builds on a Mac, and its host tests run from
 the Mac in an arm64 Linux container. Long steps run in tmux with `scripts/bg.sh NAME CMD...` (log in `logs/NAME.log`, exit
@@ -9,6 +20,56 @@ inside the command (`scripts/bg.sh x env VAR=1 cmd`).
 Nothing of Apple's is ever committed or released: the IPSW parts, the image set and `kernel.kc` stay in `inputs/`
 and `out/`.
 
+## Standalone CachyOS local CI (SM8850, 2026-11-16)
+
+On the SM8850 branch, **CI no longer runs through GitHub Actions**. GitHub
+remains a Git remote for source code only. The CachyOS PC checks the trusted
+`feat/oneios-sm8850-m3q` branch on a user-level systemd timer and builds
+each new commit in a clean detached Git worktree. No self-hosted runner,
+GitHub runner registration token or inbound port is needed.
+
+Once, on the owner's CachyOS machine with this checkout at
+`~/projects/OneiOS`: 
+
+```sh
+sudo pacman -S --needed qemu-user shellcheck binutils
+rustup target add aarch64-linux-android
+cd ~/projects/OneiOS
+git pull --ff-only
+scripts/install-ci-timer.sh
+systemctl --user start oneios-local-ci.service  # optional immediate first run
+```
+
+The timer polls for a new commit approximately one minute after the
+previous CI run finishes. It runs `scripts/ci-local.sh all 0.0.0-ci`, which
+requires NDK 28.2.13676358, SDK build-tools `d8`, Java, Rust's Android target
+and `qemu-aarch64`. The script fetches the pinned `virglrenderer`, runs the
+host runtime and kernel regressions, the driver's and userland's portable host tests (including PCM native-impact classification), builds the ARM64 runtime, then verifies
+its ELF dependencies and SHA-256. No device access, ADB, root or OneOS
+session switch is performed automatically. A binderfs-unavailable test can
+still be skipped; that skip must not be reported as a hardware PASS.
+
+Results are stored outside the repository at
+`~/oneios-m3q-ci/standalone/runs/<commit>/run.log` and `artifacts/`,
+with `last-result.txt` recording the last tested commit, exit code and verdict.
+
+```sh
+cd ~/projects/OneiOS
+scripts/ci-watch.sh status     # latest PASS/FAIL and log path
+scripts/ci-watch.sh force      # retry the same commit after fixing dependencies
+scripts/ci-local.sh test       # manually run host tests without packaging
+journalctl --user -u oneios-local-ci.service -n 100 --no-pager
+systemctl --user list-timers oneios-local-ci.timer
+```
+
+Do not run the timer as root. If the CI source or build dependencies are not
+fully trusted, use a separate unprivileged Unix user or isolated VM: a plain
+worktree is **build isolation, not a security sandbox**. GitHub Actions
+cannot see the local result, and neither can a remote coding agent without
+a separately authorized log-sharing mechanism. The user can share
+`run.log` and `result.txt` to review failures. The timer runs while the
+user's systemd user manager is active; persistent operation across logout
+requires the owner to enable user lingering separately.
 ## 0. Prerequisites
 
 | Tool | For | Notes |
@@ -107,9 +168,13 @@ scripts/bg.sh kernel-hosted env HOSTED_OUT=me kernel/build-hosted.sh
   `llvm-objdump -d --disassemble-symbols=_oneios_drivers_start xnu.macho | grep oneios_hid_input_start`.
 - `HOSTED_OUT=<name>` gives you your own tree and output; without it the build uses the default tree
   (`out/kernel-hosted`, `out/kernel/current-hosted/`), which belongs to the lead.
-- The build compiles UniXNU's sources from `external/` (`scripts/setup/get-references.sh`): among them
-  `NativeHidInput` at 24f1f3f for the touch screen and buttons; a checkout from before 2026-11-11 is older and the
-  build says so (remove `external/NativeHidInput` and fetch again).
+- The build calls `kernel/fetch.sh` for the pinned UniXNU base and
+  `scripts/setup/get-references.sh` for the pinned GPU, HID and display source dependencies
+  (`NativeHidInput`, `NativeMobileDisplay`, `NativeAdreno`, `NativeMetal`, `AdrenoPM4`, `ArmSmmu4K`).
+  An empty fresh `external/` is supported: no separate manual reference-fetch step is required.
+  `NativeMetal/OriginalAcceleratorABI.h` is needed for the Adreno/Metal kernel accelerator archive.
+  Existing reference checkouts are never silently advanced; if one is at an older pin (e.g.
+  `NativeHidInput` before 24f1f3f), inspect and replace that checkout explicitly before rebuilding.
 - Incremental work on one patch: `kernel/hosted-dev.sh` (see [kernel/patches/oneios-hosted/README.md](../kernel/patches/oneios-hosted/README.md)).
 - The reference for the prelink (optional, worth thousands of paired functions; rebuild only when the source
   changes): `XNU_FILESET_REFERENCE=1` in the build's command. It lands next to the kernel as
@@ -500,6 +565,19 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
 
 ## 6. On the phone
 
+### Native haptic test preflight
+
+After standalone CI passes for the current runtime commit, use
+`oneios-tool phone status`, `phone sums`, `phone image-check` and
+`cycle --dry-run` to inspect the staged phone image and rollback path.
+Do not run `phone switch` until the image is known to contain the
+matching guest kernel, the return scripts have been verified, and the
+image manifest includes the opt-in `xnuhost.conf`. In that config,
+`hw-backend-haptics=treble`, `hw-backend-fallback=0`, and
+`haptics-native-impacts=1` enable host and guest native preset opt-in
+without overriding essential guest boot args. See `docs/booter.md`.
+The automatic CI watcher must never perform these phone operations.
+
 ### Test cycle on the phone
 
 **Phone and app work goes through `oneios-tool`** (`phone`, `app`, `cycle`; `tools/oneios-tool/README.md` has every
@@ -508,9 +586,7 @@ so and fix or extend the CLI. **The CLI has not run on the real phone yet** (wri
 phone on a box without one, 2026-11-12): until its first run there, the commands of "The same by hand" below are
 the ones that were run, and `scripts/phone/stage.sh` stays.
 
-The app's checkout is the submodule `app/` (section 7): clone with `git clone --recurse-submodules`, and
-`git submodule update --remote app` brings it to the head of the fork's branch `oneios` before an `app` or `cycle`
-build.
+The `app/` checkout is a **pinned gitlink**, so use `git submodule sync -- app && git submodule update --init app` for the S26 Ultra regression suite. `--remote` floats to another revision and is not a reproducible CI operation.
 
 ```sh
 T=tools/oneios-tool/target/release/oneios-tool        # cargo build --release --manifest-path tools/oneios-tool/Cargo.toml
@@ -577,7 +653,7 @@ agents** until the two are one.
 ### The same by hand (when the CLI fails or lacks a command)
 
 What the area agents followed to try a build in a real session (bringup, 2026-11-12; every command was run). The
-phone is the S24 Ultra on adb, KernelSU root, the OneOS fork 0.4.86 (versionCode 115) with its stage at
+phone is the earlier reference device on adb, KernelSU root, the OneOS fork 0.4.86 (versionCode 115) with its stage at
 `/data/local/tmp/oneios`. One agent at a time: hold the phone lock first (the coordinator's `phone-lock.sh`), and
 restore the baseline (`phone-baseline.txt` next to that script) before you release it.
 
@@ -701,22 +777,18 @@ URLs are also in `logs/serve-urls.txt`; each tunnel's log is `logs/serve-tN.log`
 
 ### The checkout: the submodule `app/`
 
-The fork (`https://github.com/akshaynexus/OneOS`, branch `oneios`) is the submodule `app/` of this repository
-(`.gitmodules`: `branch = oneios`). Clone both at once, or add it to a checkout you have:
+The S26 Ultra companion is [YMGPwcca/OneOS](https://github.com/YMGPwcca/OneOS), branch `feat/sm8850-reboot-smoke`, at an **exact reviewed gitlink commit**. It is not the original upstream `akshaynexus/OneOS` branch `oneios`.
 
 ```sh
-git clone --recurse-submodules https://github.com/akshaynexus/OneiOS     # app/ at the commit OneiOS recorded
-git submodule update --init app            # an existing checkout: the same
-git submodule update --remote app          # app/ at the head of the fork's branch oneios (what CI builds)
-git -C app switch oneios                   # to work on the fork in app/: a branch instead of a detached head
+git clone --branch feat/oneios-sm8850-m3q --recurse-submodules https://github.com/YMGPwcca/OneiOS
+# Or within an existing S26 checkout:
+git pull --ff-only origin feat/oneios-sm8850-m3q
+git submodule sync -- app
+git submodule update --init app
+git submodule status app
 ```
 
-`--remote` moves only your `app/`; `git status` then shows `app` as modified. The commit OneiOS records for
-`app/` moves forward only in a commit made to pin it (`git commit -m "app: pin the fork at <sha>" --
-app`). CI does not use the recorded commit: every build takes the head of `oneios` (`git submodule update --init
---remote app`, [releases.md](releases.md) "CI and releases"). Nothing of OneiOS walks into `app/`:
-`git ls-files` (the CI checks, the host-test loop, `check-tracked-files.sh`) lists it as one entry, the runtime
-package takes `runtime/`, `kernel/` and `LICENSE` only, and the runtime job never checks it out.
+Avoid `git submodule update --remote app` during CI or phone preflight. Changing the OneOS dependency requires separately reviewing and committing the updated `app/` gitlink. The SM8850 OneiOS release workflow is runtime-only, not an APK build.
 
 With `oneios-tool` (first choice; **not used for a real build or install yet**: the Linux PC builds no app and has no
 JDK 21 or Android SDK, by the owner's decision, so the tool was tested there with stand-ins only):
@@ -736,14 +808,12 @@ OneiOS checkout (the submodule: the default); `app/` of the OneiOS main checkout
 `OneOS` beside the OneiOS main checkout (the clone from before the submodule). A checkout named by hand comes before
 `app/`, and a named folder that is no checkout is an error, not a reason to take `app/`. A checkout is a folder with
 `app-android/app/build.gradle.kts` and `switcher/assets/oneios_switch.sh`, whatever its name. An empty `app/` (the
-submodule is not initialised) is not one: the tool says so with the command, `git submodule update --init --remote app`,
+submodule is not initialised) is not one: the tool says so with the command, `git submodule update --init app`,
 and looks further; with nothing found it ends with status 1 and lists the places. Each command's first line says
 which checkout and how it was found; `$T app dir` prints the path alone. `cycle` (section 6) uses the same lookup.
 By hand, and what the tool runs:
 
-Repo `akshaynexus/OneOS`, branch `oneios`. Every OneiOS pull request, push to `main` and release builds the APK
-from the head of that branch (`./gradlew test assembleFullDebug`, and `./gradlew test` on macOS; the job `apk` of
-`.github/workflows/release.yml`, [releases.md](releases.md)). A push to `oneios` itself runs the fork's own
+**Historical upstream APK CI only:** former `akshaynexus/OneOS` branch `oneios` built app APKs with Gradle. The S26 Ultra OneiOS release workflow packages **only the ARM64 runtime** and never checks out `app/`. A push to `oneios` itself runs the fork's own
 `.github/workflows/oneios-apk.yml`: it builds the full debug APK (the workflow's own `GITHUB_TOKEN` reads the SESL
 packages), runs the unit tests and publishes the prerelease `oneios-<version>` on the fork (0.4.75 is the first
 with the Hardware checks screen). Locally: a `read:packages` token in `~/.config/twidget/github.properties`
@@ -829,10 +899,7 @@ second time).
 
 ## 8. Releases
 
-A tag `vN.N.N` on `main` (or a dispatch with a version) runs `.github/workflows/release.yml`, which builds the
-runtime package with the pinned NDK and the fork's APK (submodule `app/`, the head of `oneios`) on two runners at
-once, and attaches both with their `.sha256` to the release. No kernel, no image, no package set. See
-[releases.md](releases.md).
+**Current S26 feature-branch scope:** `.github/workflows/release.yml` runs **manually** on the trusted self-hosted CachyOS runner, packages the ARM64 runtime only, and does **not** publish an APK. Historical upstream tags and commands here are not release instructions; see [releases.md](releases.md).
 The first release is [`v0.1.0`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.0) (2026-11-10).
 
 ## 9. iOS user-space code (executables, dylibs, bundles): Xcode on macOS, a cross toolchain on Linux

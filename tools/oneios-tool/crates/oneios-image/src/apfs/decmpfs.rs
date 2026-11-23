@@ -1,7 +1,7 @@
 //! Files kept compressed (decmpfs): the `com.apple.decmpfs` attribute holds a 16-byte header (`fpmc`, the kind,
 //! the plain size) and, for the inline kinds, the data; the other kinds keep the data in the resource fork, in
 //! chunks of 64 KiB of plain bytes. Kinds: 3 and 4 zlib, 7 and 8 LZVN, 9 and 10 stored, 11 and 12 LZFSE, 13 and 14
-//! LZBITMAP (the odd one inline, the even one in the resource fork). iOS 27's OS volumes use LZBITMAP for most
+//! LZBITMAP, 15 and 16 Apple-framed LZ4 (the odd one inline, the even one in the resource fork). iOS 27's OS volumes use LZBITMAP for most
 //! files. The layouts are the ones apfs-fuse reads, and every compressed file of the 24A446 SystemOS and AppOS
 //! images comes out as apfs-fuse gives it (tools/oneios-tool/README.md "The APFS reader").
 //!
@@ -26,7 +26,49 @@ pub fn header(attr: &[u8]) -> Option<(u32, u64)> {
 }
 
 pub fn in_resource_fork(kind: u32) -> bool {
-    matches!(kind, 4 | 8 | 10 | 12 | 14)
+    matches!(kind, 4 | 8 | 10 | 12 | 14 | 16)
+}
+
+/// Apple's LZ4 framing wraps raw blocks and permits matches into the preceding output.
+/// <https://developer.apple.com/documentation/compression/compression_lz4>
+fn apple_lz4(mut src: &[u8], want: usize) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    loop {
+        let magic = src.get(..4).ok_or("truncated Apple LZ4 block header")?;
+        if magic == b"bv4$" {
+            if src.len() != 4 || out.len() != want {
+                return Err("Apple LZ4 frame has trailing bytes or the wrong decoded size".into());
+            }
+            return Ok(out);
+        }
+        let size = u32_le(src, 4).ok_or("truncated Apple LZ4 decoded size")?;
+        if size == 0 || size > want - out.len() {
+            return Err("Apple LZ4 block exceeds the declared decoded size".into());
+        }
+        match magic {
+            b"bv4-" => {
+                let (block, rest) = src[8..].split_at_checked(size).ok_or("truncated stored Apple LZ4 block")?;
+                out.extend_from_slice(block);
+                src = rest;
+            }
+            b"bv41" => {
+                let packed = u32_le(src, 8).ok_or("truncated Apple LZ4 encoded size")?;
+                let (block, rest) = src[12..].split_at_checked(packed).ok_or("truncated compressed Apple LZ4 block")?;
+                let previous = out.len();
+                out.try_reserve(size).map_err(|e| format!("Apple LZ4 output allocation: {e}"))?;
+                out.resize(previous + size, 0);
+                let (history, decoded) = out.split_at_mut(previous);
+                let dictionary = &history[history.len().saturating_sub(CHUNK)..];
+                let actual = lz4_flex::block::decompress_into_with_dict(block, decoded, dictionary)
+                    .map_err(|e| format!("Apple LZ4: {e}"))?;
+                if actual != size {
+                    return Err(format!("Apple LZ4 block decoded to {actual} bytes, expected {size}"));
+                }
+                src = rest;
+            }
+            _ => return Err("unknown Apple LZ4 block marker".into()),
+        }
+    }
 }
 
 fn zlib(src: &[u8], want: usize) -> Result<Vec<u8>, String> {
@@ -73,6 +115,7 @@ fn piece(kind: u32, src: &[u8], want: usize) -> Result<Vec<u8>, String> {
             zbitmap::decompress(src, &mut out, want).map_err(|e| format!("LZBITMAP: {e}"))?;
             out
         }
+        15 | 16 => apple_lz4(src, want)?,
         _ => return Err(format!("decmpfs kind {kind} is not known")),
     };
     if out.len() != want {
@@ -91,6 +134,9 @@ pub fn decode(attr: &[u8], fork: impl FnOnce() -> Result<Vec<u8>, String>) -> Re
     }
     let fork = fork()?;
     let chunks = size.div_ceil(CHUNK);
+    if kind == 16 && (u32_le(&fork, 0) != Some(4 * (chunks + 1)) || u32_le(&fork, 4 * chunks) != Some(fork.len())) {
+        return Err("Apple LZ4 resource fork has an invalid offset table".into());
+    }
     // where chunk k is in the fork: (start, length)
     let place = |k: usize| -> Option<(usize, usize)> {
         if kind == 4 {
@@ -106,7 +152,8 @@ pub fn decode(attr: &[u8], fork: impl FnOnce() -> Result<Vec<u8>, String>) -> Re
             Some((start, u32_le(&fork, 4 * k + 4)?.checked_sub(start)?))
         }
     };
-    let mut out = Vec::with_capacity(size);
+    let mut out = Vec::new();
+    out.try_reserve_exact(size).map_err(|e| format!("decmpfs output allocation: {e}"))?;
     for k in 0..chunks {
         let want = (size - k * CHUNK).min(CHUNK);
         let (start, len) = place(k).ok_or_else(|| format!("the resource fork has no chunk {k} of {chunks}"))?;
@@ -137,6 +184,32 @@ mod tests {
 
     fn none() -> Result<Vec<u8>, String> {
         Err("no fork".into())
+    }
+
+    #[test]
+    fn apple_lz4_decmpfs() {
+        const STORED: &[u8] = b"bv4-\x04\0\0\0abcd";
+        // Match at offset 4 into the preceding block, then end with five literals.
+        const COMPRESSED: &[u8] = b"bv41\x09\0\0\0\x09\0\0\0\x00\x04\0\x50efghi";
+        let frame = [STORED, COMPRESSED, b"bv4$"].concat();
+        assert_eq!(decode(&attr(15, 13, &frame), none).unwrap(), b"abcdabcdefghi");
+        assert!(decode(&attr(15, 12, &frame), none).is_err());
+        assert!(decode(&attr(15, 13, &frame[..frame.len() - 4]), none).is_err());
+        assert!(decode(&attr(15, 13, &[frame.as_slice(), b"x"].concat()), none).is_err());
+
+        let mut first = b"bv4-\0\0\x01\0".to_vec();
+        first.resize(8 + CHUNK, 0x5a);
+        first.extend_from_slice(b"bv4$");
+        let offsets = [12u32, 12 + first.len() as u32, 12 + first.len() as u32 + frame.len() as u32];
+        let mut fork: Vec<u8> = offsets.into_iter().flat_map(u32::to_le_bytes).collect();
+        fork.extend_from_slice(&first);
+        fork.extend_from_slice(&frame);
+        let attr = attr(16, CHUNK + 13, &[]);
+        let plain = decode(&attr, || Ok(fork.clone())).unwrap();
+        assert_eq!(&plain[..CHUNK], vec![0x5a; CHUNK]);
+        assert_eq!(&plain[CHUNK..], b"abcdabcdefghi");
+        fork[0] = 0; // An offset into the fork's table.
+        assert!(decode(&attr, || Ok(fork)).is_err());
     }
 
     #[test]

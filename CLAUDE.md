@@ -1,9 +1,15 @@
 # Working on OneiOS
 
-Goal: iOS 27 (iPhone18,2, 27.0.1 `24A446`) booted next to One UI on a rooted Galaxy S24 Ultra (SM-S928, SM8650,
-KernelSU), switched to and back the way OneOS switches Androids. XNU runs as a Linux process (xnuhost) on One UI's
+**OneiOS · Galaxy S26 Ultra / SM8850 · Contributor rules**
+
+[← Handbook](docs/README.md) · [Current evidence](docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
+Goal: iOS 27 (iPhone18,2, 27.0.1 `24A446`) as a hosted XNU guest on the rooted Galaxy S26 Ultra
+(SM-S948B / m3q / SM8850, S948BXXS4BZIG). Physical guest-ready and first frame are observed,
+not proof of thermal safety or fully unassisted reboot-return. The ordinary OneOS app switch
+remains blocked for SM8850. XNU runs as a Linux process (xnuhost) on One UI's
 kernel. Read first: [README.md](README.md) (status), [docs/architecture.md](docs/architecture.md),
-[docs/building.md](docs/building.md), and [docs/agents.md](docs/agents.md) (the team board) when several agents work.
+[docs/building.md](docs/building.md), and [docs/agents.md](docs/agents.md) (current contributor policy).
 
 ## Keep the docs up to date (every change, same commit)
 

@@ -1,5 +1,9 @@
 # 0002-return-to-user-copyio: user mode and copyio of the hosted kernel
 
+**OneiOS · SM8850 · Kernel / driver implementation**
+
+[← Handbook](../../../docs/README.md) · [Latest evidence](../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: fable-user. Date: 2026-11-10. A diff on top of `0001` + `0003` (it is last in `series`).
 No change to `hostcall.h` and none to xnuhost.
 

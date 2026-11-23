@@ -8,6 +8,7 @@
 # needs (kernelcache, device tree, BuildManifest; about 24 MB) are fetched with HTTP range requests into
 # out/kernel-inputs/<build>/ipsw/ (scripts/fetch/fetch.sh --only), so the kernel needs no 10.6 GiB download.
 # INPUTS=DIR reads the members from DIR instead (and fetches into it when they are missing).
+# OUT=DIR keeps the decoded outputs and checksums separate from the default build.
 # Tools: oneios-tool (tools/oneios-tool, Rust: `image profile`, `image im4p` with LZFSE decoded in Rust, `prelink pin`;
 # built when missing or stale, ONEIOS_TOOL=PATH for another, IM4P_TOOL=PATH for the decoder alone). It replaced
 # scripts/image/imagetool.py here on 2026-11-13 (which started the `lzfse` program for the payload: the same files
@@ -26,7 +27,7 @@ tool() { "$ONEIOS_TOOL" image "$@"; }
 im4p=("${IM4P_TOOL:-$ONEIOS_TOOL}" image im4p)
 [ -x "${im4p[0]}" ] || die "IM4P_TOOL=${IM4P_TOOL:-} is not a program"
 eval "$(tool profile "$1" --shell)"
-O=$ROOT/out/kernel-inputs/$P_BUILD
+O=${OUT:-$ROOT/out/kernel-inputs/$P_BUILD}
 IN=${INPUTS:-$ROOT/inputs/$P_BUILD}
 have_members() {
   local role member name aea size out

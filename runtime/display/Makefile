@@ -27,9 +27,9 @@ $(A)/oneios-display: src/launcher.c
 # on the phone. DISPLAY_LIBS is a variable for ../package/elf-check-test.sh: it links this rule with 1f7dd1f's
 # libraries (`-landroid -lm`) and expects the link to fail.
 DISPLAY_LIBS := -landroid -lnativewindow -lm
-$(A)/liboneios-display.so: src/jni.c src/xhd.c $(XHD_H)
+$(A)/liboneios-display.so: src/jni.c src/xhd.c src/frame_perf.c src/frame_perf.h $(XHD_H)
 	@mkdir -p $(A)
-	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) -fPIC -shared -Wl,-soname,liboneios-display.so $(ANDROID_SO_LDFLAGS) src/jni.c src/xhd.c $(DISPLAY_LIBS) -o $@
+	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) -fPIC -shared -Wl,-soname,liboneios-display.so $(ANDROID_SO_LDFLAGS) src/jni.c src/xhd.c src/frame_perf.c $(DISPLAY_LIBS) -o $@
 $(A)/displayctl: src/displayctl.c src/xhd.c $(XHD_H)
 	@mkdir -p $(A)
 	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) -static src/displayctl.c src/xhd.c -lm -o $@
@@ -44,6 +44,10 @@ $(A)/oneios-display.dex: java/OneiOSDisplay.java
 $(H)/test_display: tests/test_display.c src/xhd.c $(XHD_H)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) -Isrc -fsanitize=address,undefined tests/test_display.c src/xhd.c -lpthread -lm -o $@
+$(H)/test_frame_perf: tests/test_frame_perf.c src/frame_perf.c src/frame_perf.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) -Isrc -fsanitize=address,undefined tests/test_frame_perf.c src/frame_perf.c -lm -o $@
+
 $(H)/displayctl: src/displayctl.c src/xhd.c $(XHD_H)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) src/displayctl.c src/xhd.c -lm -o $@
@@ -53,8 +57,9 @@ $(H)/modes/TestModes.class: tests/TestModes.java java/OneiOSDisplay.java
 	@mkdir -p $(H)/modes
 	$(JAVAC) --release 11 -Xlint:all -Werror -d $(H)/modes java/OneiOSDisplay.java tests/TestModes.java
 
-test: $(H)/test_display $(H)/displayctl $(H)/modes/TestModes.class
+test: $(H)/test_display $(H)/test_frame_perf $(H)/displayctl $(H)/modes/TestModes.class
 	$(H)/test_display $(H)/displayctl
+	$(H)/test_frame_perf
 	$(JAVA) -cp $(H)/modes TestModes
 
 clean:

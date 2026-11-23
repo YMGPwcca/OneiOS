@@ -1,5 +1,9 @@
 # drivers/brightness: iOS's backlight service and light sensor
 
+**OneiOS · Galaxy S26 Ultra / SM8850 · Implementation reference**
+
+[← Handbook](../../docs/README.md) · [Current evidence](../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: fable-brightness. The host side: `runtime/bridges/brightness/`. No kernel patch: the service is made by
 hand from `oneios_drivers_start()`, like the vibrator.
 

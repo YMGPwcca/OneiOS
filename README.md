@@ -1,114 +1,86 @@
 # OneiOS
 
-iOS 27 next to One UI on a rooted Samsung Galaxy S24 Ultra (SM-S928, SM8650), switched to and back
-the way [OneOS](https://github.com/fahadalijaved/OneOS) switches to another Android: nothing flashed,
-the image lives in a folder, One UI's kernel keeps running.
+**iOS 27 on Galaxy S26 Ultra · hosted XNU · experimental research**
 
-OneOS's guests are Android systems that run unchanged on One UI's Linux kernel. iOS's userland needs
-Apple's kernel (XNU), so OneiOS runs a source-built XNU **as a process on One UI's kernel**
-(`runtime/xnuhost`): iOS's processes are Linux processes whose system calls and faults go to it. The
-image, the switch and the return stay OneOS-shaped. How it fits together: [docs/architecture.md](docs/architecture.md).
-How to build and test it: [docs/building.md](docs/building.md).
+[Documentation](docs/README.md) · [Current evidence](docs/SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](docs/TODO.md) · [Architecture](docs/architecture.md) · [Local build](docs/building.md)
 
-## Status
+> [!IMPORTANT]
+> **Target:** Galaxy S26 Ultra **SM-S948B / m3q / SM8850**, firmware **S948BXXS4BZIG**. This repository is a laboratory prototype, not a consumer iOS installation or an approved OneOS app switch.
 
-**Experimental. On the phone (S24 Ultra, 2026-11-11) the boot reaches launchd, backboardd and SpringBoard, and backboardd's first frames are on the panel: the Apple boot logo at 1440x3120. Whether it goes on to SpringBoard's own screen is not yet seen.**
+## At a glance
 
-Touch on the phone: in that session the DriverKit event driver was waited for, so the touch screen and the buttons
-reached backboardd only 233 s after they started (then 447 events, 11 contacts). The kernel now gives both to
-Apple's kernel event driver at once (`kernel/patches/oneios-hosted/hid/README.md`, "Which event driver"); built,
-not yet run on the phone. Whether a swipe up unlocks is not known.
+| Area | Confirmed observation | Remaining limit |
+| :--- | :--- | :--- |
+| **Guest boot** | iOS 27.0.1 (24A446), guest-ready and first frame on the phone | Booted does not mean a responsive UI |
+| **Framework takeover** | Android Framework stopped under a separate root-only, explicitly risk-acknowledged experiment | **OneOS app switching remains blocked** on SM8850 |
+| **Guest lifetime** | ~600.6 s from `xnuhost` telemetry | Precise deadline requester and fully unassisted return not proven |
+| **CPU** | Eight host CPUs available (mask `0–7`) | No evidence of eight independent host-core assignments |
+| **GPU** | KGSL/drm2kgsl imports and real fence activity | No Vulkan conformance or sustained FPS certification |
+| **Memory** | 4 GiB prefaulted/locked, 0 MiB guest swapped in captured sample | Page-table and GPU allocations still require study |
+| **Performance** | iOS drew and accepted the experimental guest session | **Severe lag and heat reported**; not accepted |
+| **Recovery** | Android boot-complete and OneOS reboot reason observed afterward | Watchdog handoff and unattended normal return remain **unverified** |
 
-Second phone session (2026-11-11, with the Metal plug-in mounted): touch attached at once, the battery was
-published, backboardd opened the AGX device user client, and the kernel then died in a data abort: a wrong pair in
-the collection (`IOMemoryDescriptor::setOwnership` bound to `CreateMapping`, `kernel/prelink/README.md`). Corrected;
-the collection builds; not yet run on the phone.
+> [!CAUTION]
+> **Do not repeat the 600-second full takeover just to benchmark performance.** The current full-session path uses `bench/bridges=0`, so OneiOS's standalone thermal bridge is inactive. Kernel/firmware thermal limits still apply, but a separate scoped thermal guard and a stronger recovery-evidence gate are required before another long test.
 
-Later sessions (2026-11-11): with the corrected collection and the Metal plug-in's grant the phone reaches the
-lock screen and, after unlock, the Home Screen, composited on the GPU at 40 to 60 frames a second; touch works.
-The Home Screen had no apps and SpringBoard died once on unlock (an assertion about a missing process identity):
-the removable system apps were never shown in `/Applications`. Hosted `0035` shows them, `0037` keeps them
-registered after the first boot of a Data store, `0036` drops icons drawn blank by earlier boots; built, not yet run.
+## How it works
 
-First Mac builds on the phone (2026-11-12): the Mac `kernel.kc` panics in the first 2 s, in both builds tried
-(507 stubs pointing past the collection with XnuPrelink `b74ed7c`; then an original kernel function left on the
-stub, called by Sandbox; `kernel/prelink/README.md`, "On the phone"; agent prelink audits it). The Mac runtime
-0.1.7-dev with the Linux `kernel.kc` of 2026-11-11 boots to `session/ready` in about 80 s and to the lock screen;
-the Linux runtime 0.1.6 does the same, and the owner unlocked it to the Home Screen (empty: that kernel has no
-0035-0037). In both, the screen drew far fewer frames than on 2026-11-11 (0-20 per 10 s; cause not known) and the
-Volume Up + Volume Down chord did not return; five returns by `session/return.request` or after a panic all came back
-to One UI in place. Numbers per area: `docs/hardware.md` 0.1; the test cycle: `docs/building.md` section 6.
+OneiOS runs a source-built **XNU** kernel inside a native Linux host process (`runtime/xnuhost`) on the Android kernel already running the phone. The guest's iOS tasks execute as Linux task processes; system calls and page faults are handled by hosted XNU. Hardware-facing adapters include an Adreno/KGSL GPU path, shared-memory display, and device bridges.
 
-The Mac `kernel.kc` with the known-good pairs (2026-11-12, agent prelink; `kernel/prelink/README.md`, "Known-good
-pairs" and "On the phone (2026-11-12, prelink)"): kernel and collection from origin/main `924a0d9` (series through
-0039), runtime 0.1.8-dev. Boot frame at +102 s, then about 11 minutes of lsd registering the staged apps (the first
-boot of 0035/0037 on this Data store) while SpringBoard waited for the LaunchServices database; then the lock screen,
-the owner's swipe unlocked it, and the Home Screen showed the apps (their icons do not draw right yet). No panic and
-no call to the panic stub in 23 minutes. This set is the phone's baseline now.
-
-On the PC (xnuhost under `qemu-aarch64`, 8 vCPUs, the real iOS 27.0.1 `24A446` image set, `kernel.kc` with the
-iPhone18,2 kexts), the boot gets through:
-
-- corecrypto's POST, AppleImage4, AMFI, Seatbelt, the trust caches, IOKit matching, `bsd_init`;
-- the root mount from the image set (verified by xnuhost), swap, pid 1;
-- the Data volume's first start: `newfs_apfs` (the first user process), the dyld shared cache's 4K code signatures
-  (5.8 GiB hashed once per boot, about 3 minutes under qemu), the cache mapped and slid, the volume mounted, the
-  seed unpacked and verified by the kernel;
-- **launchd**: all of its early boot tasks ("Early boot complete. Continuing system boot."), then its services:
-  123 spawned and about 190 processes in 16 minutes, with **`backboardd` and `SpringBoard` running to the end of
-  the run** (series 0001-0025, 2026-11-11; the run was stopped by its time limit, no kernel panic). The only
-  service that died was `chronod` (abort in QuartzCore's `query_displays`).
-
-**SpringBoard finishes launching**: 15 minutes into a PC boot its main thread is in `UIApplicationMain`'s run loop
-(`SBSystemAppMain` -> `UIApplicationMain` -> `GSEventRunModal`) and stays there (sampled every 5 minutes for half
-an hour with `oneios-ubt`); backboardd sits in its run loops with CoreAnimation's render server and IOMFB server
-threads up.
-
-Not reached: a frame of iOS's on the display, `session/ready`. The guest has an IOMobileFramebuffer since `0020`
-(`kernel/patches/oneios-hosted/display/`: it starts, backboardd opens it), and `display.sock` shows one flat colour
-about twice a second. On the PC the guest has no 3D GPU (`oneios-gpu: the host offers no 3D`, so no Metal
-accelerator); whether that is why backboardd composites nothing is the likely reason, not a proven one: the phone,
-with KGSL, is where it shows. Touch and the side keys are
-in (`kernel/patches/oneios-hosted/hid/`): a Digitizer / Touch Screen service and a buttons service that backboardd
-opens and gets events from, fed from xnuhost's input device (scripted touches on the PC; with no frame, nothing
-to see react).
-The processes that died with "Text page corruption detected", dyld assertions or a lost Linux thread no longer do
-(`0025` and xnuhost's task layer: 14 minutes past early boot with 129 processes and none of those). The key store is in since `0022`: an AppleKeyStore
-service in software (no passcode, class keys from a constant, key wrap by AES; **not a security boundary**), with
-which launchd's keybag task ends in `DONE MKB_INIT` instead of "FATAL KEYBAG ERROR: failed to load system bag";
-securityd wraps and unwraps its keys through it. A host with one kind of CPU (or one vCPU) used to assert in the
-scheduler at launchd's first `workq_open`; `0016` fixes that (booted with eight CPUs of one kind). Detail: [kernel/patches/oneios-hosted/README.md](kernel/patches/oneios-hosted/README.md)
-and the board, [docs/agents.md](docs/agents.md).
-
-Built and tested on the PC, not yet on the phone: xnuhost and its loader, the GPU path (drm2kgsl on KGSL), the
-display helper, the hardware bridges (CPU, network, Bluetooth, haptics, audio, brightness and the light sensor,
-camera), the image pipeline, the runtime package and releases, and the OneOS fork's iOS 27 card, session scripts and
-Hardware checks, and the iOS user-space cross toolchain with the Metal plug-in built for the iPhone's shared cache
-(not loaded by any boot yet). Not done: the camera's iOS-side capture device, auto-brightness past Apple's light
-sensor service (it attaches to our HID device; no reading has gone through it). Never: passcode, Face ID, Wallet, calls, SMS.
-
-## Layout
-
-```
-docs/architecture.md  how the parts fit; docs/building.md  how to build and test; docs/*.md  each part in detail
-profiles/             the pinned IPSW profile (iPhone18,2 iOS 27.0.1 24A446)
-scripts/fetch/        fetch only the needed IPSW members from Apple's CDN (never from here)
-scripts/image/        build the image set (MysticGSI-style manifest, SHA-256, .tar.zst)
-userland/             iOS 27 root and Data tweaks (the image hook), guest helpers, the camera plug-in
-kernel/               XNU 12377 (UniXNU / Droid-VM fork) built on Linux; oneios-hosted/ patches; prelink/ (kernel.kc)
-runtime/              xnuhost and its loader, the display helper, the hardware bridges, the runtime package
-drivers/              iOS-side drivers for the bridges (CPU, network, Bluetooth, haptics, audio, brightness, camera)
-oneos/                the contract with the OneOS fork (akshaynexus/OneOS, branch oneios)
+```text
+Galaxy S26 Ultra · Android kernel (kept running)
+├── Android vendor HALs / SurfaceFlinger / GPU
+├── OneOS experimental Framework stop + reboot-return
+│   └── Isolated, read-only guest stage with writable Data/session
+└── xnuhost · hosted XNU + iOS 27 userland
+    ├── up to 8 guest vCPUs + trapped iOS tasks
+    ├── drm2kgsl / KGSL → oneios-display
+    └── APFS image set + one-shot Data clone
 ```
 
-## Rules
+This is **not** a native bootloader switch, a secure iPhone environment, or an unrestricted Android-app feature. Apple binaries and locally built image assets are **not** redistributed in this repository.
 
-- **No Apple files in git or in releases.** IPSWs, cryptexes, kernelcaches, kexts, `kernel.kc` and every image built
-  from them stay in `out/` and `inputs/` (git-ignored). Scripts fetch them from Apple and build them on the owner's
-  machine. Releases carry only this project's own code (scripts, runtime binaries, the OneOS patches); the kernel is
-  built locally (it links Apple's corecrypto).
-- Long jobs run in tmux: `scripts/bg.sh NAME COMMAND...`.
-- Every change updates the docs that describe it: [CLAUDE.md](CLAUDE.md).
+## Documentation map
+
+| Start here | Purpose |
+| :--- | :--- |
+| [Documentation hub](docs/README.md) | Browse the complete handbook and experiment logs by topic |
+| [Live experiment status](docs/SM8850_LIVE_STATUS_2026-11-20.md) | Physical proof, uncertainties, measured load and immediate blockers |
+| [Engineering roadmap](docs/TODO.md) | P0 thermal/recovery first, then CPU, GPU, frame pacing and acceptance |
+| [Architecture](docs/architecture.md) | Kernel/host, guest filesystems, graphics and session responsibilities |
+| [Build and test](docs/building.md) | CachyOS local CI, runtime build and artifact verification |
+| [Full takeover record](docs/SM8850_FULL_IOS_10MIN.md) | Historical runbook, failures, rearm and one-shot rules; **not** an invitation to rerun |
+
+## Working on the project
+
+### Safe local verification
+
+```bash
+cd ~/projects/OneiOS
+git switch main
+git pull --ff-only origin main
+git submodule update --init --checkout app
+python3 scripts/phone/test-sm8850-takeover.py -v
+python3 scripts/phone/test-sm8850-full-takeover.py -v
+JOBS=8 ./scripts/ci-local.sh all 0.0.0-ci
+```
+
+Local CI previously reached **PASS**, including Android NDK ELF dependency checking and SHA-256 verification of the arm64 runtime-only package. That result does **not** mean a new phone session, thermal guard, guest kernel or recovery was tested.
+
+### Engineering rules
+
+- **Safety first:** preserve the exact device/firmware allowlist, SELinux, watchdog supervision and one-shot APFS Data policy.
+- **Measure before tuning:** do not force global governors, disable Samsung thermal protections or equate SurfaceFlinger posts with UI animation FPS.
+- **Local-first validation:** native/Python regression on CachyOS, then small bounded device trials only after P0 safety gates are ready.
+- **Source of truth:** mark each claim **observed**, **inferred** or **not verified**; do not turn rootless boot evidence into a certified return.
+
+## Scope and companion
+
+The Android-side integration lives in [YMGPwcca/OneOS · main](https://github.com/YMGPwcca/OneOS/tree/main). The **normal OneOS app remains blocked** for OneiOS on SM8850. The root-only experiment requires explicit additional risk acknowledgement and is not a supported alternative for general users.
+
+**Latest physical evidence (2026-11-23):** an opt-in 180-second full-bridges guest ran, reached guest-ready and first frame with eight host CPUs, and showed live battery/charging data. There were severe multi-second frame stalls and an observed BackBoardD replacement followed by SpringBoard respring; XNUHost reported an earlier KGSL `GPU_COMMAND` protocol error. A named framework-deadline reboot return was recorded. **This does not qualify compositor stability, GPU performance, independent recovery, or thermal safety.** See the ongoing P0/P2 backlog.
+
+---
 
 ## Credits
 

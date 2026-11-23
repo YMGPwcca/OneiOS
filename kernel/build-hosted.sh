@@ -37,6 +37,17 @@ else
 fi
 stage_sources
 
+# Build archives in this hosted profile consume pinned reference repositories
+# that are not UniXNU submodules. Fetch them before invoking the archive
+# generators so a fresh checkout does not fail part-way through (notably
+# NativeMetal/OriginalAcceleratorABI.h in the GPU archive).
+"$ROOT/scripts/setup/get-references.sh" \
+  NativeHidInput NativeMobileDisplay NativeAdreno NativeMetal AdrenoPM4 ArmSmmu4K
+[ -f "$ROOT/external/NativeMetal/OriginalAcceleratorABI.h" ] || {
+  echo "build-hosted: NativeMetal/OriginalAcceleratorABI.h missing after pinned reference fetch" >&2
+  exit 1
+}
+
 # The device repository of this build: the committed one, the hosted defconfig, and the hosted series last.
 # (two levels below the repository, as kernel/device is: the board's archive script finds drivers/ from there)
 DEVICE=$ROOT/out/hosted-device$SUFFIX

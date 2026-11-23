@@ -22,6 +22,8 @@ void oneios_bridge_start(void);
 bool oneios_bridge_ready(void);
 // Bit n: the host serves channel n. 0 until ready.
 uint32_t oneios_bridge_channels(void);
+// Optional host features announced in a length-extended v1 HELLO. Older hosts: 0.
+uint32_t oneios_bridge_features(void);
 // Sends one message. Any thread context that may take a mutex. 0, or -1 (not up, too long, queue full).
 int oneios_bridge_send(uint16_t channel, uint16_t type, const void *payload, uint32_t length);
 // Messages from the host for `channel` are handed to fn on the bridge's worker thread.
@@ -32,6 +34,9 @@ void oneios_bridge_listen(uint16_t channel, oneios_bridge_handler fn, void *cont
 int  oneios_haptic_start(void);
 // Vibrate from now for ms (0 = stop) at intensity 0..1000 and frequency_hz (0 = resonance).
 int  oneios_haptic_vib(uint32_t ms, uint32_t intensity, uint32_t frequency_hz);
+// A semantically discrete impact. Only when the host advertised OB_FEAT_HAPTIC_IMPACT;
+// not interchangeable with on_ms and never auto-falls back to a continuous buzz.
+int  oneios_haptic_impact(uint32_t kind);
 void oneios_haptic_make_node(void);
 int  oneios_haptic_publish_closed_loop(void);
 // The Actuator IOAudio2Device of the audio archive (DroidVMAudio.cpp as staged): ready = may publish it;

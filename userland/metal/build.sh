@@ -66,6 +66,19 @@ stage() {
   mkdir -p "$R/drivers" "$R/kits" "$R/.cache/gpu-reference" "$R/.cache/mesa-venv/bin" "$R/.cache/mesa-tools/bin" "$R/build"
   rsync -a --delete "$BASE/scripts/" "$R/scripts/"
   rsync -a --delete "$BASE/patches/" "$R/patches/"
+  # Direct-parent akshaynexus/OneiOS Adreno-generic shader fixes from
+  # hakios-arm64e-dada, rebased by that parent on this exact metal2vulkan pin.
+  # Stage after the base's patches as 9xxx; never modify the external checkout.
+  # A missing patch is a build failure, not a silent Metal compatibility PASS.
+  local count=0
+  for p in "$HERE"/patches/metal2vulkan/*.patch; do
+    [ -f "$p" ] || { echo "metal: missing required parent metal2vulkan patches" >&2; exit 1; }
+    mkdir -p "$R/patches/metal2vulkan"
+    cp "$p" "$R/patches/metal2vulkan/9$(basename "$p")"
+    count=$((count + 1))
+  done
+  [ "$count" -eq 3 ] || { echo "metal: expected three parent shader patches, saw $count" >&2; exit 1; }
+  say "staged $count direct-parent metal2vulkan patches as 9xxx (requires compile validation)"
   rsync -a --delete --exclude .git "$EXT/NativeMetal/" "$R/drivers/AdrenoMetal/"
   rsync -a --delete --exclude .git "$EXT/NativeAdreno/" "$R/drivers/Adreno740/"
   rsync -a --delete --exclude .git "$EXT/NativeMobileDisplay/" "$R/drivers/GopFramebuffer/"
@@ -85,6 +98,12 @@ for patch in json.load(open(root + '/scripts/data/adreno-compiler-inputs.json'))
 EOF
     say "Mesa $(git -C "$R/.cache/mesa-work" rev-parse --short HEAD) with the recorded patches in $R/.cache/mesa-work"
   fi
+  cp "$HERE/trace-turnip-init.patch" "$R/patches/mesa/"
+  if ! git -C "$R/.cache/mesa-work" apply --reverse --check "$HERE/trace-turnip-init.patch" 2>/dev/null; then
+    git -C "$R/.cache/mesa-work" apply "$HERE/trace-turnip-init.patch"
+  fi
+  cp "$HERE/trace-metal-vulkan-init.patch" "$R/patches/metal2vulkan/"
+  cp "$HERE/trace-metal-surfaces.patch" "$R/patches/"
   [ -d "$R/.cache/gpu-reference/metal2vulkan/.git" ] || git clone -q "$EXT/metal2vulkan" "$R/.cache/gpu-reference/metal2vulkan"
   # The staged scripts and sources: what differs from upstream, each said.
   # clang 23's -Wunused-but-set-global: Xcode 27.2's clang 21 does not know it (and -Werror makes an unknown
@@ -95,6 +114,11 @@ EOF
 import json, re, sys
 from pathlib import Path
 root, hooks, jobs, knows = Path(sys.argv[1]), json.load(open(sys.argv[2])), sys.argv[3], sys.argv[4] == '1'
+
+pins = root / 'scripts/data/adreno-compiler-inputs.json'
+source = json.loads(pins.read_text())
+source['patches'].append('patches/mesa/trace-turnip-init.patch')
+pins.write_text(json.dumps(source, indent=2) + '\n')
 
 def edit(path, pairs):
     text = (root / path).read_text()
@@ -109,14 +133,24 @@ edit('scripts/build-turnip-darwin.py', [
     ("env.update(CC=find('clang'), CXX=find('clang++'), CFLAGS='', CXXFLAGS='', CPPFLAGS='', LDFLAGS='')",
      "env.update(CC='clang', CXX='clang++', CFLAGS='', CXXFLAGS='', CPPFLAGS='', LDFLAGS='')",
      "meson's build-machine compiler is the host's clang (on a Mac xcrun's clang is both)"),
+    ("flags = ['-target', triple, '-isysroot', sdk, '-fstack-protector-strong']",
+     "flags = ['-target', triple, '-isysroot', sdk, '-fstack-protector-strong', '-DHAVE_DLFCN_H', '-D_DARWIN_C_SOURCE=1']",
+     "iOS cross-compile: expose Darwin dladdr declarations"),
     ("'-j6'", "'-j%s'" % jobs, 'ninja jobs'),
 ])
 edit('scripts/build-adreno-metal-bridge.py', [
     ('timeout=1800)', 'timeout=10800)', 'a longer limit for the fat-LTO Rust build'),
+    ('\n\ndef git_tree(*steps):',
+     "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\n\n\ndef git_tree(*steps):",
+     'record Vulkan initialization diagnostics in the translator patch stack'),
 ])
 edit('scripts/build-adreno-metal-plugin.py', [
     ("subprocess.run(['python3', ROOT / 'scripts/gen-turnip-replay.py'], check=True)\n", '',
      "no TurnipReplay.h: it is recorded on a Mac's host simulation, and NativeAdrenoUserTest.h includes it only when it exists"),
+    ('staged_frontend.write_text(frontend)\n',
+     'staged_frontend.write_text(frontend)\n'
+     "subprocess.run(['patch', '-s', '-F', '0', '-d', OUT, '-p1', '-i', ROOT / 'patches/trace-metal-surfaces.patch'], check=True)\n",
+     'instrument the frontend after the upstream replacements'),
 ] + ([
     ("'-Wall', '-Wextra', '-Werror',", "'-Wall', '-Wextra', '-Werror', '-Wno-error=unused-but-set-global',",
      "clang 23's -Wunused-but-set-global (gZeroRest), which Xcode's clang does not have, is not an error"),
@@ -152,6 +186,16 @@ unknown = sorted(set(re.findall(r'0x1[0-9a-f]{8}\b', arm64e_only)) - known)
 if unknown:
     sys.exit('metal: shared cache addresses in the arm64e code that the hooks file does not name: ' + ', '.join(unknown))
 plugin.write_text(text)
+edit('drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm', [
+    ('        exceptiondiag::start();',
+     '        if (bootArgSet("oneios-vk-init=1")) {\n'
+     '            setenv("ONEIOS_VK_INIT", "1", 1);\n'
+     '            setenv("NATIVE_METAL_WARNINGS", "1", 1);\n'
+     '        }\n'
+     '        if (bootArgSet("oneios-surface-trace=1")) setenv("ONEIOS_SURFACE_TRACE", "1", 1);\n'
+     '        exceptiondiag::start();',
+     'enable opt-in initialization and IOSurface diagnostics for every plug-in client'),
+])
 EOF
   # drivers/brightness/BacklightMode.inc (owner: brightness): backboardd's CoreBrightness gets BLControl, not the
   # VMBLControl that vmm-present selects, so the slider reaches the backlight service. The plug-in is the OneiOS code

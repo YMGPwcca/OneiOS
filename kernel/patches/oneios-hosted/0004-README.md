@@ -1,5 +1,9 @@
 # 0004-root-mount-launchd and `storage/`: the hosted kernel's disks, root, Data and launchd
 
+**OneiOS · SM8850 · Kernel / driver implementation**
+
+[← Handbook](../../../docs/README.md) · [Latest evidence](../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: fable-root2 (took over from fable-root). Date: 2026-11-10. The xnuhost side is commit `3b57b73`
 (`runtime/xnuhost/src/imageset.c`): chunk checks, trust caches, `/chosen/root-matching`, each disk's identity.
 

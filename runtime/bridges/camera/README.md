@@ -1,4 +1,11 @@
-# runtime/bridges/camera: the Galaxy S24 Ultra's cameras for iOS
+# Camera bridge · Android host to iOS guest
+
+**OneiOS · SM8850 · Runtime engineering**
+
+[← Handbook](../../../docs/README.md) · [Physical status](../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
+> [!NOTE]
+> The camera tests below include earlier lab observations. They do **not** certify the S26 Ultra camera bridge during the full guest session; that remains NOT VERIFIED.
 
 Owner: fable-camera. The whole path: `docs/hardware.md` section 7. Kernel side: `drivers/camera`. iOS user space:
 `userland/camera`.
@@ -43,7 +50,7 @@ to a physical camera that is only reached through its logical camera.
 
 ## The first phone run (2026-11-11), the cause and the fix
 
-SM-S928B, Android 17 (`CP2A.260605.016.S928BXXU6EZIF`), fork 0.4.75, runtime 0.1.1, root through KernelSU, One UI
+original non-SM8850 model, Android 17 (`CP2A.260605.016.S928BXXU6EZIF`), fork 0.4.75, runtime 0.1.1, root through KernelSU, One UI
 running:
 
 ```

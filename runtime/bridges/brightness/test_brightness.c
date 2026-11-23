@@ -430,6 +430,52 @@ static void test_treble(void)
   CHECK(system(command) == 0);
 }
 
+// Galaxy S26 Ultra manual slider cap, observed while Android 17 / One UI 9
+// was still in control: system screen_brightness=255 maps to backlight=2300,
+// despite panel0-backlight/max_brightness=12750. This is a tested configuration
+// value, NOT a claim about HBM or the true panel maximum. No active phone writes.
+static void test_sm8850_manual_brightness_cap(void)
+{
+  char tmp[] = "/tmp/oneios-sm8850-bright-XXXXXX", disabled[300], active[300];
+  CHECK(mkdtemp(tmp) != NULL);
+  snprintf(disabled, sizeof disabled, "%s/panel", tmp);
+  snprintf(active, sizeof active, "%s/panel0-backlight", tmp);
+  mkdir(disabled, 0755); mkdir(active, 0755);
+  put(disabled, "max_brightness", "0\n");
+  put(disabled, "brightness", "0\n");
+  put(active, "max_brightness", "12750\n");
+  put(active, "brightness", "2300\n");
+  br_bright_options o = {
+    .backlight_dir = tmp,
+    .touch_dir = "/nonexistent",
+    .no_als = true,
+    .ceiling = 2300, // opt-in port profile; existing S24 default remains unchanged
+  };
+  br_bright *b = br_bright_open(&o);
+  CHECK(b != NULL);
+  if (b) {
+    br_bright_info i;
+    br_bright_info_get(b, &i);
+    CHECK(i.panel && strstr(i.node, "/panel0-backlight/brightness") &&
+          i.max_brightness == 12750 && i.ceiling == 2300 && i.saved == 2300);
+    br_bright_set(b, BR_BRIGHT_FULL, false, 0);
+    usleep(80000);
+    CHECK(get(active, "brightness") == 2300);
+    br_bright_set(b, BR_BRIGHT_FULL / 2, false, 0);
+    usleep(80000);
+    unsigned mid = get(active, "brightness");
+    CHECK(mid >= 574 && mid <= 576);
+    br_bright_set(b, BR_BRIGHT_FULL + 5000, true, 0); // clamp invalid guest slider
+    usleep(80000);
+    CHECK(get(active, "brightness") == 2300);
+    br_bright_close(b);
+    CHECK(get(active, "brightness") == 2300 && get(disabled, "brightness") == 0);
+  }
+  char command[400];
+  snprintf(command, sizeof command, "rm -rf %s", tmp);
+  CHECK(system(command) == 0);
+}
+
 int main(void)
 {
   test_curve();
@@ -437,6 +483,7 @@ int main(void)
   test_session();
   test_touch();
   test_treble();
+  test_sm8850_manual_brightness_cap();
   printf("brightness: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

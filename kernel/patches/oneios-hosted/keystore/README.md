@@ -1,5 +1,9 @@
 # kernel/patches/oneios-hosted/keystore: the AppleKeyStore service in software
 
+**OneiOS · SM8850 · Kernel / session interface**
+
+[← Handbook](../../../../docs/README.md) · [Current evidence](../../../../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: q5-keystore (job Q5 of the board's queue of 2026-11-11). With `0022-keystore.patch`.
 
 **This is not a security boundary.** The class keys are derived from a constant in `OneiOSKeyStore.cpp`. Whoever
@@ -10,7 +14,7 @@ daemons find the service they expect and the keychain can store items.
 
 ## Why
 
-The S24 Ultra has no Secure Enclave, and the collection's `com.apple.driver.AppleSEPKeyStore` (the real
+The earlier reference device has no Secure Enclave, and the collection's `com.apple.driver.AppleSEPKeyStore` (the real
 `AppleKeyStore` class, a SEP client) is left out of `kernel.kc` (`oneios-tool prelink roots`, `FORCE_OUT` in `tools/oneios-tool/crates/oneios-prelink/src/roots.rs`). Without a
 service of that name, launchd logged `failed to find AppleKeyStore service` and its keybag boot task
 `MKB_INIT: FATAL KEYBAG ERROR: failed to load system bag`.

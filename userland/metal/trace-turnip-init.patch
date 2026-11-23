@@ -1,0 +1,136 @@
+diff --git a/src/freedreno/vulkan/tu_knl_darwin_virtgpu.cc b/src/freedreno/vulkan/tu_knl_darwin_virtgpu.cc
+--- a/src/freedreno/vulkan/tu_knl_darwin_virtgpu.cc
++++ b/src/freedreno/vulkan/tu_knl_darwin_virtgpu.cc
+@@ -25,6 +25,14 @@
+ #include "util/os_time.h"
+
+ #define DWV_TUNNEL_MAGIC 0x4e544e4cu
++
++#define DWV_INIT_LOG(...) do { \
++   if (getenv("ONEIOS_VK_INIT")) { \
++      fprintf(stderr, "oneios-vk-init pid=%d Turnip ", getpid()); \
++      fprintf(stderr, __VA_ARGS__); \
++      fputc('\n', stderr); \
++   } \
++} while (0)
+
+ enum {
+    DWV_CAPSET_DRM = 6,
+@@ -109,9 +117,15 @@
+          break;
+    const struct droidvm_virtgpu_getparam param = {DROIDVM_VIRTGPU_PARAM_DEFAULT_3D};
+    struct droidvm_virtgpu_getparam_reply reply = {};
+-   if (dwv.selector < 256 &&
+-       vg_call(DROIDVM_VIRTGPU_GETPARAM, &param, sizeof(param), &reply, sizeof(reply)) == KERN_SUCCESS)
+-      answer = reply.value == 1;
++   if (dwv.selector < 256) {
++      kr = vg_call(DROIDVM_VIRTGPU_GETPARAM, &param, sizeof(param), &reply, sizeof(reply));
++      if (kr == KERN_SUCCESS)
++         answer = reply.value == 1;
++      DWV_INIT_LOG("DEFAULT_3D selector=%u status=%#x value=%llu", dwv.selector, kr,
++                   (unsigned long long)reply.value);
++   } else {
++      DWV_INIT_LOG("DEFAULT_3D selector probe refused");
++   }
+    IOServiceClose(dwv.conn);
+    dwv.conn = IO_OBJECT_NULL;
+    return answer;
+@@ -221,6 +235,7 @@
+       return kIOReturnNotFound;
+    kern_return_t kr = IOServiceOpen(service, mach_task_self(), DROIDVM_VIRTGPU_OPEN_TYPE, &dwv.conn);
+    IOObjectRelease(service);
++   DWV_INIT_LOG("DRM native IOServiceOpen type=%#x status=%#x", DROIDVM_VIRTGPU_OPEN_TYPE, kr);
+    if (kr != KERN_SUCCESS)
+       return kr;
+    const uint32_t probe[2] = {DWV_TUNNEL_MAGIC, 0xffffffffu};
+@@ -231,31 +246,46 @@
+       kr = kIOReturnNotPermitted;
+
+    pthread_mutex_lock(&dwv.lock);
++   DWV_INIT_LOG("DRM native selector=%u status=%#x", dwv.selector, kr);
+    const struct droidvm_virtgpu_get_caps get_caps = {DWV_CAPSET_DRM, 0};
+-   if (kr == KERN_SUCCESS)
++   if (kr == KERN_SUCCESS) {
+       kr = vg_call(DROIDVM_VIRTGPU_GET_CAPS, &get_caps, sizeof(get_caps), &dwv.caps, sizeof(dwv.caps));
++      DWV_INIT_LOG("GET_CAPS status=%#x capset=%u wire=%u msm=%u.%u context_type=%u chip=%#llx gpu=%u gmem=%u priorities=%u",
++                   kr, DWV_CAPSET_DRM, dwv.caps.wire_format, dwv.caps.major, dwv.caps.minor,
++                   dwv.caps.context_type, (unsigned long long)dwv.caps.chip_id, dwv.caps.gpu_id,
++                   dwv.caps.gmem_size, dwv.caps.priorities);
++   }
+    const struct droidvm_virtgpu_context_init init = {DWV_CAPSET_DRM, 64};
+    struct droidvm_virtgpu_context_init_reply context = {};
+-   if (kr == KERN_SUCCESS)
++   if (kr == KERN_SUCCESS) {
+       kr = vg_call(DROIDVM_VIRTGPU_CONTEXT_INIT, &init, sizeof(init), &context, sizeof(context));
++      DWV_INIT_LOG("CONTEXT_INIT status=%#x context=%u", kr, context.context_id);
++   }
+    /* The msm shmem: a host blob (blob id 0) the host carves from its pool, where it answers ccmds. */
+    const struct droidvm_virtgpu_create_blob shmem = {DROIDVM_VIRTGPU_BLOB_MEM_HOST3D, DROIDVM_VIRTGPU_BLOB_FLAG_MAPPABLE,
+                                                      DWV_SHMEM_BYTES, 0, 0, 0};
+    struct droidvm_virtgpu_create_blob_reply blob = {};
+-   if (kr == KERN_SUCCESS)
++   if (kr == KERN_SUCCESS) {
+       kr = vg_call(DROIDVM_VIRTGPU_CREATE_BLOB, &shmem, sizeof(shmem), &blob, sizeof(blob));
++      DWV_INIT_LOG("CREATE_BLOB shmem status=%#x resource=%u handle=%u", kr, blob.resource_id, blob.handle);
++   }
+    const struct droidvm_virtgpu_handle handle = {blob.handle, 0};
+    struct droidvm_virtgpu_map_reply map = {};
+-   if (kr == KERN_SUCCESS)
++   if (kr == KERN_SUCCESS) {
+       kr = vg_call(DROIDVM_VIRTGPU_MAP, &handle, sizeof(handle), &map, sizeof(map));
++      DWV_INIT_LOG("MAP shmem status=%#x", kr);
++   }
+    if (kr == KERN_SUCCESS) {
+       dwv.shmem = (volatile uint8_t *)(uintptr_t)map.address;
+       dwv.shmem_handle = blob.handle;
+       dwv.seqno = 0;
+       dwv.va_start = vg_get_param(DWV_MSM_PARAM_VA_START, &kr);
+-   }
+-   if (kr == KERN_SUCCESS)
++      DWV_INIT_LOG("MSM_PARAM_VA_START status=%#x value=%#llx", kr, (unsigned long long)dwv.va_start);
++   }
++   if (kr == KERN_SUCCESS) {
+       dwv.va_size = vg_get_param(DWV_MSM_PARAM_VA_SIZE, &kr);
++      DWV_INIT_LOG("MSM_PARAM_VA_SIZE status=%#x value=%#llx", kr, (unsigned long long)dwv.va_size);
++   }
+    /* Asking for the fault count is what has drm2kgsl count this context's GPU resets in the shmem's global_faults (GetStatus);
+     * a host without that answers 0 and counts only refused submissions (async_error). */
+    if (kr == KERN_SUCCESS) {
+@@ -266,8 +296,10 @@
+     * submission rides it, so its fences are one increasing sequence, as the NativeAdreno ABI's are. A Vulkan queue asking for a
+     * higher priority moves it (dwv_set_priority). */
+    struct { uint32_t flags, prio, id; } queue = {0, dwv_priorities() - 1, 0};
+-   if (kr == KERN_SUCCESS)
++   if (kr == KERN_SUCCESS) {
+       kr = vg_ioctl_simple(DWV_MSM_SUBMITQUEUE_NEW, &queue, sizeof(queue));
++      DWV_INIT_LOG("SUBMITQUEUE_NEW status=%#x", kr);
++   }
+    if (kr == KERN_SUCCESS) {
+       dwv.queue_id = queue.id;
+       dwv.priority = queue.prio;
+diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl_darwin.cc
+--- a/src/freedreno/vulkan/tu_knl_darwin.cc
++++ b/src/freedreno/vulkan/tu_knl_darwin.cc
+@@ -340,7 +340,10 @@
+ static VkResult
+ dw_open_connection(struct tu_instance *instance)
+ {
+-   if (dwv_enabled())
++   const bool virtgpu = dwv_enabled();
++   if (getenv("ONEIOS_VK_INIT"))
++      mesa_logi("oneios-vk-init pid=%d Turnip backend=%s", getpid(), virtgpu ? "DRM native" : "legacy NativeAdreno");
++   if (virtgpu)
+       return dw_open_virtgpu(instance);
+    /* TU_DARWIN_SERVICE names the IOKit service (default: the AGX accelerator the original Metal discovery finds), TU_DARWIN_OPEN_TYPE its open
+     * type (default 0x4147, the type the driver serves to the plugin). NativeAdrenoGpuPublished with type 0 is the unsandboxed direct form. */
+@@ -1902,6 +1905,10 @@
+    instance->knl = &darwin_knl_funcs;
+
+    result = tu_physical_device_init(device, instance);
++   if (getenv("ONEIOS_VK_INIT"))
++      mesa_logi("oneios-vk-init pid=%d tu_physical_device_init result=%d chip=%#llx gpu=%u gmem=%u flags=%#x priorities=%u",
++                getpid(), result, (unsigned long long)device->dev_id.chip_id, device->dev_id.gpu_id,
++                device->gmem_size, info->flags, device->submitqueue_priority_count);
+    /* The enumeration probe only needed the facts; the device takes the slot again in device_init. */
+    dw_close_connection();
+    if (result != VK_SUCCESS) {

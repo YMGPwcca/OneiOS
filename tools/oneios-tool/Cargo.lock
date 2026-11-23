@@ -1025,6 +1025,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "libc",
+ "lz4_flex",
  "lzfse_rust",
  "memmap2",
  "oneios-common",

@@ -35,12 +35,19 @@ enum { OB_CH_CONTROL = 0, OB_CH_HAPTIC = 1, OB_CH_HCI = 2, OB_CH_CAMERA = 3, OB_
 // before, so the way back is never at risk.
 enum { OB_CTL_HELLO = 1, OB_CTL_SHUTDOWN = 2 };
 struct ob_ctl_hello { uint32_t version, channels; };
+/* Optional v1 hello extension (12 bytes). An older guest ignores the extra
+ * word; a newer guest treats an 8-byte reply as features=0. */
+#define OB_FEAT_HAPTIC_IMPACT (1u << 0)
+struct ob_ctl_hello_ext { uint32_t version, channels, features; };
 
 // ---- haptics (guest -> host only) -------------------------------------------------------------
 enum {
   OB_HAPTIC_VIB = 1,                     // struct ob_haptic_vib: vibrate from now; on_ms 0 stops
   OB_HAPTIC_STOP = 2,                    // no payload
+  OB_HAPTIC_IMPACT = 3,                  // explicit one-shot impact; not a short VIB segment
 };
+enum { OB_IMPACT_LIGHT = 1, OB_IMPACT_MEDIUM = 2, OB_IMPACT_HEAVY = 3 };
+struct ob_haptic_impact { uint32_t kind; };
 struct ob_haptic_vib {
   uint32_t on_ms;                        // 0 = stop
   uint16_t intensity;                    // 0..1000 (iOS's 0.0..1.0)

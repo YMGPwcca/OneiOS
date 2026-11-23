@@ -12,6 +12,7 @@
 #include "xnuhost.h"
 #include "xnuhost/free_report.h"
 #include "xnuhost/free_report_runs.h"
+#include "xnuloader/boot.h"
 #include "stub_abi.h"
 // The oneios-cpu window's arithmetic, the kernel's own file (gpu/OneiOSAdreno.cpp includes it).
 #include "../../kernel/patches/oneios-hosted/gpu/cpu_window.h"
@@ -667,6 +668,54 @@ static unsigned gpu3d_send(driver *d, xh_virtio *dev, unsigned words, unsigned e
   return n;
 }
 
+static const uint32_t reset_overlap_resource[] = { 0x101, 0, 0, 0, 0, 0, 7, 2, 8, 4 };
+
+static size_t reset_during_capset(xh_gpu3d *b, uint32_t id, uint32_t version, void *out, size_t max)
+{
+  // Reset while a host command is in flight, then immediately reuse the old
+  // context and resource IDs through a queue backed by fresh guest pages.
+  driver next = { .dev = b->dev };
+  if (!driver_init(&next, 0x59, 2, GUEST_PA + 0x18000)) return 0;
+  const uint32_t create[] = { 0x200, 0, 0, 0, 5, 0, 4, 6, 0x74736574 }; // CTX_CREATE "test"
+  memcpy(xh_ram(GUEST_PA + 0x34000, sizeof create), create, sizeof create);
+  memset(xh_ram(GUEST_PA + 0x35000, 24), 0xee, 24);
+  driver_send(&next, 0, (const uint64_t[][3]){ { GUEST_PA + 0x34000, sizeof create, 0 },
+              { GUEST_PA + 0x35000, 24, 1 } }, 2, false);
+  memcpy(xh_ram(GUEST_PA + 0x36000, sizeof reset_overlap_resource), reset_overlap_resource, sizeof reset_overlap_resource);
+  memset(xh_ram(GUEST_PA + 0x37000, 24), 0xee, 24);
+  driver_send(&next, 0, (const uint64_t[][3]){ { GUEST_PA + 0x36000, sizeof reset_overlap_resource, 0 },
+              { GUEST_PA + 0x37000, 24, 1 } }, 2, false);
+  W(&next, 0x50, 0);
+  return fake_capset(b, id, version, out, max);
+}
+
+static void test_virtio_gpu3d_reset_overlap(void)
+{
+  static xh_gpu3d b = { .capset_count = fake_capset_count, .capset = reset_during_capset,
+                       .ctx_create = fake_ctx_create, .ctx_destroy = fake_ctx_destroy };
+  memset(&fake, 0, sizeof fake);
+  driver d = { .dev = xh_virtio_gpu_create_3d(0, 43, 8, 4, &b) };
+  CHECK(d.dev && driver_init(&d, 0x59, 2, GUEST_PA + 0x10000));
+  const uint32_t create[] = { 0x200, 0, 0, 0, 5, 0, 4, 6, 0x74736574 };
+  uint32_t *cmd = xh_ram(GUEST_PA + 0x30000, sizeof reset_overlap_resource);
+  memcpy(cmd, create, sizeof create);
+  CHECK(gpu3d_send(&d, d.dev, 9, 0, 24) == 1 && fake.contexts == 1);
+  memcpy(cmd, reset_overlap_resource, sizeof reset_overlap_resource);
+  const uint32_t *resp = xh_ram(GUEST_PA + 0x31000, 24);
+  CHECK(gpu3d_send(&d, d.dev, 10, 0, 24) == 1 && resp[0] == 0x1100);
+  memset(cmd, 0, sizeof create);
+  cmd[0] = 0x109; cmd[6] = 6;                                    // GET_CAPSET
+  gpu3d_send(&d, d.dev, 8, 0, 24 + 64);
+  const uint16_t *new_used = xh_ram(GUEST_PA + 0x1a000, 4);
+  const uint32_t *new_resp = xh_ram(GUEST_PA + 0x35000, 24);
+  const uint32_t *resource_resp = xh_ram(GUEST_PA + 0x37000, 24);
+  CHECK(new_used[1] == 2 && new_resp[0] == 0x1100 && resource_resp[0] == 0x1100); // no completion from the old queue
+  CHECK(fake.contexts == 1 && fake.live[0] == 5);                 // reset must not tear down the new context
+  W(&d, 0x70, 0);
+  xh_virtio_gpu_idle(d.dev);
+  CHECK(fake.contexts == 0);
+}
+
 // The chunks of a blob over a memfd whose page N begins with the byte N: `want` chunks of pages[i] pages, the first
 // page of each being first[i] and the following ones `step` pages apart. Closes and frees them.
 static bool chunks_are(int count, xh_gpu_chunk *chunks, int want, const uint8_t *pages, const uint8_t *first, unsigned step)
@@ -1160,6 +1209,21 @@ static void count_power_press(void) { power_presses++; }
 
 static void test_input_filter(void)
 {
+  // S26 Ultra: both the internal sec_touchscreen and a connected HUAWEI Band
+  // advertise INPUT_PROP_DIRECT. Native input wins even if event IDs change.
+  CHECK(xh_input_accept_touch("sec_touchscreen", true, false, true));
+  CHECK(!xh_input_accept_touch("HUAWEI Band 11-F88", true, false, true));
+  CHECK(!xh_input_accept_touch("sec_touchpad", false, false, true));
+  CHECK(!xh_input_accept_touch("sec_touchscreen", true, true, true));
+  CHECK(xh_input_accept_touch("generic touchscreen", true, false, false));
+  CHECK(!xh_input_accept_touch("generic touchscreen", false, false, false));
+  // Bench SHM exclusive grab cannot silently select a wearable or pointer.
+  CHECK(xh_input_exclusive_touch_allowed("sec_touchscreen", true, false));
+  CHECK(!xh_input_exclusive_touch_allowed("HUAWEI Band 11-F88", true, false));
+  CHECK(!xh_input_exclusive_touch_allowed("sec_touchpad", true, false));
+  CHECK(!xh_input_exclusive_touch_allowed("sec_touchscreen", false, false));
+  CHECK(!xh_input_exclusive_touch_allowed("sec_touchscreen", true, true));
+  CHECK(!xh_input_exclusive_touch_allowed(NULL, true, false));
   driver d = { .dev = xh_virtio_input_create(0, 45) };
   CHECK(d.dev && driver_init(&d, 0, 2, GUEST_PA + 0x10000));
   for (unsigned i = 0; i < 8; i++) driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0x50000 + i * 8, 8, 1 } }, 1, false);
@@ -1234,6 +1298,35 @@ static void test_input_filter(void)
   n = input_take(&d, got, 32);
   CHECK(n == 3 && got[0].code == 115 && got[0].value == 1 && got[1].code == 116 && got[1].value == 0 && got[2].type == 0 && k.sent_keys == 2);
   CHECK(power_presses == 1);                                                    // a release (and a resync) is no press
+  // Exclusive SM8850 full-run: Power reaches iOS, but Volume is reserved for
+  // the independent recovery key readers (including on a resync).
+  xh_input_source bench_keys;
+  xh_input_source_init(&bench_keys, d.dev, "power-only", false);
+  bench_keys.power_only = true;
+  bench_keys.suppress_volume = true;
+  bench_keys.read_state = fake_read_state;
+  const xh_input_ev bench_press[] = {
+    { now, 1, 114, 1 }, { now, 1, 115, 1 }, { now, 1, 116, 1 },
+    { now, 0, 0, 0 }
+  };
+  xh_input_feed(&bench_keys, bench_press, 4, now, counter, hz);
+  n = input_take(&d, got, 32);
+  CHECK(n == 2 && got[0].type == 1 && got[0].code == 116 &&
+        got[0].value == 1 && got[1].type == 0);
+  CHECK(bench_keys.sent_keys == 4);
+  const xh_input_ev bench_release[] = {
+    { now, 1, 114, 0 }, { now, 1, 115, 0 }, { now, 1, 116, 0 },
+    { now, 0, 0, 0 }
+  };
+  xh_input_feed(&bench_keys, bench_release, 4, now, counter, hz);
+  n = input_take(&d, got, 32);
+  CHECK(n == 2 && got[0].code == 116 && got[0].value == 0 &&
+        got[1].type == 0 && bench_keys.sent_keys == 0);
+  fake_state.keys = 3; // both Volume keys down: no leak on SYN_DROPPED.
+  const xh_input_ev bench_drop[] = { { now, 0, 3, 0 }, { now, 0, 0, 0 } };
+  xh_input_feed(&bench_keys, bench_drop, 2, now, counter, hz);
+  n = input_take(&d, got, 32);
+  CHECK(n == 1 && got[0].type == 0 && bench_keys.sent_keys == 0);
   xh_input_power_key = NULL;
 }
 
@@ -1269,6 +1362,28 @@ static void test_pen(void)
   SETBIT(abs, 0x1a); SETBIT(keys, 0x14b);
   int full = xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why);
   CHECK(full > plain && full == 1 + 2 + 4);                                     // tilt, the side button, a pen's name
+  // Samsung SM-S948B getevent calls key 0x140 "BTN_DIGI".
+  // linux/input-event-codes.h calls that same code BTN_TOOL_PEN: no
+  // tool-less Samsung exception is needed or desirable.
+  uint8_t s26keys[96] = { 0 }, s26abs[8] = { 0 };
+  SETBIT(s26keys, 0x140);                              // BTN_DIGI / BTN_TOOL_PEN
+  SETBIT(s26keys, 0x14a); SETBIT(s26keys, 0x14b);      // tip and side button capability
+  SETBIT(s26abs, 0); SETBIT(s26abs, 1);               // X / Y
+  SETBIT(s26abs, 0x18); SETBIT(s26abs, 0x19);         // pressure / distance
+  SETBIT(s26abs, 0x1a); SETBIT(s26abs, 0x1b);         // tilt X / Y
+  CHECK(xh_pen_rank("sec_e-pen", s26keys, sizeof s26keys, s26abs, sizeof s26abs, &why) == 1 + 3 + 4 && why == NULL);
+  s26keys[0x140 / 8] &= (uint8_t)~(1u << (0x140 % 8));
+  CHECK(xh_pen_rank("sec_e-pen", s26keys, sizeof s26keys, s26abs, sizeof s26abs, &why) == 0 &&
+        why && strstr(why, "BTN_TOOL_PEN"));
+  SETBIT(s26keys, 0x140);
+  SETBIT(s26abs, 0x35);                              // never take a multitouch source
+  CHECK(xh_pen_rank("sec_e-pen", s26keys, sizeof s26keys, s26abs, sizeof s26abs, &why) == 0 &&
+        why && strstr(why, "multitouch"));
+  s26abs[0x35 / 8] &= (uint8_t)~(1u << (0x35 % 8));
+  SETBIT(s26keys, 115);                              // never take a physical volume-key device
+  CHECK(xh_pen_rank("sec_e-pen", s26keys, sizeof s26keys, s26abs, sizeof s26abs, &why) == 0 &&
+        why && strstr(why, "side keys"));
+
   uint8_t mt[8];
   memcpy(mt, abs, sizeof mt);
   SETBIT(mt, 0x35);
@@ -1277,6 +1392,42 @@ static void test_pen(void)
   CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why) == 0 && strstr(why, "side keys"));
 #undef SETBIT
   CHECK(xh_pen_lookup == xh_pen_lookup_evdev);                                  // the default lookup, replaceable
+
+  // A captured SM8850 event sequence: BTN_DIGI(0x140) DOWN while hovering,
+  // BTN_TOUCH(0x14a) DOWN/UP for contact, then BTN_DIGI UP out of range.
+  // Its coordinates/pressure/distance are in the evdev units measured on phone.
+  xh_pen_device m3q = { .fd = -1, .stylus = true };
+  m3q.axis[XH_PEN_X] = (xh_pen_axis){ 0, 7330, 0, true };
+  m3q.axis[XH_PEN_Y] = (xh_pen_axis){ 0, 15881, 0, true };
+  m3q.axis[XH_PEN_PRESSURE] = (xh_pen_axis){ 0, 4095, 0, true };
+  m3q.axis[XH_PEN_DISTANCE] = (xh_pen_axis){ 0, 255, 0, true };
+  m3q.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -63, 63, 0, true };
+  m3q.axis[XH_PEN_TILT_Y] = (xh_pen_axis){ -63, 63, 0, true };
+  xh_pen_state m3q_hover = { .tool = true };
+  m3q_hover.value[XH_PEN_X] = 5924;
+  m3q_hover.value[XH_PEN_Y] = 10584;
+  m3q_hover.value[XH_PEN_DISTANCE] = 77;
+  m3q_hover.value[XH_PEN_TILT_X] = -1;
+  m3q_hover.value[XH_PEN_TILT_Y] = 13;
+  xh_pen_sample m3q_sample;
+  xh_pen_sample_of(&m3q, 0, false, &m3q_hover, &m3q_sample);
+  CHECK(m3q_sample.in_range && !m3q_sample.touch && m3q_sample.distance == 77 &&
+        m3q_sample.pressure == 0 && m3q_sample.x == 5924 * 32767 / 7330 &&
+        m3q_sample.y == 10584 * 32767 / 15881);
+  m3q_hover.touch = true;
+  m3q_hover.value[XH_PEN_PRESSURE] = 156;            // observed max in first stroke
+  m3q_hover.value[XH_PEN_DISTANCE] = 0;
+  xh_pen_sample_of(&m3q, 0, false, &m3q_hover, &m3q_sample);
+  CHECK(m3q_sample.in_range && m3q_sample.touch && m3q_sample.pressure == 156 &&
+        m3q_sample.distance == 0);
+  m3q_hover.touch = false;
+  m3q_hover.value[XH_PEN_PRESSURE] = 0;
+  m3q_hover.value[XH_PEN_DISTANCE] = 28;
+  xh_pen_sample_of(&m3q, 0, false, &m3q_hover, &m3q_sample);
+  CHECK(m3q_sample.in_range && !m3q_sample.touch && m3q_sample.distance == 28);
+  m3q_hover.tool = false;
+  xh_pen_sample_of(&m3q, 0, false, &m3q_hover, &m3q_sample);
+  CHECK(!m3q_sample.in_range && !m3q_sample.touch && m3q_sample.distance == 0);
 
   // The sample: a digitizer of 0..16000 x 0..34000, pressure 0..8191, height 0..255, tilt +-63 without a resolution.
   xh_pen_device d = { .fd = -1, .stylus = true };
@@ -1614,6 +1765,16 @@ static bool fake_can_lock(void) { return fake_can; }
 static void test_config(const char *dir)
 {
   xh_config c;
+  // Explicit, disabled-by-default touchscreen exclusivity is not confused
+  // with the existing input= boolean. Live EVIOCGRAB requires the phone.
+  xh_config_defaults(&c);
+  CHECK(!c.touch_exclusive && c.input && !c.cpu_affinity_bench);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "wrong") != 0);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0 && c.cpu_affinity_bench);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "0") == 0 && !c.cpu_affinity_bench);
+  CHECK(xh_config_set(&c, "touch-exclusive", "1") == 0 && c.touch_exclusive);
+  CHECK(xh_config_set(&c, "touch-exclusive", "wrong") != 0);
+  CHECK(xh_config_set(&c, "touch-exclusive", "0") == 0 && !c.touch_exclusive);
   bool ok;
   CHECK(xh_parse_size("4G", &ok) == 4ull << 30 && ok);
   CHECK(xh_parse_size("512m", &ok) == 512u << 20 && ok);
@@ -1629,10 +1790,113 @@ static void test_config(const char *dir)
   char *argv[] = { "xnuhost", "--session-abi", "1", "--mode", "takeover", "--runtime", "/data/runtime", "--image", image, "--data", (char *)dir, "--session", (char *)dir };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0);
+  CHECK(strstr(c.boot_args, "vgpu-3d=") == NULL);
+  CHECK(xh_gpu_boot_args(c.boot_args, sizeof c.boot_args, false) == 0 && strstr(c.boot_args, "vgpu-3d=") == NULL);
+  CHECK(xh_gpu_boot_args(c.boot_args, sizeof c.boot_args, true) == 0 && strstr(c.boot_args, " vgpu-3d=1") != NULL);
   CHECK(strstr(c.kernel, "/image/kernel.kc") && c.ndisk == 4 && strstr(c.disk[3].path, "data.seed") && !c.disk[3].writable && !c.disk[0].writable && strstr(c.disk[1].path, "systemos.img"));
   CHECK(c.disk[2].data_store && c.disk[2].writable && strstr(c.disk[2].path, "/data.img") && strstr(c.disk[2].seed, "data.seed"));
   CHECK(c.ncpu >= 1 && c.ncpu <= XH_MAX_CPUS && !strcmp(c.display, "shm") && c.input && c.tasks);
-  CHECK(c.bridges == 1 && !strcmp(c.bluetooth, "auto") && !strcmp(c.wifi, "auto"));                       // on in a session; the phone's HAL when it is there
+  CHECK(c.bridges == 1 && !strcmp(c.bluetooth, "auto") && !strcmp(c.wifi, "auto"));
+  // The exclusive physical touchscreen may only be grabbed in a non-takeover
+  // bench using the SHM display and no hardware bridges. All other modes fail.
+  char *touch_ok[] = { "xnuhost", "--image", image, "--mode", "bench", "--display", "shm",
+                       "--set", "bridges=0", "--set", "touch-exclusive=1" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, touch_ok) == 0 && xh_config_finish(&c) == 0 &&
+        c.touch_exclusive && c.input && c.bridges == 0 && !strcmp(c.display, "shm"));
+  // The opt-in CPU core-pairing experiment accepts only an isolated
+  // touch-exclusive SHM bench with hardware bridges still disabled.
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, touch_ok) == 0);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0);
+  CHECK(xh_config_finish(&c) == 0 && c.cpu_affinity_bench && c.bridges == 0 && c.cpu_pin == 1);
+
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, touch_ok) == 0);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0);
+  CHECK(xh_config_set(&c, "cpu-pin", "2") == 0);
+  CHECK(xh_config_finish(&c) != 0);
+
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0);
+  CHECK(xh_config_finish(&c) != 0);
+
+  char *touch_takeover[] = { "xnuhost", "--image", image, "--set", "touch-exclusive=1" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, touch_takeover) == 0 && xh_config_finish(&c) != 0);
+  char *touch_no_input[] = { "xnuhost", "--image", image, "--mode", "bench", "--set", "bridges=0",
+                             "--set", "touch-exclusive=1", "--no-input" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 10, touch_no_input) == 0 && xh_config_finish(&c) != 0);
+  char *touch_wrong_display[] = { "xnuhost", "--image", image, "--mode", "bench", "--display", "none",
+                                  "--set", "bridges=0", "--set", "touch-exclusive=1" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, touch_wrong_display) == 0 && xh_config_finish(&c) != 0);
+  char *touch_bridges[] = { "xnuhost", "--image", image, "--mode", "bench", "--display", "shm",
+                            "--set", "bridges=1", "--set", "touch-exclusive=1" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, touch_bridges) == 0 && xh_config_finish(&c) != 0);
+  // Actual full-bridges=1 on SM8850. This is NOT a brightness-only
+  // stand-in: native CPU topology/MMIO, battery, thermal, brightness and
+  // TSP all follow the generic bridges=1 path. The opt-in only relaxes
+  // exclusive touch for the exact guarded OneOS 8-vCPU bench profile.
+  xh_config_defaults(&c);
+  CHECK(xh_config_set(&c, "sm8850-full-bridges", "garbage") != 0);
+  CHECK(xh_config_args(&c, 11, touch_bridges) == 0);
+  CHECK(xh_config_set(&c, "sm8850-full-bridges", "1") == 0);
+  CHECK(xh_config_set(&c, "touch-sleep", "0") == 0);
+  CHECK(xh_config_set(&c, "cpu-affinity-bench", "0") == 0);
+  CHECK(xh_config_set(&c, "cpus", "8") == 0);
+  CHECK(xh_config_set(&c, "gpu", "3d") == 0);
+  CHECK(xh_config_set(&c, "wifi", "off") == 0);
+  CHECK(xh_config_set(&c, "bluetooth", "virtual") == 0);
+  CHECK(xh_config_set(&c, "haptics", "off") == 0);
+  CHECK(xh_config_set(&c, "runtime", "/data/runtime") == 0);
+  CHECK(xh_config_set(&c, "session", "/data/session") == 0);
+  CHECK(xh_config_set(&c, "data", "/data/data") == 0);
+  CHECK(xh_config_finish(&c) == 0 &&
+        c.sm8850_full_bridges && c.bridges == 1 && c.touch_exclusive &&
+        !c.touch_sleep && !c.cpu_affinity_bench && c.cpu_pin == 1 &&
+        c.ncpu == 8);
+
+  struct { const char *key, *value; } full_bridge_bad[] = {
+    { "bridges", "0" },
+    { "touch-sleep", "1" },
+    { "cpu-affinity-bench", "1" },
+    { "touch-exclusive", "0" },
+    { "cpus", "4" },
+    { "gpu", "2d" },
+    { "wifi", "auto" },
+    { "bluetooth", "hidl" },
+    { "haptics", "auto" },
+    { "encoder", "auto" },
+    { "runtime", "/tmp/runtime" },
+    { "session", "/tmp/session" },
+    { "data", "/tmp/data" },
+  };
+  for (unsigned i = 0; i < sizeof full_bridge_bad / sizeof *full_bridge_bad; i++) {
+    xh_config_defaults(&c);
+    CHECK(xh_config_args(&c, 11, touch_bridges) == 0);
+    CHECK(xh_config_set(&c, "sm8850-full-bridges", "1") == 0);
+    CHECK(xh_config_set(&c, "touch-sleep", "0") == 0);
+    CHECK(xh_config_set(&c, "cpu-affinity-bench", "0") == 0);
+    CHECK(xh_config_set(&c, "cpus", "8") == 0);
+    CHECK(xh_config_set(&c, "gpu", "3d") == 0);
+    CHECK(xh_config_set(&c, "wifi", "off") == 0);
+    CHECK(xh_config_set(&c, "bluetooth", "virtual") == 0);
+    CHECK(xh_config_set(&c, "haptics", "off") == 0);
+    CHECK(xh_config_set(&c, "runtime", "/data/runtime") == 0);
+    CHECK(xh_config_set(&c, "session", "/data/session") == 0);
+    CHECK(xh_config_set(&c, "data", "/data/data") == 0);
+    CHECK(xh_config_set(&c, full_bridge_bad[i].key, full_bridge_bad[i].value) == 0);
+    CHECK(xh_config_finish(&c) != 0);
+  }
+
+  // Reset before assertions for the original takeover fixture.
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0);
+  CHECK(c.haptics_native_impacts == 0 && strstr(c.boot_args, "oneios_native_impacts=") == NULL);                       // on in a session; the phone's HAL when it is there
   CHECK(c.touch_sleep && xh_config_set(&c, "touch-sleep", "0") == 0 && !c.touch_sleep && xh_config_set(&c, "touch-sleep", "maybe") != 0);
   c.touch_sleep = true;
   // the image set's own settings, and what the command line overrides
@@ -1644,6 +1908,23 @@ static void test_config(const char *dir)
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 10, argv2) == 0 && xh_config_finish(&c) == 0);
   CHECK(!strcmp(c.boot_args, "-v debug=0x8") && c.ncpu == 6 && c.ram_bytes == 6ull << 30 && !strcmp(c.display, "none") && !c.input && c.ndisk == 3);
+  char *gpu_2d[] = { "xnuhost", "--image", image, "--gpu", "2d", "--boot-args", "-v vgpu-3d=1" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 7, gpu_2d) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.gpu, "2d"));
+  CHECK(xh_gpu_boot_args(c.boot_args, sizeof c.boot_args, false) == 0 && !strcmp(c.boot_args, "-v vgpu-3d=1"));
+
+  char *gpu_legacy[] = { "xnuhost", "--image", image, "--gpu", "auto", "--set", "legacy-boot-args=1", "--boot-args", "-v vgpu-3d=0" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 9, gpu_legacy) == 0 && xh_config_finish(&c) == 0 && c.legacy_boot_args);
+  CHECK(xh_gpu_boot_args(c.boot_args, XL_BOOT_LINE_LENGTH_LEGACY, true) == 0 && !strcmp(c.boot_args, "-v vgpu-3d=0"));
+  memset(c.boot_args, 'x', XL_BOOT_LINE_LENGTH_LEGACY - sizeof " vgpu-3d=1");
+  c.boot_args[XL_BOOT_LINE_LENGTH_LEGACY - sizeof " vgpu-3d=1"] = 0;
+  CHECK(xh_gpu_boot_args(c.boot_args, XL_BOOT_LINE_LENGTH_LEGACY, true) == 0 && strlen(c.boot_args) == XL_BOOT_LINE_LENGTH_LEGACY - 1);
+  c.boot_args[XL_BOOT_LINE_LENGTH_LEGACY - sizeof " vgpu-3d=1"] = 'x';
+  c.boot_args[XL_BOOT_LINE_LENGTH_LEGACY - sizeof " vgpu-3d=1" + 1] = 0;
+  CHECK(xh_gpu_boot_args(c.boot_args, XL_BOOT_LINE_LENGTH_LEGACY, true) == -1);
+  CHECK(xh_gpu_boot_args(c.boot_args, XL_BOOT_LINE_LENGTH, true) == 0 &&
+        strstr(c.boot_args, " vgpu-3d=1") != NULL);
   // ram=auto (docs/booter.md 1): min(90% of MemTotal, MemTotal - 1.5 GiB) in 256 MiB steps, at least 1 GiB, at most 64 GiB.
   // 11,746,000 kB stands for a 12 GB phone's MemTotal (about 11.2 GiB; the phone's own number is read at the start).
   const uint64_t G = 1ull << 30, M = 1ull << 20, phone = 11746000ull << 10;
@@ -1870,6 +2151,47 @@ static void test_config(const char *dir)
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, hw2) == 0 && xh_config_finish(&c) == 0 && br_hw_choose(&c.hw, BR_HW_THERMAL, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG);
   CHECK(br_hw_choose(&c.hw, BR_HW_KEYS, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG && br_hw_fallback_allowed(&c.hw));
+  // The ordinary OneOS switch cannot inject host environment variables:
+  // xnuhost.conf must opt in the guest boot argument and Treble HAL together.
+  f = fopen(path, "w");
+  fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\nhw-backend-fallback=0\n", f);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0);
+  CHECK(c.haptics_native_impacts == 1 &&
+        br_hw_choose(&c.hw, BR_HW_HAPTICS, BR_HW_UNSET, NULL, 0) == BR_HW_TREBLE &&
+        strstr(c.boot_args, "oneios_native_impacts=1") != NULL &&
+        strstr(c.boot_args, "native-source-storage=1") != NULL);  // existing essential args kept
+  // Existing explicit guest opt-in is preserved once, not duplicated.
+  f = fopen(path, "w");
+  fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\nboot-args=-v oneios_native_impacts=1\n", f);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0);
+  CHECK(!strcmp(c.boot_args, "-v oneios_native_impacts=1"));
+  // A conflicting guest disable, Samsung fallback or missing Treble option fails closed.
+  f = fopen(path, "w");
+  fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\nboot-args=-v oneios_native_impacts=0\n", f);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == -1);
+  f = fopen(path, "w");
+  fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\nhw-backend-fallback=1\n", f);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == -1);
+  f = fopen(path, "w");
+  fputs("haptics-native-impacts=1\nhw-backend-haptics=samsung\n", f);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == -1);
+  // A command-line override can disable an image opt-in and must not append the guest arg.
+  char *hwopt[] = { "xnuhost", "--image", image, "--set", "haptics-native-impacts=0" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, hwopt) == 0 && xh_config_finish(&c) == 0 &&
+        c.haptics_native_impacts == 0 && strstr(c.boot_args, "oneios_native_impacts=") == NULL);
+  CHECK(xh_config_set(&c, "haptics-native-impacts", "maybe") != 0);
+  
   char *hw3[] = { "xnuhost", "--image", image, "--hw-backend", "pixel" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, hw3) == -1);
@@ -1947,6 +2269,15 @@ static void test_config(const char *dir)
   CHECK(xh_display_boot_args(args, sizeof args, 3, 120, XH_PIXELS_RGBA16F) == 0 && !strcmp(args, "oneios-display-wide=1 offline-legacy-unit-scale=3 sheng-vsync=120"));
   strcpy(args, "oneios-display-wide=0");
   CHECK(xh_display_boot_args(args, sizeof args, 3, 120, XH_PIXELS_RGBA16F) == 0 && !strcmp(args, "oneios-display-wide=0 offline-legacy-unit-scale=3 sheng-vsync=120"));
+  strcpy(args, "-v oneios-data-wait=3000 other-vgpu-3d=0");
+  CHECK(xh_gpu_boot_args(args, sizeof args, false) == 0 && !strcmp(args, "-v oneios-data-wait=3000 other-vgpu-3d=0"));
+  CHECK(xh_gpu_boot_args(args, sizeof args, true) == 0 && !strcmp(args, "-v oneios-data-wait=3000 other-vgpu-3d=0 vgpu-3d=1"));
+  CHECK(xh_gpu_boot_args(args, sizeof args, true) == 0 && !strcmp(args, "-v oneios-data-wait=3000 other-vgpu-3d=0 vgpu-3d=1"));
+  strcpy(args, "-v vgpu-3d=0");
+  CHECK(xh_gpu_boot_args(args, sizeof args, true) == 0 && !strcmp(args, "-v vgpu-3d=0"));
+  strcpy(args, "-v");
+  CHECK(xh_gpu_boot_args(args, 12, true) == -1 && !strcmp(args, "-v"));
+  CHECK(xh_gpu_boot_args(args, 13, true) == 0 && !strcmp(args, "-v vgpu-3d=1"));
   // display-format: the two names, nothing else; half floats need the shm back end
   {
     xh_config f;
@@ -2518,9 +2849,13 @@ static void test_usb(const char *dir)
 
 int main(void)
 {
+  // A normal failure must be visible even when a sanitizer aborts before
+  // stdio's final flush (e.g., during the configuration checks).
+  setvbuf(stdout, NULL, _IONBF, 0);
+  fprintf(stderr, "NATIVE_TEST_STAGE=begin\n");
   char dir[] = "/tmp/xnuhost-test-XXXXXX";
   if (!mkdtemp(dir)) return 2;
-  xh_log_open(NULL, XH_LOG_ERROR);
+  xh_log_open(NULL, getenv("ONEIOS_GPU_TRACE") ? XH_LOG_INFO : XH_LOG_ERROR);
   xh_virtio_translate = xh_ram;
   test_insn();
   test_return();
@@ -2532,6 +2867,8 @@ int main(void)
   test_virtio_blk(dir);
   test_virtio_gpu();
   test_virtio_gpu3d();
+  test_virtio_gpu3d_reset_overlap();
+  fprintf(stderr, "NATIVE_TEST_STAGE=virtio_input\n");
   test_virtio_input();
   test_input_filter();
   test_pen();
@@ -2542,11 +2879,16 @@ int main(void)
   test_cpu_window();
   test_perf();
   test_discard();
+  fprintf(stderr, "NATIVE_TEST_STAGE=ramfix\n");
   test_ramfix(dir);
   test_free_report();
   test_usb(dir);
-  if (!freopen("/dev/null", "w", stderr)) failures++;   // the refusals below print their reasons
+  // Never redirect sanitizer/runtime diagnostics to /dev/null: the optional
+  // touch-exclusive configuration checks can expose real failures here.
+  // Expected-invalid configuration warnings are useful and now visible.
+  fprintf(stderr, "NATIVE_TEST_STAGE=config\n");
   test_config(dir);
+  fprintf(stderr, "NATIVE_TEST_STAGE=cleanup\n");
   char command[300];
   snprintf(command, sizeof command, "rm -rf %s", dir);
   if (system(command)) failures++;

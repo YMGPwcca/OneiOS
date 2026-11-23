@@ -1,89 +1,102 @@
-# OneiOS to-do
+# Roadmap & engineering checklist
 
-Work that is known and wanted but not on the critical path to a first phone boot. The boot itself and its
-blockers live in the board, [agents.md](agents.md), and the status in [../README.md](../README.md). Keep this list
-short: an item here has a one-line what and why, and points at the file or doc that describes it.
+**OneiOS 27.0.1 · Galaxy S26 Ultra · last evidence review 2026-11-21**
 
-## Bridges: follow Project Treble / GSI standards where a HAL is reachable
+[← Handbook](README.md) · [Physical results](SM8850_LIVE_STATUS_2026-11-20.md) · [Architecture](architecture.md) · [Testing](building.md)
 
-OneiOS runs as a Treble/GSI-style container: the switch stops the Android framework (zygote, system_server, apps)
-but leaves the vendor HALs and `surfaceflinger`/`audioserver`/`cameraserver` running, and iOS's bridges become
-their clients ([hardware.md](hardware.md)). Today the bridges are a mix:
+> [!CAUTION]
+> **Current release gate: BLOCKED.** Hosted iOS booted, rendered its first frame and ran ~600.6 s, but the phone lagged badly and became very hot. Neither the OneiOS thermal guard nor the exact unattended reboot-return path is qualified. **Do not run another long takeover just to obtain performance metrics.**
 
-- **Through the vendor HAL (Treble-standard), keep as is:** Bluetooth (HIDL `android.hardware.bluetooth@1.1`
-  over hwbinder), camera (provider HAL + Camera2 NDK), GPU (KGSL), display (surfaceflinger).
-- **Direct to a kernel node (below the HAL), because the owning HAL lives in the dead framework:** haptics (evdev
-  FF), backlight (`/sys/class/backlight`), light sensor (evdev `als_rear`), touch/buttons (evdev), network
-  (`/dev/tun`).
+## Delivery sequence
 
-**To do:** audit each direct-node bridge and move it onto a vendor HAL that stays up in a session where one exists,
-so the path is Treble-correct and portable to other devices. Known concrete case first:
+| Phase | Goal | Gate to move forward |
+| :--- | :--- | :--- |
+| **P0 · Safety** | Thermal guard, recovery evidence and durable logs | Safe bounded termination proved, no false return PASS |
+| **P1 · CPU** | Locate syscall, page-fault, handoff and guest background work | Measured p95/p99 improvement in matched short sessions |
+| **P2 · Graphics** | Fix stalls, GPU resource cost and frame pacing | Touch-to-frame and fence/post timing measurements improve |
+| **P3 · Quality** | Memory, automation, reproducibility and final acceptance | Local CI + controlled real-phone evidence without heat/recovery regression |
 
-- [ ] **Light sensor through the sensors HAL.** `als_rear` read by evdev returns 0 lux on the S24 (the rear ALS
-  data goes through the sensor hub / SSC, not that evdev node; the front ALS is hub-only). The correct path is a
-  direct client of the vendor sensors HAL (AIDL `android.hardware.sensors`), which keeps running when
-  system_server is gone. See [hardware.md](hardware.md) section 7a and the `als_rear` facts. This is also what
-  auto-brightness needs to reach CoreBrightness.
-- [ ] Audit haptics, backlight, touch and network the same way: is there a vendor HAL that stays up in a session,
-  and is the HAL or the kernel node the right surface for each? Record the verdict per bridge in `hardware.md`.
-- [ ] Where a bridge must stay on a kernel node (no HAL survives the framework), note why in `hardware.md`, so the
-      choice is deliberate and documented, not accidental.
+The proposed [thermal guard](SM8850_THERMAL_GUARD.md), [independent recovery acceptance](SM8850_RECOVERY_ACCEPTANCE.md) and [measured performance baseline](SM8850_PERFORMANCE_BASELINE.md) describe outstanding work; writing them has **not implemented or verified** these gates.
 
-**Why:** a HAL is the device-independent, vendor-maintained surface; a raw `/dev`/`/sys` node is device-specific
-and can be fed by a different subsystem on another SoC (the ALS-vs-sensor-hub case). Using the HAL where one is
-reachable makes OneiOS correct here and portable later.
+## P0 · Must fix before another long takeover
+**Direct-parent port status (2026-11-21):** the missing Qualcomm Oryon MIDR topology from `akshaynexus/OneiOS` main `92886287724d3f9aa097dc17157281e585457500` is now in the SM8850 fork, with synthetic 2E/6P guest placement tests, retained S26 haptics ABI and an optional bench-only 8-vCPU affinity path. Companion OneOS conservative P0 source now selects that opt-in `cpu-affinity-bench=1` while keeping `bridges=0`, and its independent root guard logs session-bound thermal samples each 5 successful heartbeats. **All changes source-only; CachyOS unit/native build and phone validation not performed yet**. This is not an early CPU temperature cap: the previous CPU **101.1 C** fault at a 90 C experimental threshold remains an explicit STOP condition. Next code gate: local-first unit/build checks, then review thermal/recovery before any guest repeat. Do not enable hardware bridges or remove the full-run source lock.
 
-## Make the iOS image on the phone, and user docs to build and change it for their own phones
+**2026-11-21 new physical CPU90 300s-request result:** launch now advanced beyond the former `no_pid_birth` failure: `THERMAL_GUARD_ARMED=TRUE`, `FRAMEWORK_STOP_MARKER=TRUE`, `XNUHOST_LAUNCH_MARKER=TRUE`, external host witnessed a new normal One UI boot and operator reported an automatic reboot. The **actual guest runtime/first frame, exact original return requester and independently certified recovery remain UNVERIFIED**; the **new CPU thermal peak is now verified at 101.1 C on zone 27** (101100 mC, 11.1 C above this experiment's 90 C cutoff). Saved root thermal stream shows **FAIL_CLOSED soft_temperature_abort crossed=cpu**, distinct from earlier CPU55=75.2 C fault. Host saw ADB offline t=48.473s and new normal One UI boot t=70.541s. A return-request deadline at uptime 26646 was armed after Framework stop at 26346, but the guest did **not** last 300 s. Postboot root log still inaccessible. **Next: investigate guest CPU load/capacity and returner provenance from existing host evidence; no more CPU90 physical reruns or threshold increases**; preserve 600s lock and conservative P0 profile. See [physical status](SM8850_LIVE_STATUS_2026-11-20.md).
 
-The owner's request (2026-11-15). Today the image set and `kernel.kc` are made on a PC or a Mac and staged over USB.
-Apple's files can never be in a release (CLAUDE.md), so each user must make them from Apple's own IPSW. The tools
-that make them are already Rust (`oneios-tool`), so the OneOS app can run them on the phone. Do this when the kernel
-stops changing every day.
+**2026-11-21 read-only physical subgates:** corrected OneOS CPU90-branch guard returned `P0_THERMAL_PID_BIRTH=PASS_READ_ONLY` and `P0_THERMAL_GUARD=READ_ONLY_CURRENT_BOOT_READY_NOT_CERTIFIED` on S26 Ultra. The first proves PID-birth parsing; the second proves current-boot manifest/sensor acceptance. **Neither qualifies the detached guard heartbeat, watchdog or unattended reboot-return.** Next: non-disruptive independent heartbeat/lifecycle qualification design and separate returner provenance review. No APFS rearm or guest retry needed for these receipts.
 
-- [ ] **`oneios-tool` for Android arm64.** Cross-build it with the NDK (the parts the phone needs: `remotezip`,
-  `image`, `prelink`, `package`'s Apple-file check), ship it in the runtime release, and run it as root from the app.
-  Check that its speed and memory fit on the phone (the Mac's prelink took 4 s).
-  *State (2026-11-16):* built with the NDK (cd42491, 14.7 MB stripped); `oneios-tool serve` is the app's way in (#52: one
-  root process per flow, JSON lines, all cores at nice 10-19, the thermal stop); downloads for a mobile network:
-  `pause`/`resume`, the `net` event, tries with backoff, parallel ranges (`connections`, `give_up_s`), a part kept
-  with its state file for a later run (#61 merged); `runtime/package.sh` puts it into the
-  runtime package as `bin/oneios-tool` and beside it with its `.sha256`, in CI and the release (#49 merged; no tagged
-  release has it yet); the fork's app runs it as root (`oneios_root.sh tool`, OneOS #10 merged). Not run on the phone. Left: the
-  speed and memory of `prelink`, `remotezip` and `apfs-copy` on the phone ([building.md](building.md) section 7 has
-  the steps for the Mac).
-- [ ] **Build the kernel on the phone too.** The default is to download our released `xnu.macho` (`kernel/publish.sh`,
-  `kernel/release-kernel.txt`; open-source XNU and our patches, no Apple binaries). The phone must also build it
-  itself, fast: port the Linux build (`kernel/build-linux.sh`: clang, lld, the XNU build system, MIG) to arm64
-  Android (the NDK's or a bundled clang and lld), all 8 cores, ccache and incremental builds so that one patch
-  rebuilds in minutes. Guess: a full build about 10-20 min on the S24 Ultra (the 4-CPU PC took 800 s, the Mac 186 s);
-  measure it. Keep the phone cool: nice 19, never realtime, stop on the thermal line.
-- [ ] **Build the iOS-side plug-ins on the phone (Metal, camera).** Today they need Xcode. On the phone: clang for
-  arm64-apple-ios, `ld64.lld`, and the SDK's stubs made from the user's own IPSW (the dyld cache's exports as
-  `.tbd` files, the headers we write or the open-source ones). Apple's SDK is never shipped. Not proven: check
-  first that the plug-ins link and load this way on a PC.
-- [ ] **The app's "Make iOS image" step,** in the same flow as the Android systems' screens (fork #5):
-  1. download the runtime and `xnu.macho` from the OneiOS release (SHA-256 checked);
-  2. fetch only the needed parts of the iOS 27 IPSW from Apple's server for the user (`remotezip`, no full 10 GB),
-     or take an IPSW that the user gives;
-  3. unpack the volumes (`image apfs-copy`), apply the root tweaks and write `xnuhost.conf` for the phone;
-  4. prelink `kernel.kc` (`prelink`, then the audit and `stubs-check`);
-  5. stage as today, with the same checks.
-  Show the step, the space it needs, the time left and the reason when a step is refused. Keep the work and its
-  temporary files in the stage, and remove them on a cancel or a failure.
-  *State (2026-11-16):* the app's side is merged (fork #10, `bb1ef38`, main's `app/` pin: Set up iOS 27's image step and
-  Tools on iOS 27's page open **Make iOS image**; root's `begin image`, the tool's `make-image` into
-  `image.new` with its work in `<stage>/make`, root's `finish image`; the screen shows the tool's steps, progress,
-  time left, space and refusal; the downloads' pause, resume and net as the tool's README has them;
-  [../oneos/interface.md](../oneos/interface.md) section 9). Left: the tool's
-  `make-image` command (the steps above in one request; `tweaks` is still `not-ported`), then a run on the phone.
-- [ ] **Nothing has to stay on a PC or a Mac** (the owner, 2026-11-15): every step above runs on the phone itself,
-  and fast. A PC or a Mac stays an option for developers, never a need.
-- [ ] **User docs: build it and change it for your phone.** A short guide in plain steps, separate from the
-  developer docs:
-  - install the APK, download the runtime, make the iOS image in the app, switch, return;
-  - the same steps on a PC or a Mac for those who want to (`docs/building.md` shortened);
-  - change it for another phone: the hardware backends (`hw-backend=samsung|treble`, `docs/hardware.md` 7e), the
-    device profile (what a new phone needs: SoC, GPU, kernel features, the side keys, the touch screen), the
-    `xnuhost.conf` settings (RAM, the display, the S Pen), and how to report a session's logs (`oneios-tool phone
-    log`, `cycle --only collect`);
-  - what is safe to change and what must not change (the way back to One UI, CLAUDE.md's rules).
+**CPU90 experiment diagnosis (2026-11-21, isolated OneOS branch):** a physical attempt never stopped Framework because the root guard source used `BIRTH=$(birth $)` instead of `BIRTH=$(birth $$)`, producing `no_pid_birth`. `control/state=failed`; no new boot or guest launch; freshly rearmed APFS Data was still marked consumed. OneOS source fix adds a passive guard PID selftest before the APFS claim and before the wrapper's rearm. **Next: validate PID selftest on the actual phone read-only**, not another physical takeover. The 75.2 C fault recorded earlier belongs to the *preceding* 55 C attempt, not this CPU90 failure.
+
+
+**2026-11-21 physical 300s-request forensics:** one-shot APFS rearm PASS; 28-zone preflight PASS; *actual* root guard `soft_temperature_abort` captured CPU `cpu-0-2-1@10=75.2 C` over the conservative 55 C cutoff. Source passed `stop_android_framework()` but later comprehensive stop/deadline receipt and guest-launch proof were absent. Host saw a different normal One UI boot (ADB offline t=50.567s, new boot t=72.615s), and the operator reports no manual reset; exact root returner and watchdog transfer remain unverified. **P0 remains OPEN / no new takeover**; existing 3,358-byte switch log and thermal stream have been reviewed. Do not retry to fill missing receipts. See [live ledger](SM8850_LIVE_STATUS_2026-11-20.md) and [OneOS probe record](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-p0-thermal-reader-sim/docs/SM8850_SHORT_GUARDED_IOS_PROBE.md).
+
+- [ ] **P0.1 — Independent thermal telemetry.** Read SoC, battery and skin sensors using an isolated, read-only component available with `bench/bridges=0`. Define trustworthy sensor selection, units, missing-sensor behavior and session-token ownership. Do **not** enable unrelated hardware bridges.
+- [ ] **P0.2 — Bounded over-temperature response.** Add thermal thresholds, hysteresis and a fail-safe request to the existing OneOS reboot-return path, with deterministic logging. Keep vendor/kernel throttling intact; never force CPU/GPU clocks or disable thermal trips.
+  - **Observed subresults (not P0.2 acceptance):** conservative CPU55 probe detected CPU zone 10 at 75.2 C; isolated CPU90 probe armed independently, passed Framework stop and xnuhost launch, then detected **CPU zone 27 at 101.1 C**, triggering `soft_temperature_abort`. GPU 51.3 C, DDR 54.4 C, BAT 29.4 C, LRP 32.3 C and board AP 38.2 C were below experimental limits. Peak overshot 90 C by 11.1 C; **do not raise thermal cutoffs or repeat hot experiment**. Vendor thresholds, sustained load and causal reboot caller remain unqualified. Keep normal 55 C profile unchanged.
+- [ ] **P0.3 — Return provenance.** Read the last run's root-owned `return.log`, `return.outcome`, watcher/feeder evidence and `launches/*/switch.log` without another guest boot. Prove which process requested recovery and when. A reboot reason alone is not enough.
+- [ ] **P0.4 — Logs that survive root loss.** Preserve per-session CPU/GPU/thermal/display and final return receipts before reboot; report previously observed guest-ready/frame markers independently of rootless new-boot metadata. Reject stale session tokens.
+  - **Proven partial:** host captured preboot switch (3,358 bytes) and a separate thermal fault stream across ephemeral root loss. **Missing:** independent original `return.log`/`return.outcome` and authenticated reboot-requester trace. Prioritize a non-disruptive instrumentation design; do not relaunch the guest for logging alone.
+- [ ] **P0.5 — Unit + simulated physical-safety tests.** Exercise missing or implausible temperatures, stale heartbeat, watchdog errors, timeout ordering, malformed archive data and repeat-run refusal locally.
+
+**Acceptance:** no unsafe escalation on missing sensors; no unbounded heat exposure; return reporting distinguishes **observed new boot** from **verified original requester**. The normal OneOS app device gate remains unchanged.
+
+## P1 · CPU and scheduler bottlenecks
+
+- [ ] **P1.1 — Attribute traps.** Break down syscall, page fault, Mach handoff, futex wake/sleep and task-map/TLB costs by category and guest process. Investigate ~35.9k traps/s and long-tail outliers.
+- [ ] **P1.2 — Guest background work.** Establish whether Spotlight and iconservicesagent rebuild caches/indexes every time a fresh one-shot Data clone is used, without permanently disabling guest services.
+- [ ] **P1.3 — Safe vCPU pairing experiment.** Design opt-in 8-vCPU host affinity scoped to the guest threads only; keep the inherited cpuset, kernel/firmware caps and thermal behavior. A mask of `0–7` is not sufficient proof.
+- [ ] **P1.4 — Controlled A/B.** Repeat short sessions with identical touch paths and trace settings. Compare handoff p50/p99, CPU pressure, frequency policy ceilings and visible UI latency, not just raw trap rate.
+
+**Acceptance:** measurable interactive latency reduction without more heat, increased recovery risk or unverified device-wide scheduler tuning.
+
+## P2 · GPU and frame pacing
+
+- [ ] **P2.1 — GPU provenance.** Correlate active KGSL contexts, imported buffers, guest Vulkan entrypoints and fence retirement; distinguish observed acceleration from comprehensive Vulkan API support.
+- [ ] **P2.2 — Frame timeline.** Join guest scanout, backboardd fences, display-helper buffer lock/copy/post and touch timestamps in a single time base. Investigate no-post windows without treating a static frame as a lost FPS sample.
+- [ ] **P2.3 — Copy optimization.** Test dirty-rectangle handling and buffer ownership; quantify full-frame copy bandwidth before trying zero-copy.
+- [ ] **P2.4 — GPU memory lifecycle.** Audit blob allocation/free/import leaks and thermal impact; retain deterministic fallback and explicit status reporting when GPU auto uses 2D.
+
+**Acceptance:** touch-to-frame p95/p99 and stutter frequency improve; no frame corruption, buffer leak or unsupported FPS claim.
+
+## P3 · Platform readiness
+
+- [ ] **P3.1 — Memory and hugepages.** Explain page-table footprint and SHMEM THP behavior. No global hugepage or sysctl adjustments without isolation and rollback proof.
+- [ ] **P3.2 — Repeatable performance suite.** Collect fixed-duration FPS-related, post-cadence, touch latency, host handoff, GPU fence, guest RAM and real thermistor curves in versioned reports.
+- [ ] **P3.3 — Driver/HAL audit.** Retain only the hardware bridges actually required by the experimental session. Verify sensor, brightness, haptics, camera and network ownership individually before enabling a bridge.
+- [ ] **P3.4 — Build tooling improvements.** Keep the image pipeline local and trusted; optimize optional on-device packaging only after guest stability and recovery are accepted.
+- [ ] **P3.5 — Local-first CI.** Run all native/Python tests, ELF/NDK checks, SHA-256 package verification on CachyOS before final remote CI and risk-reviewed phone acceptance.
+
+## Already evidenced (do not repeat as TODO)
+
+| Observation | Scope |
+| :--- | :--- |
+| On-device isolated BusyBox mount probe | **PASS** in prior rearm; read-only stage and writable Data/session islands |
+| APFS Data clone | **PASS** one-shot fresh clone verification; consumed clones must not be reused |
+| Guest-ready and first frame | **OBSERVED** in full Framework takeover |
+| KGSL 3D activity | **OBSERVED** in captured full-run excerpt; not Vulkan conformance |
+| Approx. 600.6 s guest process | **OBSERVED**; not an independently authenticated deadline return |
+| Android boot after return | **OBSERVED** with named reboot reason; unassisted path **not verified** |
+| Local CI | **PASS** for the reported runtime build/package; not a new phone acceptance |
+
+---
+
+**Next:** [Physical evidence ledger](SM8850_LIVE_STATUS_2026-11-20.md) · [Interactive performance analysis](SM8850_IOS_INTERACTIVE_PERF_TRIAGE.md) · [Documentation policy](STYLE_GUIDE.md)
+
+
+### 2026-11-21 one-shot direct-parent integration source update
+
+The user requested one completed, **offline-only** integration batch rather than per-fix phone retests. The full audit and per-subsystem status are in [SM8850 direct-parent parity](SM8850_DIRECT_PARENT_PARITY.md) (the OneOS ledger links to the OneiOS matrix). Immediate parent pins: `akshaynexus/OneiOS` main `92886287724d3f9aa097dc17157281e585457500`, `akshaynexus/OneOS` `oneios` `53abb04e7bd87c785fff7a1db3ebd0742e777eb5`. The ancestral `fahadalijaved/OneOS` was deliberately **not** treated as the parent.
+
+Code newly added to OneiOS: `gpu3d_kgsl.c` initializes the missing virgl fence table; exact parent `0007-a830-waittimestamp-fences.patch` uses the stable timestamp wait path with explicit FENCE A/B override; three exact direct-parent Metal2Vulkan patches `0101`, `0102`, `0103` are staged after the base at 9xxx by `userland/metal/build.sh`. The already-ported Oryon CPU plan is retained; the fork's other S26 GPU tracing/thermal and native haptic/encoder fixes are not overwritten. Conservative OneOS `--mode bench --cpus 8` now pins `setway-skip=1`, `spin-host=0`, `spin-task=0`, `gpu-level=deadline`, `gpu-priority=1`, and isolated vCPU affinity, with fixed locked RAM and `bridges=0`. The screen remains limited to **60 Hz** in this hot-risk profile, so it cannot demonstrate 110-118 displayed FPS. Root guard thresholds and the 600s source denial are unchanged.
+
+A complete single-run CachyOS orchestrator is checked into [OneiOS scripts/sm8850-parent-integration-all.sh](https://github.com/YMGPwcca/OneiOS/blob/feat/oneios-sm8850-m3q/scripts/sm8850-parent-integration-all.sh). It fetches fork + **direct parent** snapshots, checks static cross-repo invariants, runs the full OneOS offline P0 suite (179 expected tests) and OneiOS full GPU3D-required native ARM64 CI/package/ELF/hash, attempts a read-only OneOS Probe Debug APK and the pinned iOS arm64e Metal/Turnip bundle, and emits a combined artifact directory, hash list and JSON report. A missing SDK/JDK/Metal pin or build failure is **BLOCKED**, not a silent full PASS. **No ADB/phone, APFS stage/rearm, watchdog/reboot or Framework takeover in the script.**
+
+**No new operator CachyOS run of this batch has been provided**; prior `PASS_HOST_ONLY` covered older source before these GPU/Metal fixes. No native new binary is on the phone. **P0 thermal 101.1 C fault/independently certified watchdog and unattended return remain open; never use the 90 C experiment as an acceptance shortcut.**
+
+**2026-11-21 SM8850 thermal adaptation (source only):** original `fahadalijaved/OneOS` has documented S26 Ultra SM8850 Android guest runs and a 3-level CPU heat cap. Companion OneOS P0 now ports the CPU frequency-control pattern as an independent, root-monitored, PRE-XNU host worker (source candidate 80/65/50%; never raises Samsung limits). P0 thermal abort thresholds, 600s refusal, and reboot-only return remain; OneiOS `scripts/sm8850-parent-integration-resume.sh` reruns new 193-test P0 regression and 670 Android JUnit while reusing hashed unchanged GPU3D/Metal builds. **New cap simulation/CI not executed on CachyOS, new CPU-cap hardware behavior and unassisted recovery not qualified.** Do not use this source-only port to authorize a new CPU90 physical session.
+
+## 2026-11-23 · Consolidation with original main
+
+The separate OneiOS `main` history supplied working phone-tool packaging (`bin/oneios-tool` and the standalone stripped ARM64 asset), mobile download resume/backoff/net protocol, and hosted kernel shared-region patch `0080`. These source changes are retained in the consolidated tree; see the archived original [main TODO](historical/MAIN_2026_11_23_TODO.md) for historical status and phone test plans. **Imported code is not automatically qualified by prior local/phone results; run current CachyOS CI before a release.**
+
+Current physical 180s no-userspace-thermal session: the guest reached ready and first frame with eight vCPUs, the operator saw Battery/Charging updates; the UI experienced multi-second frame gaps and a BackBoardD restart followed by SpringBoard respring. A GPU_COMMAND `Protocol error` preceded the restart, but causality is not yet proven. The configured 28% CPU cap limits throughput; the hardware/kernel thermal protections do not substitute for an independently qualified software cutoff or return path. Priority remains GPU submit/fence + respring forensics and independent recovery/thermal qualification. **Do not treat this as a stable usable iOS release.**

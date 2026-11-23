@@ -3,8 +3,10 @@
 #define _GNU_SOURCE
 #include "xnuhost.h"
 #include "gpu3d.h"
+#include "sm8850_stage_admission.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
@@ -23,6 +25,9 @@
 #include "xnuloader/boot.h"
 #include "xnuloader/machine.h"
 #include "xnuloader/macho.h"
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 
 #define EXIT_GUEST_OFF 0
 #define EXIT_SETUP 2
@@ -30,6 +35,111 @@
 #define EXIT_PANIC 4
 
 static xh_config config;
+
+// Explicitly bound to the SM8850 OneOS reboot-only run in an isolated
+// mount namespace. The stopped marker ALONE is insufficient: OneOS writes
+// it before it asks init to stop zygote. Never access Samsung backlight/TSP
+// until both services stopped, system_server disappeared, and the current
+// generation's recovery admission is verified (normal root thermal workers,
+// or an explicit 180s no-userspace-thermal session with reboot deadline).
+#ifdef __ANDROID__
+static bool sm8850_stage_line(const char *path, char *out, size_t size)
+{
+  int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) return false;
+  ssize_t n = read(fd, out, size - 1);
+  close(fd);
+  if (n < 1 || (size_t)n >= size - 1) return false;
+  out[n] = 0;
+  out[strcspn(out, "\r\n")] = 0;
+  return out[0] != 0;
+}
+
+static bool sm8850_server_absent(void)
+{
+  DIR *dir = opendir("/proc");
+  if (!dir) return false;
+  struct dirent *ent;
+  bool absent = true;
+  while ((ent = readdir(dir))) {
+    if (!*ent->d_name || strspn(ent->d_name, "0123456789") != strlen(ent->d_name)) continue;
+    char path[512], comm[40];
+    if (snprintf(path, sizeof path, "/proc/%s/comm", ent->d_name) >= (int)sizeof path) continue;
+    if (sm8850_stage_line(path, comm, sizeof comm) && !strcmp(comm, "system_server")) {
+      absent = false;
+      break;
+    }
+  }
+  closedir(dir);
+  return absent;
+}
+
+static bool sm8850_prop_stopped(const char *name, bool optional)
+{
+  char value[PROP_VALUE_MAX] = { 0 };
+  int count = __system_property_get(name, value);
+  return (optional && count == 0) || (count > 0 && !strcmp(value, "stopped"));
+}
+#endif
+
+static bool sm8850_full_bridge_admitted(void)
+{
+#ifndef __ANDROID__
+  return false;  // host-only unit/preview builds never touch the real panel
+#else
+  char mode[32], handback[32], state[32], boot[96], current[96];
+  char generation[160], guard[160] = {0}, cap[160] = {0}, ns_self[64], ns_init[64];
+  char software_thermal[32] = {0}, duration[32] = {0};
+  char confirmed[160] = {0}, deadline[32] = {0};
+  struct stat st;
+  if (geteuid() != 0 ||
+      strcmp(config.runtime, "/data/runtime") ||
+      strcmp(config.session, "/data/session") ||
+      strcmp(config.data, "/data/data")) return false;
+  if (lstat("/data/control/stopped", &st) || !S_ISREG(st.st_mode) ||
+      !sm8850_stage_line("/data/control/framework.mode", mode, sizeof mode) || strcmp(mode, "run") ||
+      !sm8850_stage_line("/data/control/framework.return", handback, sizeof handback) || strcmp(handback, "reboot") ||
+      !sm8850_stage_line("/data/control/state", state, sizeof state) ||
+      (strcmp(state, "starting") && strcmp(state, "running")) ||
+      !sm8850_stage_line("/data/control/boot", boot, sizeof boot) ||
+      !sm8850_stage_line("/proc/sys/kernel/random/boot_id", current, sizeof current) ||
+      strcmp(boot, current) ||
+      !sm8850_stage_line("/data/control/watchdog.generation", generation, sizeof generation))
+    return false;
+
+  // OneOS's 180s no-guard mode intentionally has neither thermal worker.
+  // Match its same-generation stop receipt and reboot deadline instead of
+  // fabricating thermal.guard.required / thermal.cap.required.
+  if (sm8850_stage_line("/data/control/framework.soft-thermal",
+                        software_thermal, sizeof software_thermal)) {
+    (void)sm8850_stage_line("/data/control/framework.duration", duration, sizeof duration);
+    (void)sm8850_stage_line("/data/control/framework.takeover-confirmed",
+                            confirmed, sizeof confirmed);
+    (void)sm8850_stage_line("/data/control/framework.deadline", deadline, sizeof deadline);
+  } else {
+    (void)sm8850_stage_line("/data/control/thermal.guard.required", guard, sizeof guard);
+    (void)sm8850_stage_line("/data/control/thermal.cap.required", cap, sizeof cap);
+  }
+  xh_sm8850_stage_profile stage_profile = xh_sm8850_classify_stage(
+      generation, software_thermal, duration, confirmed, deadline, guard, cap);
+  if (stage_profile == XH_SM8850_STAGE_REFUSED) return false;
+  ssize_t a = readlink("/proc/self/ns/mnt", ns_self, sizeof ns_self - 1);
+  ssize_t z = readlink("/proc/1/ns/mnt", ns_init, sizeof ns_init - 1);
+  if (a <= 0 || z <= 0) return false;
+  ns_self[a] = ns_init[z] = 0;
+  if (!strcmp(ns_self, ns_init) ||
+      !sm8850_prop_stopped("init.svc.zygote", false) ||
+      !sm8850_prop_stopped("init.svc.zygote_next", false) ||
+      !sm8850_prop_stopped("init.svc.zygote_secondary", true) ||
+      !sm8850_server_absent()) return false;
+  if (stage_profile == XH_SM8850_STAGE_NO_USERSPACE_THERMAL_180S)
+    LOGI("SM8850_FULL_BRIDGES=ADMITTED_NO_USERSPACE_THERMAL_180S; "
+         "FRAMEWORK_STOP_GENERATION=VERIFIED; REBOOT_DEADLINE=PRESENT; "
+         "KERNEL_THERMAL_UNCHANGED; SOFTWARE_THERMAL_CUTOFF=OFF");
+  return true;
+#endif
+}
+
 static struct { uint32_t requested, reason, code; char why[96]; } stop_state;
 static pthread_mutex_t stop_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool guest_ready;
@@ -350,7 +460,75 @@ static void place(int tid, unsigned vcpu)
   cpu_set_t set;
   CPU_ZERO(&set);
   for (unsigned i = 0; i < 64 && i < CPU_SETSIZE; i++) if (mask >> i & 1) CPU_SET(i, &set);
-  if (sched_setaffinity(tid, sizeof set, &set) && tid == 0) LOGE("cpu: vCPU %u on host CPUs 0x%llx: %s", vcpu, (unsigned long long)mask, strerror(errno));
+  if (sched_setaffinity(tid, sizeof set, &set) && (tid == 0 || config.cpu_affinity_bench))
+    LOGE("cpu: vCPU %u thread %d on host CPUs 0x%llx: %s", vcpu, tid, (unsigned long long)mask, strerror(errno));
+}
+// Strict bench-only pairing: up to 8 vCPUs each get a distinct, allowed
+// host CPU (shared with the iOS thread released by that vCPU). This is scoped
+// to xnuhost/task threads: no device bridge, cpufreq MMIO, global governor or
+// thermal sysfs writes. Guest-visible CPU cluster types are unchanged.
+// On an 8-core Qualcomm Oryon host, reuse the direct-parent topology plan
+// (slowest 2 physical P cores lent to E vCPUs) for placement only; otherwise
+// preserve the existing capacity-ranked A/B path. Never stack two vCPUs on
+// one host core, and fail closed when the cpuset lacks eight allowed cores.
+static int bench_affinity_init(void)
+{
+  br_cpu_topology host;
+  cpu_set_t allowed;
+  if (br_cpu_read("/sys", &host) || sched_getaffinity(0, sizeof allowed, &allowed)) {
+    LOGE("cpu: bench affinity refused: host topology or cpuset unreadable");
+    return -1;
+  }
+  unsigned ids[XH_MAX_CPUS], found = 0;
+  for (unsigned c = 0; c < host.ncpu && c < 64 && c < CPU_SETSIZE; c++)
+    if (host.cpu[c].present && CPU_ISSET(c, &allowed) && found < XH_MAX_CPUS) ids[found++] = c;
+  if (found < config.ncpu) {
+    LOGE("cpu: bench affinity refused: only %u allowed, present CPUs for %u vCPUs", found, config.ncpu);
+    return -1;
+  }
+  for (unsigned i = 0; i < found; i++)
+    for (unsigned j = i + 1; j < found; j++) {
+      const br_host_cpu *a = &host.cpu[ids[i]], *b = &host.cpu[ids[j]];
+      unsigned ra = a->capacity ? a->capacity : a->max_khz / 1000;
+      unsigned rb = b->capacity ? b->capacity : b->max_khz / 1000;
+      if (rb > ra || (rb == ra && (b->max_khz > a->max_khz ||
+          (b->max_khz == a->max_khz && ids[j] > ids[i])))) {
+        unsigned tmp = ids[i]; ids[i] = ids[j]; ids[j] = tmp;
+      }
+    }
+  // Reuse parent fork's Oryon physical-core ordering without enabling
+  // hardware bridges or modifying XNU's guest-visible CPU cluster metadata.
+  // Do not assume an SM8850 layout from a generic 0-7 mask: every MIDR and
+  // allowed core is checked. If any core cannot be identified, fall back to
+  // the old capacity-ranked A/B path, not to an invented topology.
+  bool parent_oryon = config.ncpu == 8 && host.ncpu == 8 && host.n_e == 0 && host.n_p == 8;
+  for (unsigned i = 0; i < 8 && parent_oryon; i++)
+    if (!host.cpu[i].present || host.cpu[i].implementer != 0x51 || !CPU_ISSET(i, &allowed))
+      parent_oryon = false;
+  if (parent_oryon) {
+    br_cpu_plan parent_plan;
+    if (br_cpu_plan_make(&host, 8, true, &parent_plan) == 0 &&
+        parent_plan.n_e == 2 && parent_plan.n_p == 6) {
+      for (unsigned i = 0; i < 8; i++) ids[i] = parent_plan.v[i].host_cpu;
+      LOGI("cpu: SM8850 Oryon parent placement selected: 2 borrowed E + 6 P host-core slots; bridge and guest cluster changes remain off");
+    } else {
+      LOGE("cpu: Oryon parent plan unavailable; preserving capacity-ranked bench mapping");
+    }
+  }
+  memset(&cpu_plan, 0, sizeof cpu_plan);
+  cpu_plan.nvcpu = config.ncpu;
+  for (unsigned i = 0; i < config.ncpu; i++) {
+    cpu_plan.v[i].affinity = 1ull << ids[i];
+    cpu_plan.v[i].type = 'P';  // placement only: no guest-visible CPU cluster change
+    cpu_plan.v[i].host_cpu = ids[i];
+    LOGI("cpu: bench-affinity vCPU %u and its iOS threads -> host CPU %u (capacity %u, max %u kHz)",
+         i, ids[i], host.cpu[ids[i]].capacity, host.cpu[ids[i]].max_khz);
+  }
+  cpu_plan_base = cpu_plan;
+  cpu_planned = true;
+  xh_cpu_place = place;
+  LOGI("cpu: bench-affinity=1: distinct host cores; guest topology unchanged, no cpufreq/uclamp/thermal/device bridge");
+  return 0;
 }
 static int vcpu_tid(unsigned vcpu) { return vcpu < g_ncpu ? g_vcpu[vcpu].tid : 0; }
 // The thermal bridge's step (br_thermal_cap_for): the vCPUs and the iOS threads they run keep to fewer, slower cores
@@ -370,8 +548,9 @@ static void thermal_step(void *ctx, const br_thermal_state *state)
 // The host's cores as read at start (named files only, runtime/bridges/cpu), what each vCPU is described as to iOS, and the
 // cpuset xnuhost runs in: a cpuset of fewer CPUs (Android's background or system-background) would keep the vCPUs off the
 // X4 and the A720s whatever cpu-pin asks, so its CPUs are said here (host-overhead, 2026-11-15).
-static const char *core_name(unsigned part)
+static const char *core_name(unsigned implementer, unsigned part)
 {
+  if (implementer == 0x51) return "Qualcomm Oryon";
   return part == 0xd80 ? "Cortex-A520" : part == 0xd81 ? "Cortex-A720" : part == 0xd82 ? "Cortex-X4" : part == 0xd46 ? "Cortex-A510" :
          part == 0xd4d ? "Cortex-A715" : part == 0xd4e ? "Cortex-X3" : part ? "an Arm core" : "unknown";
 }
@@ -396,7 +575,7 @@ static void log_cpu_layout(const br_cpu_topology *host)
   for (unsigned c = 0; c < host->ncpu; c++) {
     const br_host_cpu *h = &host->cpu[c];
     if (!h->present) continue;
-    LOGI("cpu: host CPU %u: %s (part 0x%x), %c, frequency domain of CPU %u, capacity %u, %u-%u kHz%s%s%.0u", c, core_name(h->part), h->part,
+    LOGI("cpu: host CPU %u: %s (implementer 0x%x, part 0x%x), %c, frequency domain of CPU %u, capacity %u, %u-%u kHz%s%s%.0u", c, core_name(h->implementer, h->part), h->implementer, h->part,
          h->type, h->policy, h->capacity, h->min_khz, h->max_khz, h->boost_khz ? " (top as a boost frequency)" : "",
          h->scaling_max_khz && h->scaling_max_khz < h->max_khz ? "; capped now: scaling_max_freq " : "",
          h->scaling_max_khz && h->scaling_max_khz < h->max_khz ? h->scaling_max_khz : 0);
@@ -511,6 +690,13 @@ static void audio_latency_arg(const br_audio_backend *audio, void *ctx)
 
 static int boot(void)
 {
+  // Verify the full-bridges experiment before touching guest RAM, KGSL,
+  // /dev/input or any Samsung CPU/HAL/panel device. Android Framework must
+  // be down and its root-owned recovery admission match THIS boot.
+  if (config.sm8850_full_bridges && !sm8850_full_bridge_admitted()) {
+    LOGE("SM8850_FULL_BRIDGES=BLOCKED_FRAMEWORK_OR_STAGE_NOT_VERIFIED; no host hardware opened");
+    return -1;
+  }
   const char *error = NULL;
   static xl_kernel kernel;
   size_t image_size = 0;
@@ -614,19 +800,32 @@ static int boot(void)
     if (!gpu3d && !strcmp(config.gpu, "3d")) { LOGE("gpu: no 3D: %s", why); return -1; }
     if (!gpu3d) LOGI("gpu: 2D only: %s", why);
   }
+  const size_t boot_args_size = config.legacy_boot_args ? XL_BOOT_LINE_LENGTH_LEGACY : sizeof config.boot_args;
+  if (xh_gpu_boot_args(config.boot_args, boot_args_size, gpu3d != NULL)) {
+    LOGE("gpu: no room in the boot arguments for vgpu-3d=1");
+    return -1;
+  }
   if (!input || !xh_virtio_gpu_create_3d(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, fb_width, fb_height, gpu3d)) return -1;
   kinds[ndev++] = XL_DEV_GPU;
   // The hardware backend of each bridge (hw-backend, bridges/hw_backend.h): set before any of them opens.
   br_hw_configure(&config.hw);
   if (config.input) {
-    // Touch and the side keys: one lookup for both backends (input.c: event0..31 by their capabilities, never grabbed).
+    // Touch and side keys: a bench may explicitly grab only the physical sec_touchscreen.
     char touch_why[64], keys_why[64];
     int touch_hw = br_hw_choose(&config.hw, BR_HW_TOUCH, BR_HW_UNSET, touch_why, sizeof touch_why);
     int keys_hw = br_hw_choose(&config.hw, BR_HW_KEYS, BR_HW_UNSET, keys_why, sizeof keys_why);
     LOGI("hw: touch: backend %s (%s); keys: backend %s (%s): the same lookup in both, /dev/input/event0..31 by their "
-         "capabilities, read only, never grabbed", br_hw_name(touch_hw), touch_why, br_hw_name(keys_hw), keys_why);
+         "capabilities; exclusive touch %s", br_hw_name(touch_hw), touch_why, br_hw_name(keys_hw), keys_why,
+         config.touch_exclusive ? "requested" : "off");
   }
-  if (config.input && xh_input_start(input, pen.dev && pen.device.fd >= 0 ? &pen : NULL, fb_width, fb_height)) LOGE("input: could not start; continuing without");
+  if (config.input && xh_input_start(input, pen.dev && pen.device.fd >= 0 ? &pen : NULL,
+                                     fb_width, fb_height, config.touch_exclusive)) {
+    if (config.touch_exclusive) {
+      LOGE("input: exclusive touchscreen unavailable; refusing to boot guest, Android input stays usable");
+      return -1;
+    }
+    LOGE("input: could not start; continuing without");
+  }
   if (xh_input_script_start(input, pen.dev && pen.device.fd < 0 ? pen.dev : NULL)) return -1;
 
   static xl_machine machine;
@@ -672,8 +871,21 @@ static int boot(void)
       if (config.cpu_pin)
         for (unsigned i = 0; i < config.ncpu; i++) LOGI("cpu%u: host CPU mask 0x%llx", i, (unsigned long long)place_mask(i));
       log_cpu_layout(&host);
-    } else LOGI("cpu: no host topology under /sys: vCPUs are not placed");
+    } else {
+      LOGI("cpu: no host topology under /sys: vCPUs are not placed");
+      if (config.sm8850_full_bridges) {
+        LOGE("SM8850_FULL_BRIDGES=BLOCKED_CPU_TOPOLOGY");
+        return -1;
+      }
+    }
+    if (config.sm8850_full_bridges && !cpu_freq) {
+      LOGE("SM8850_FULL_BRIDGES=BLOCKED_CPUFREQ_MMIO");
+      return -1;
+    }
   }
+  // Affinity-only bench is separate from config.bridges. Never initialize
+  // the host hardware bridges, the cpufreq MMIO or a thermal/governor writer.
+  if (config.cpu_affinity_bench && bench_affinity_init()) return -1;
   if (!cpu_planned && config.cpu_pin == 2) {
     // A bench run (make bench-arm64): vCPU i and the iOS thread it runs on host CPU i, as cpu-pin does on the phone.
     cpu_plan.nvcpu = config.ncpu;
@@ -689,6 +901,15 @@ static int boot(void)
     bool hidl = !strcmp(config.bluetooth, "hidl"), sim = !strcmp(config.bluetooth, "sim");
     int hal = 0;
     if (!strcmp(config.bluetooth, "auto")) { hal = br_hci_hidl_probe(); hidl = hal > 0; }
+    // The session configuration opts in both guest and host. Keep the HAL
+    // preset path disabled unless explicitly requested: normal sessions use
+    // their existing legacy vibration path.
+    if (setenv("ONEIOS_HAPTIC_NATIVE_IMPACTS", config.haptics_native_impacts ? "1" : "0", 1)) {
+      LOGE("haptics: cannot configure native impacts in the host environment");
+      return -1;
+    }
+    if (config.haptics_native_impacts)
+      LOGI("haptics: native impacts requested by session config (treble, fallback off; guest boot arg enabled)");
     // Haptics: the phone's force-feedback device (auto), none (off), or the stand-in actuator (sim).
     haptic = !strcmp(config.haptics, "sim") ? br_haptic_open_sim() : !strcmp(config.haptics, "off") ? NULL : br_haptic_open(NULL);
     if (!haptic && !strcmp(config.haptics, "off")) LOGI("haptics: off (haptics=off): iOS gets no actuator");
@@ -697,11 +918,28 @@ static int boot(void)
     if (brightness) xh_input_power_key = power_key_pressed;        // the touch IC is woken at each press
     battery = br_battery_open(NULL);
     thermal = br_thermal_open(NULL);
+    if (config.sm8850_full_bridges) {
+      br_bright_info info = { 0 };
+      if (brightness) br_bright_info_get(brightness, &info);
+      // A "bridges=1" run must not silently claim panel/touch support
+      // without the real Samsung backlight and TSP power controls.
+      if (!brightness || !info.panel || !info.touch_nodes || !battery || !thermal) {
+        LOGE("SM8850_FULL_BRIDGES=BLOCKED_MISSING_HARDWARE panel=%d tsp=%u battery=%d thermal=%d",
+             (int)info.panel, info.touch_nodes, battery != NULL, thermal != NULL);
+        return -1;
+      }
+    }
     if (thermal) br_thermal_on_cap(thermal, thermal_step, NULL);
     br_bridge_config bridge = { .haptic = haptic, .hci_factory = hidl ? br_hci_open_hidl : sim ? br_hci_open_sim : NULL,
                                 .brightness = brightness, .battery = battery, .thermal = thermal };
     bool have_bridge = br_bridge_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, &bridge) != NULL;
     if (have_bridge) kinds[ndev++] = XL_DEV_BRIDGE;
+    if (config.sm8850_full_bridges && !have_bridge) {
+      LOGE("SM8850_FULL_BRIDGES=BLOCKED_VIRTIO_CREATE");
+      return -1;
+    }
+    if (config.sm8850_full_bridges)
+      LOGI("SM8850_FULL_BRIDGES=ACTIVE; bridges=1; CPU_TOPOLOGY=ON CPUFREQ_MMIO=ON BRIGHTNESS_TSP=ON BATTERY=ON THERMAL=ON; WIFI=OFF HAPTICS=OFF BLUETOOTH=VIRTUAL");
     if (sim && have_bridge) bt_sim_on(&machine);
     else if (sim) LOGI("bluetooth: off: no bridge device for the stand-in controller's packets");
     else if (hidl && have_bridge) {

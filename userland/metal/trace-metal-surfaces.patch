@@ -1,0 +1,86 @@
+diff --git a/NativeBridgeMetalFrontend.mm b/NativeBridgeMetalFrontend.mm
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -1083,7 +1083,20 @@
+  gNoCopyReleased++;
+  void (^deallocator)(void *,NSUInteger)=(__bridge_transfer void (^)(void *,NSUInteger))context;deallocator(pointer,(NSUInteger)length);
+ }
+-static void releaseSurface(void *context,void *,uint64_t) {gSurfaceImportsReleased++;CFRelease((IOSurfaceRef)context);}
++// These identities belong to NativeMetal, independent of QuartzCore's software
++// wrappers and the host's virtio resource IDs.
++static void traceSurface(const char *event, IOSurfaceRef surface, const void *owner) {
++ static const bool enabled = getenv("ONEIOS_SURFACE_TRACE") != nullptr;
++ if (enabled)
++  fprintf(stderr,"oneios-metal-surface process=%s pid=%d event=%s iosurface=%u object=%p owner=%p\n",
++          getprogname(),getpid(),event,IOSurfaceGetID(surface),static_cast<const void *>(surface),owner);
++}
++static void releaseSurface(void *context,void *,uint64_t) {
++ IOSurfaceRef surface=(IOSurfaceRef)context;
++ traceSurface("import-release",surface,nullptr);
++ gSurfaceImportsReleased++;
++ CFRelease(surface);
++}
+ @implementation NBBuffer
+ - (void)dealloc {
+  nmb_buffer_release(_handle);
+@@ -1130,7 +1143,11 @@
+ // held, and its retain count was then read from freed memory (backboardd faulted in this loop on a completion thread).
+ static void pruneHeldImports(bool all,std::vector<NBBuffer *> &gone) {
+  for(auto it=gHeldImports.begin();it!=gHeldImports.end();) {
+-  if(all || CFGetRetainCount(it->second.surface)<=1){gone.push_back(it->second.buffer);it=gHeldImports.erase(it);}
++  if(all || CFGetRetainCount(it->second.surface)<=1){
++   traceSurface("cache-remove",it->second.surface,(__bridge const void *)it->second.buffer);
++   gone.push_back(it->second.buffer);
++   it=gHeldImports.erase(it);
++  }
+   else ++it;
+  }
+ }
+@@ -1182,6 +1199,7 @@
+ static void holdImport(uint64_t identity,uint64_t address,uint64_t bytes,NBBuffer *buffer,std::vector<NBBuffer *> &gone) {
+  pruneHeldImports(false,gone);
+  gHeldImports[{identity,address,bytes}]={buffer,buffer.importedSurface};
++ traceSurface("cache-hold",buffer.importedSurface,(__bridge const void *)buffer);
+ }
+ static NBBuffer *surfaceBuffer(IOSurfaceRef surface,void *base,size_t bytes) {
+  struct Key {uint64_t identity,address,bytes;};
+@@ -1194,9 +1212,11 @@
+  NBBuffer *buffer=key?[gSurfaceImports objectForKey:key]:nil;
+  if(buffer){if(key)holdImport(value.identity,value.address,value.bytes,buffer,gone);return buffer;}
+  // The surface keeps its CPU mapping (the imported pages) until the import is freed.
++ traceSurface("import-retain",surface,gDevice);
+  NmbBuffer *handle=nmb_buffer_new_no_copy_releasing(gDevice,base,bytes,MTLResourceStorageModeShared,releaseSurface,(void *)CFRetain(surface));
+- if(!handle){CFRelease(surface);NBLOG(@"native-metal: surface import refused: %@",lastError());return nil;}
++ if(!handle){traceSurface("import-refused",surface,gDevice);CFRelease(surface);NBLOG(@"native-metal: surface import refused: %@",lastError());return nil;}
+  gSurfaceImportsMade++;buffer=[NBBuffer new];buffer.handle=handle;buffer.options=MTLResourceStorageModeShared;buffer.importedSurface=surface;
++ traceSurface("import-created",surface,(__bridge const void *)buffer);
+  if(key) {
+   // Associations whose import is gone are pruned whenever the table has doubled since the last pruning; a live one is never evicted.
+   if(gSurfaceImports.count>=gSurfaceImportsPruned) {
+@@ -1306,7 +1326,14 @@
+  return true;
+ }
+ @implementation NBTexture
+-- (void)dealloc {nmb_texture_release(_handle);if(_surface){if(_counted)IOSurfaceDecrementUseCount(_surface);CFRelease(_surface);}}
++- (void)dealloc {
++ nmb_texture_release(_handle);
++ if(_surface){
++  traceSurface("texture-release",_surface,(__bridge const void *)self);
++  if(_counted)IOSurfaceDecrementUseCount(_surface);
++  CFRelease(_surface);
++ }
++}
+ - (void)countUse {if(_surface && !_counted && gCountsSurfaceUse){IOSurfaceIncrementUseCount(_surface);_counted=YES;}}
+ - (MTLTextureType)textureType {return (MTLTextureType)_descriptor.type;}
+ // The word an argument buffer holds for the texture (MTLArgumentEncoder writes the same); a view has its own.
+@@ -4601,7 +4628,9 @@
+  NBTexture *texture=planes>=2?textureOnSurface(buffer,d,surface,plane,start-(uintptr_t)base,row):textureOnBuffer(buffer,d,start-(uintptr_t)base,row,true);
+  if(!texture){refuseSurface(5,surface,d,plane,start-(uintptr_t)base,row);return nil;}
+  if(gLogTextures)logTexture("iosurface",d,surface,plane,base,start-(uintptr_t)base,row,texture!=nil);
+- gSurfaceTextures++;texture.surface=(IOSurfaceRef)CFRetain(surface);[texture countUse];return (id<MTLTexture>)texture;
++ gSurfaceTextures++;texture.surface=(IOSurfaceRef)CFRetain(surface);[texture countUse];
++ traceSurface("texture-retain",surface,(__bridge const void *)texture);
++ return (id<MTLTexture>)texture;
+ }
+ // One L line per library made (its source, size and function names), and with /private/var/ngpu/debug/dump-libraries each library made
+ // from data written beside the journal (libs/<size>-<hash>.metallib): RenderBox links a function of a library it builds at run time

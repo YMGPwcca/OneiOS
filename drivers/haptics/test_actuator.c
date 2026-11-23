@@ -10,7 +10,7 @@ static int failures, checks;
 
 #define PERIOD 240u   // the engine's period: 5 ms at 48 kHz
 
-struct tally { unsigned vibs, stops, first_ms, last_intensity, last_hz; };
+struct tally { unsigned vibs, stops, impacts, impact_intensity, first_ms, last_intensity, last_hz; };
 
 // Feeds `ms` of a sine of `hz` at `amplitude` (0: silence) in engine periods; counts the requests.
 static void feed(struct oa_state *s, struct tally *t, unsigned ms, double hz, double amplitude, unsigned channels, double *phase)
@@ -30,6 +30,9 @@ static void feed(struct oa_state *s, struct tally *t, unsigned ms, double hz, do
 			t->last_hz = r.hz;
 		} else if (r.action == OA_STOP) {
 			t->stops++;
+		} else if (r.action == OA_IMPACT) {
+			t->impacts++;
+			t->impact_intensity = r.intensity;
 		}
 	}
 }
@@ -106,6 +109,33 @@ int main(void)
 		feed(&s, &t, 5, 230, 32000, 1, &phase);
 		CHECK(t.vibs == 1, "after a long silence: %u requests", t.vibs);
 	}
+	/* Opt-in native taps: do not turn the first 20-ms segment of a
+	 * continuous waveform into a spurious impact. A short isolated burst
+	 * becomes one tagged impact after 10 ms of silence. */
+	{
+		struct oa_state s; memset(&s, 0, sizeof s); s.native_taps = true;
+		struct tally t = { 0 };
+		feed(&s, &t, 5, 230, 32000, 1, &phase);
+		feed(&s, &t, 100, 0, 0, 1, &phase);
+		CHECK(t.impacts == 1 && t.vibs == 0 && t.stops == 0 && t.impact_intensity > 900,
+		    "native tap: impacts %u vibs %u stops %u intensity %u",
+		    t.impacts, t.vibs, t.stops, t.impact_intensity);
+		feed(&s, &t, 10, 145, 3277, 1, &phase);
+		feed(&s, &t, 100, 0, 0, 1, &phase);
+		CHECK(t.impacts == 2 && t.vibs == 0 && t.stops == 0 && t.impact_intensity >= 80 &&
+		    t.impact_intensity <= 120,
+		    "native keyboard: impacts %u vibs %u intensity %u",
+		    t.impacts, t.vibs, t.impact_intensity);
+	}
+	{
+		struct oa_state s; memset(&s, 0, sizeof s); s.native_taps = true;
+		struct tally t = { 0 };
+		feed(&s, &t, 1000, 160, 16000, 1, &phase);
+		feed(&s, &t, 100, 0, 0, 1, &phase);
+		CHECK(t.impacts == 0 && t.vibs >= 15 && t.vibs <= 40 && t.stops == 1,
+		    "native sustained: impacts %u, vib %u, stops %u", t.impacts, t.vibs, t.stops);
+	}
+
 	printf("actuator: %d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

@@ -30,7 +30,9 @@ void xh_config_defaults(xh_config *c)
   strcpy(c->display, "shm");
   strcpy(c->gpu, "auto");
   c->input = true;
+  c->touch_exclusive = false;  // optional bench-only touchscreen grab
   c->touch_sleep = true;
+  c->sm8850_full_bridges = false; // do not relax the exclusive-touch/bridges gate by default
   c->tasks = true;
   c->task_uid = -1;
   c->log_level = XH_LOG_INFO;
@@ -41,6 +43,7 @@ void xh_config_defaults(xh_config *c)
   c->gpu_priority = -1;
   strcpy(c->bluetooth, "auto");
   strcpy(c->haptics, "auto");
+  c->haptics_native_impacts = -1;
   strcpy(c->pen, "off");
   strcpy(c->pen_rotate, "auto");
   strcpy(c->encoder, "off");
@@ -147,10 +150,12 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
     c->text_fixups_length += (unsigned)n + 1;
   }
   else if (!strcmp(key, "input")) return flag(value, &c->input);
+  else if (!strcmp(key, "touch-exclusive")) return flag(value, &c->touch_exclusive);
   else if (!strcmp(key, "input-script")) return copy(c->input_script, sizeof c->input_script, value);
   else if (!strcmp(key, "tasks")) return flag(value, &c->tasks);
   else if (!strcmp(key, "task-uid")) c->task_uid = atoi(value);
   else if (!strcmp(key, "touch-sleep")) return flag(value, &c->touch_sleep);
+  else if (!strcmp(key, "sm8850-full-bridges")) return flag(value, &c->sm8850_full_bridges);
   else if (!strcmp(key, "pen")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->pen, value); }
   else if (!strcmp(key, "pen-rotate")) { ok = !strcmp(value, "auto") || !strcmp(value, "0") || !strcmp(value, "90") || !strcmp(value, "180") || !strcmp(value, "270"); if (ok) strcpy(c->pen_rotate, value); }
   else if (!strcmp(key, "pen-mirror")) return flag(value, &c->pen_mirror);
@@ -160,12 +165,18 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "wifi")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "tap") || !strcmp(value, "sim"); if (ok) strcpy(c->wifi, value); }
   else if (!strcmp(key, "bluetooth")) { ok = !strcmp(value, "auto") || !strcmp(value, "virtual") || !strcmp(value, "hidl") || !strcmp(value, "sim"); if (ok) strcpy(c->bluetooth, value); }
   else if (!strcmp(key, "haptics")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "sim"); if (ok) strcpy(c->haptics, value); }
+  else if (!strcmp(key, "haptics-native-impacts")) {
+    bool enabled;
+    if (flag(value, &enabled)) return -1;
+    c->haptics_native_impacts = enabled ? 1 : 0;
+  }
   else if (!strcmp(key, "legacy-boot-args")) return flag(value, &c->legacy_boot_args);
   else if (!strcmp(key, "setway-skip")) { bool on; if (flag(value, &on)) return -1; c->setway_skip = on; }
   else if (!strcmp(key, "perf-log")) { ok = number(value, 0, 86400, &c->perf_log); }
   else if (!strcmp(key, "spin-host")) { ok = number(value, 0, 1000, &c->spin_host); }
   else if (!strcmp(key, "spin-task")) { ok = number(value, 0, 1000, &c->spin_task); }
   else if (!strcmp(key, "cpu-pin")) { if (!strcmp(value, "2")) c->cpu_pin = 2; else { bool on; if (flag(value, &on)) return -1; c->cpu_pin = on; } }
+  else if (!strcmp(key, "cpu-affinity-bench")) return flag(value, &c->cpu_affinity_bench);
   else if (!strcmp(key, "map-defer")) { bool on; if (flag(value, &on)) return -1; c->map_defer = on; }
   else if (!strncmp(key, "hw-backend", 10)) {
     // hw-backend, hw-backend-<bridge>, hw-backend-fallback (bridges/hw_backend.h)
@@ -214,6 +225,30 @@ int xh_config_file(xh_config *c, const char *path)
   return rc;
 }
 
+// One explicit session opt-in enables the host preset bridge and the guest
+// boot switch together. Never replace other boot arguments and never override
+// a contradictory oneios_native_impacts=0 from the image/command line.
+static int native_impact_boot_arg(char *args, size_t capacity)
+{
+  static const char key[] = "oneios_native_impacts=";
+  bool seen = false;
+  for (const char *p = args; *p;) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+    size_t len = strcspn(p, " ");
+    if (len >= sizeof key - 1 && !strncmp(p, key, sizeof key - 1)) {
+      if (seen || len != sizeof key || p[sizeof key - 1] != '1') return -1;
+      seen = true;
+    }
+    p += len;
+  }
+  if (seen) return 0;
+  const char *add = *args ? " oneios_native_impacts=1" : "oneios_native_impacts=1";
+  if (strlen(args) + strlen(add) >= capacity) return -1;
+  strcat(args, add);
+  return 0;
+}
+
 static void usage(void)
 {
   fputs("usage: xnuhost --image DIR [--kernel FILE] [--data DIR] [--session DIR] [--runtime DIR]\n"
@@ -221,7 +256,9 @@ static void usage(void)
         "               [--boot-args TEXT] [--display shm|drm|none] [--gpu auto|3d|2d] [--width W --height H]\n"
         "               [--hz N] [--scale 2|3] [--display-format bgrx|rgba16f]\n"
         "               [--hw-backend samsung|treble] [--hw-backend-BRIDGE samsung|treble] [--hw-backend-fallback 0|1]\n"
-        "               [--no-input] [--input-script FILE] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n"
+        "               [--haptics-native-impacts 0|1] (requires Treble haptics without fallback)\n"
+        "               [--no-input] [--input-script FILE] [--set touch-exclusive=1] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n"
+        "               [--set bridges=1 --set sm8850-full-bridges=1] (SM8850 stopped-Framework bench ONLY)\n"
         "       xnuhost --selftest      checks of this host (trap layer, PAC, memory), no kernel\n"
         "docs/booter.md describes the image set's files, the session files and the exit codes.\n", stderr);
 }
@@ -277,6 +314,14 @@ int xh_config_finish(xh_config *c)
   if (strcmp(c->display, "shm") && strcmp(c->display, "drm") && strcmp(c->display, "none")) { fprintf(stderr, "xnuhost: display %s is not supported\n", c->display); return -1; }
   // The host bridges change the phone's state (a tap, routing rules, the motor): on in a session.
   if (c->bridges < 0) c->bridges = !strcmp(c->mode, "takeover");
+  // Normally raw touchscreen exclusivity and bridges=1 are incompatible.
+  // One explicit, separately admitted SM8850 stopped-Framework research
+  // profile allows BOTH, never a normal Android preview or takeover mode.
+  if (c->touch_exclusive && (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
+                            !c->input || (c->bridges && !c->sm8850_full_bridges))) {
+    fprintf(stderr, "xnuhost: touch-exclusive=1 requires bench/shm/input, bridges=0 unless sm8850-full-bridges=1\n");
+    return -1;
+  }
   if (c->selftest) return 0;
   if (!*c->image) { fprintf(stderr, "xnuhost: --image DIR is required\n"); return -1; }
   // The image set may carry settings of its own; the command line was applied first and a setting
@@ -296,7 +341,48 @@ int xh_config_finish(xh_config *c)
   if (c->spin_task < 0) c->spin_task = from_image.spin_task;
   if (c->map_defer < 0) c->map_defer = from_image.map_defer;
   if (c->cpu_pin < 0) c->cpu_pin = from_image.cpu_pin < 0 ? 1 : from_image.cpu_pin;
+  // A/B experiment: keep CPU-only affinity entirely outside the hardware
+  // bridges, and only for a finite, touch-exclusive, non-takeover SHM bench.
+  // Never let a caller turn this on in takeover, headless, bridges=1,
+  // cpu-pin=0/2 or without the guest task isolation machinery.
+  if (c->cpu_affinity_bench &&
+      (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
+       !c->touch_exclusive || !c->input || c->bridges || !c->tasks ||
+       c->cpu_pin != 1)) {
+    fprintf(stderr, "xnuhost: cpu-affinity-bench=1 requires bench/shm, exclusive touch, tasks, bridges=0, cpu-pin=1\n");
+    return -1;
+  }
+  // FULL bridges=1 for this one explicit SM8850 reboot-only research run.
+  // Generic bridges initialize the host CPU topology, cpufreq virtio MMIO,
+  // brightness/TSP, battery, thermal and optional devices. For this first
+  // integration profile keep radios/haptics/encoder disabled individually,
+  // but DO NOT fake bridges=1 by instantiating only OB_CH_BRIGHTNESS.
+  // cpu-affinity-bench is separate and INCOMPATIBLE with the full CPU bridge;
+  // the generic CPU bridge owns CPU placement with cpu-pin=1 instead.
+  if (c->sm8850_full_bridges &&
+      (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
+       !c->touch_exclusive || !c->input || !c->bridges || !c->tasks ||
+       c->cpu_affinity_bench || c->cpu_pin != 1 || c->touch_sleep ||
+       c->ncpu != 8 || strcmp(c->gpu, "3d") ||
+       strcmp(c->wifi, "off") ||
+       strcmp(c->bluetooth, "virtual") || strcmp(c->haptics, "off") ||
+       strcmp(c->encoder, "off") ||
+       strcmp(c->runtime, "/data/runtime") ||
+       strcmp(c->session, "/data/session") ||
+       strcmp(c->data, "/data/data"))) {
+    fprintf(stderr, "xnuhost: sm8850-full-bridges=1 requires bench/shm/8cpus/GPU3d, bridges=1, exclusive touch, CPU pinning via full CPU bridge (cpu-affinity-bench=0), touch-sleep=0, no radios/haptics, and OneOS stage paths\n");
+    return -1;
+  }
   br_hw_settings_merge(&c->hw, &from_image.hw);     // each hw-backend setting: the command line's, else the image set's
+  if (c->haptics_native_impacts < 0)
+    c->haptics_native_impacts = from_image.haptics_native_impacts < 0 ? 0 : from_image.haptics_native_impacts;
+  if (c->haptics_native_impacts &&
+      (!c->bridges || strcmp(c->haptics, "auto") ||
+       br_hw_choose(&c->hw, BR_HW_HAPTICS, BR_HW_UNSET, NULL, 0) != BR_HW_TREBLE ||
+       br_hw_fallback_allowed(&c->hw))) {
+    fprintf(stderr, "xnuhost: haptics-native-impacts=1 requires bridges=1, haptics=auto, hw-backend-haptics=treble and hw-backend-fallback=0\n");
+    return -1;
+  }
   if (c->map_defer < 0) c->map_defer = 1;
   if (!c->height) c->height = from_image.height;
   if (!c->hz) c->hz = from_image.hz;
@@ -310,11 +396,16 @@ int xh_config_finish(xh_config *c)
   // machine (the session's command line has no boot arguments). From Droid-VM's ipados27/board.toml
   // kernel_args, the ones about the machine: SMP and ArmCpu's IPIs, no contiguous-hint mappings (the
   // collection's layout: arm_vm_init.c:1107 asserts without it), no interrupt-masked or preemption watchdogs
-  // (a vCPU is a host thread), the source storage, the GPU's 3D context, the console in the log.
+  // (a vCPU is a host thread), the source storage, the Metal service, the console in the log.
+  // The 3D backend default is added after the host renderer opens (xh_gpu_boot_args).
   if (!*c->boot_args)
     strcpy(c->boot_args, "debug=0x14e serial=3 -v kt_fixed_zones=120 -no_slto_panic ml-timeout-lock-panic-scale=40 tlto_us=0 "
            "sheng-smp=1 armcpu-self-ipi=1 armcpu-spi-ipi=1 use_contiguous_hint=0 interrupt-masked-debug-mode=0 "
-           "sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 droidvm-gpu-metal=1");
+           "sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 droidvm-gpu-metal=1");
+  if (c->haptics_native_impacts && native_impact_boot_arg(c->boot_args, sizeof c->boot_args)) {
+    fprintf(stderr, "xnuhost: haptics-native-impacts=1 conflicts with the guest boot args or they are too long\n");
+    return -1;
+  }
   if (c->ndisk == 0) { memcpy(c->disk, from_image.disk, sizeof c->disk); c->ndisk = from_image.ndisk; }
   if (!*c->kernel && !exists(c->image, "kernel.kc", c->kernel, sizeof c->kernel) &&
       !exists(c->image, "kernel.macho", c->kernel, sizeof c->kernel)) {
@@ -570,6 +661,17 @@ static bool has_switch(const char *args, const char *name)
   for (const char *p = args; (p = strstr(p, name)); p += n)
     if ((p == args || p[-1] == ' ') && p[n] == '=') return true;
   return false;
+}
+
+int xh_gpu_boot_args(char *args, size_t size, bool drm_native)
+{
+  // The guest's DEFAULT_3D query checks this boot argument independently of
+  // the negotiated virtio features. Custom boot arguments replace the defaults.
+  if (!drm_native || has_switch(args, "vgpu-3d")) return 0;
+  const char *add = *args ? " vgpu-3d=1" : "vgpu-3d=1";
+  if (strlen(args) + strlen(add) >= size) return -1;
+  strcat(args, add);
+  return 0;
 }
 
 bool xh_boot_args_hides_vmm_from(const char *args, const char *name)

@@ -122,6 +122,26 @@ static bool priming = true, guest_on;            // guest_on: between the guest'
 static bool consuming;                           // the server has taken frames from this stream (after its start stall)
 static unsigned allowance = RING_FRAMES;         // the most the ring may hold now: the stall's backlog, shrinking as it plays
 static unsigned generation;                      // counts the guest's STARTs: the writer measures its level anew
+// Optional bounded startup trace for diagnosing XRun/target inflation. The
+// audio writer only stores fixed-size events; logging happens on the control
+// thread at the guest's STOP, never from the 5-ms playback loop.
+#define AUDIO_START_TRACE_LIMIT 48u
+enum { AUDIO_TRACE_XRUN = 1, AUDIO_TRACE_RING_UNDERRUN = 2 };
+struct audio_start_trace {
+  double since_guest_start_ms;
+  unsigned kind, target_before, target_after, ring_frames;
+  int64_t queued_frames;
+  int32_t xrun_before, xrun_after;
+  uint64_t pcm_input_frames;
+  bool guest_on, priming;
+};
+static bool audio_start_trace_enabled;
+static struct audio_start_trace audio_start_events[AUDIO_START_TRACE_LIMIT];
+static unsigned audio_start_events_count, audio_start_events_reported, audio_start_events_lost;
+static unsigned audio_start_events_lost_reported;
+static double audio_trace_guest_start_s;          // ring_lock; time origin for guest AU_START
+static double audio_target_raise_last_s = -1.0;  // ring_lock; coalesced target adjustment
+
 static unsigned linger_s = 60;
 static pthread_mutex_t ring_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ring_more = PTHREAD_COND_INITIALIZER;   // put_pcm wakes the writer
@@ -182,6 +202,87 @@ static void report(bool output, int error)
   // Never block: xnuhost reads its end only while the microphone runs (backend.c), and a full socket would
   // stop this process's receive loop.
   (void)send(sock, &header, sizeof header, MSG_DONTWAIT | MSG_NOSIGNAL);
+}
+
+// AAudio's free-running MMAP xRun counter can increase on successive client
+// write attempts while its read cursor is ahead of the write cursor. Those
+// increments may belong to ONE starvation episode (18 in 0.3 ms on SM8850),
+// not 18 independent 5-ms periods of missing guest audio. Record every raw
+// increment, but coalesce adaptive buffer increases across BOTH XRun and
+// ring-underrun reports within one guest period (240 frames = 5 ms).
+// Caller holds ring_lock. Does not alter raw XRun/underrun statistics.
+static bool audio_target_raise_for_starvation(double now)
+{
+  if (audio_target_raise_last_s >= 0
+      && now - audio_target_raise_last_s < (double)CHUNK / RATE) return false;
+  audio_target_raise_last_s = now;
+  unsigned raised = target + MS_FRAMES(5);
+  target = raised > MS_FRAMES(target_max_ms) ? MS_FRAMES(target_max_ms) : raised;
+  return true;
+}
+
+// The caller holds ring_lock. No blocking I/O, allocations or additional locks.
+static void audio_trace_event(unsigned kind, double now, unsigned before, unsigned after,
+                              int64_t queued, int32_t previous_xruns, int32_t current_xruns)
+{
+  if (!audio_start_trace_enabled) return;
+  if (audio_start_events_count == AUDIO_START_TRACE_LIMIT) {
+    audio_start_events_lost++;
+    return;
+  }
+  struct audio_start_trace *e = &audio_start_events[audio_start_events_count++];
+  e->since_guest_start_ms = (now - audio_trace_guest_start_s) * 1e3;
+  e->kind = kind;
+  e->target_before = FRAMES_MS(before);
+  e->target_after = FRAMES_MS(after);
+  e->ring_frames = ring_count;
+  e->queued_frames = queued;
+  e->xrun_before = previous_xruns;
+  e->xrun_after = current_xruns;
+  e->pcm_input_frames = ostat.in;
+  e->guest_on = guest_on;
+  e->priming = priming;
+}
+
+// Only called on the control thread, outside the writer loop.
+static void audio_trace_dump(const char *phase)
+{
+  if (!audio_start_trace_enabled) return;
+  struct audio_start_trace copied[AUDIO_START_TRACE_LIMIT];
+  unsigned n, lost;
+  pthread_mutex_lock(&ring_lock);
+  unsigned first = audio_start_events_reported;
+  n = audio_start_events_count - first;
+  if (n) memcpy(copied, audio_start_events + first, n * sizeof copied[0]);
+  audio_start_events_reported = audio_start_events_count;
+  lost = audio_start_events_lost - audio_start_events_lost_reported;
+  audio_start_events_lost_reported = audio_start_events_lost;
+  pthread_mutex_unlock(&ring_lock);
+  fprintf(stderr, "oneios-audio: trace %s: %u new events, %u not recorded (cap %u)\n",
+          phase, n, lost, AUDIO_START_TRACE_LIMIT);
+  for (unsigned i = 0; i < n; i++) {
+    const struct audio_start_trace *e = &copied[i];
+    fprintf(stderr, "oneios-audio: trace event: t_guest=%+.1f ms %s, guest %d, priming %d, pcm_in %llu, target %u->%u ms, xrun %d->%d, ring %u, queued %lld frames\n",
+            e->since_guest_start_ms, e->kind == AUDIO_TRACE_XRUN ? "AAudio-XRun" : "ring-underrun",
+            e->guest_on, e->priming, (unsigned long long)e->pcm_input_frames,
+            e->target_before, e->target_after,
+            e->xrun_before, e->xrun_after, e->ring_frames, (long long)e->queued_frames);
+  }
+}
+
+static void audio_trace_snapshot(const char *phase)
+{
+  if (!audio_start_trace_enabled || !out_dir.stream) return;
+  int64_t written = AAudioStream_getFramesWritten(out_dir.stream);
+  int64_t read = AAudioStream_getFramesRead(out_dir.stream);
+  int32_t xruns = AAudioStream_getXRunCount(out_dir.stream);
+  pthread_mutex_lock(&ring_lock);
+  unsigned aim = target, fill = ring_count, events = audio_start_events_count;
+  bool on = guest_on, prime = priming;
+  pthread_mutex_unlock(&ring_lock);
+  fprintf(stderr, "oneios-audio: trace %s: written %lld, read %lld, xruns %d, target %u ms, ring %u, guest %d, priming %d, events %u\n",
+          phase, (long long)written, (long long)read, xruns, FRAMES_MS(aim),
+          fill, on, prime, events);
 }
 
 // ---- no realtime threads ------------------------------------------------------------------------
@@ -353,7 +454,37 @@ static AAudioStream *open_speaker(unsigned rate, unsigned channels, aaudio_perfo
   return stream;
 }
 
-static AAudioStream *open_stream(bool output, unsigned rate, unsigned channels)
+// AAudio output START is asynchronous. Before asking the HAL to start, fill
+// its advertised buffer with silence using NON-BLOCKING writes. Without this,
+// a new physical SM8850 stream got only 480/576 frames during AU_PROBE, never
+// advanced FramesRead and returned no presentation timestamp. The fake HAL
+// also models devices that cannot begin reading an underfilled start buffer.
+// Do not prefill the microphone, and never start a stream after failed prefill.
+static bool prefill_speaker(AAudioStream *stream)
+{
+  int32_t size = AAudioStream_getBufferSizeInFrames(stream);
+  int32_t capacity = AAudioStream_getBufferCapacityInFrames(stream);
+  if (size <= 0 || capacity <= 0 || size > capacity || size > (int32_t)RING_FRAMES) {
+    fprintf(stderr, "oneios-audio: speaker prefill: invalid buffer %d of %d frames\n", size, capacity);
+    return false;
+  }
+  static const int16_t zeros[CHUNK * 2] = { 0 };
+  int32_t filled = 0;
+  while (filled < size) {
+    int32_t wanted = size - filled < (int32_t)CHUNK ? size - filled : (int32_t)CHUNK;
+    aaudio_result_t n = AAudioStream_write(stream, zeros, wanted, 0 /* non-blocking before START */);
+    if (n <= 0 || n > wanted) {
+      fprintf(stderr, "oneios-audio: speaker prefill: %d/%d frames; write returned %d (%s)\n",
+              filled, size, (int)n, n < 0 ? AAudio_convertResultToText(n) : "incomplete");
+      return false;
+    }
+    filled += n;
+  }
+  fprintf(stderr, "oneios-audio: speaker prefill: %d/%d frames before requestStart\n", filled, size);
+  return true;
+}
+
+static AAudioStream *open_stream(bool output, unsigned rate, unsigned channels, bool prefill_for_probe)
 {
   // The speaker on its path; the microphone performance mode NONE, shared (AAudio tries MMAP only for LOW_LATENCY).
   aaudio_performance_mode_t asked = AAUDIO_PERFORMANCE_MODE_NONE;
@@ -385,6 +516,10 @@ static AAudioStream *open_stream(bool output, unsigned rate, unsigned channels)
           AAudioStream_getSharingMode(stream) == AAUDIO_SHARING_MODE_EXCLUSIVE ? "exclusive" : "shared", mmap_used(stream), burst,
           AAudioStream_getBufferSizeInFrames(stream), AAudioStream_getBufferCapacityInFrames(stream), AAudioStream_getDeviceId(stream),
           AAudioStream_getSessionId(stream), output ? "; " : "", output ? path_name(out_path) : "", *why ? " (" : "", why, *why ? ")" : "");
+  // Pre-fill only the AU_PROBE stream used to measure the guest's latency.
+  // Other AU_START output tracks retain their proven legacy startup/drift
+  // behaviour until the prefill change can be separately validated there.
+  if (output && prefill_for_probe && !prefill_speaker(stream)) { AAudioStream_close(stream); return NULL; }
   aaudio_result_t result = AAudioStream_requestStart(stream);
   if (result != AAUDIO_OK) { fprintf(stderr, "oneios-audio: start %s: %s\n", output ? "speaker" : "microphone", AAudio_convertResultToText(result)); AAudioStream_close(stream); return NULL; }
   return stream;
@@ -571,8 +706,9 @@ static void *writer(void *arg)
     int ahead = continuous ? (int)CHUNK + (out_path == PATH_MMAP_SHARED ? (int)d->burst : 0) : pulls_ahead(&pulls, now);
     if (xruns > xruns_seen) {                            // AAudio ran dry (the writer was late): the level goes up
       ostat.xruns += (uint64_t)(xruns - xruns_seen);
-      unsigned raised = target + MS_FRAMES(5);
-      target = raised > MS_FRAMES(target_max_ms) ? MS_FRAMES(target_max_ms) : raised;
+      unsigned before = target;
+      (void)audio_target_raise_for_starvation(now);
+      audio_trace_event(AUDIO_TRACE_XRUN, now, before, target, queued, xruns_seen, xruns);
       if (target > ostat.target_peak) ostat.target_peak = target;
       quiet_since = now; window_late_max = 0; window_periods = 0;
       level = reference = -1;
@@ -675,8 +811,9 @@ static void *writer(void *arg)
       take = ring_count;
       priming = true;
       ostat.underruns++;
-      unsigned raised = target + MS_FRAMES(5);
-      target = raised > MS_FRAMES(target_max_ms) ? MS_FRAMES(target_max_ms) : raised;
+      unsigned before = target;
+      (void)audio_target_raise_for_starvation(now);
+      audio_trace_event(AUDIO_TRACE_RING_UNDERRUN, now, before, target, queued, xruns, xruns);
       if (target > ostat.target_peak) ostat.target_peak = target;
       quiet_since = now; window_late_max = 0; window_periods = 0;
       level = reference = -1;
@@ -762,7 +899,7 @@ static void stop_dir(bool output)
   if (output) { pthread_mutex_lock(&ring_lock); guest_on = false; pthread_mutex_unlock(&ring_lock); }
   atomic_store(&d->run, false);
   if (d->thread_on) { pthread_join(d->thread, NULL); d->thread_on = false; }
-  if (output) out_report("stopped");
+  if (output) { out_report("stopped"); audio_trace_dump("stream close"); }
   else fprintf(stderr, "oneios-audio: microphone stopped: %.1f s, %llu frames, %llu periods sent, %llu lost, %llu short\n", since(&d->started),
                (unsigned long long)d->frames, (unsigned long long)in_sent, (unsigned long long)in_lost, (unsigned long long)in_short);
   AAudioStream_requestStop(d->stream);
@@ -776,21 +913,25 @@ static void pause_output(void)
 {
   if (!out_dir.stream || !guest_on) return;
   out_report("stopped by the guest");
+  audio_trace_snapshot("guest AU_STOP");
+  audio_trace_dump("guest AU_STOP");
   pthread_mutex_lock(&ring_lock);
   guest_on = false;                                      // the writer plays what the ring holds, then silence
   pthread_mutex_unlock(&ring_lock);
   clock_gettime(CLOCK_MONOTONIC, &idle_since);
 }
 
-static int start_dir(bool output, unsigned rate, unsigned channels)
+static int start_dir(bool output, unsigned rate, unsigned channels, bool prefill_for_probe)
 {
   dir_state *d = output ? &out_dir : &in_dir;
   if (output && d->stream && rate == (unsigned)AAudioStream_getSampleRate(d->stream) && channels == d->channels) {
+    audio_trace_snapshot("before guest AU_START");
     pthread_mutex_lock(&ring_lock);                      // the lingering stream: on at once (a tail still in the ring plays first)
     guest_on = true;
     generation++;
     memset(&ostat, 0, sizeof ostat);
     guest_clock_reset();
+    audio_trace_guest_start_s = now_s();       // consistent with the trace's t_guest label
     pthread_mutex_unlock(&ring_lock);
     clock_gettime(CLOCK_MONOTONIC, &d->started);
     return 0;
@@ -800,6 +941,10 @@ static int start_dir(bool output, unsigned rate, unsigned channels)
     pthread_mutex_lock(&ring_lock);
     consuming = false;
     allowance = RING_FRAMES;
+    audio_start_events_count = audio_start_events_reported = 0;
+    audio_start_events_lost = audio_start_events_lost_reported = 0;
+    audio_target_raise_last_s = -1.0;
+    audio_trace_guest_start_s = now_s();
     ring_head = ring_count = 0;
     priming = true;
     guest_on = true;
@@ -808,7 +953,7 @@ static int start_dir(bool output, unsigned rate, unsigned channels)
     guest_clock_reset();
     pthread_mutex_unlock(&ring_lock);
   } else in_sent = in_lost = in_short = 0;
-  d->stream = open_stream(output, rate, channels);
+  d->stream = open_stream(output, rate, channels, prefill_for_probe);
   if (!d->stream) return EIO;
   if (output) {                                          // the path's floor (open_stream)
     pthread_mutex_lock(&ring_lock);
@@ -821,7 +966,10 @@ static int start_dir(bool output, unsigned rate, unsigned channels)
   int32_t burst = AAudioStream_getFramesPerBurst(d->stream);
   d->burst = burst >= 16 && burst <= (int32_t)MAX_BURST ? (unsigned)burst : 240u;
   d->channels = (unsigned)AAudioStream_getChannelCount(d->stream);
-  d->frames = 0;
+  // AAudio timestamps count the prefilled silence too. Start the local
+  // writer's frame counter at the stream's actual framesWritten, otherwise
+  // pipeline_frames() subtracts those frames and underreports latency.
+  d->frames = output ? (uint64_t)AAudioStream_getFramesWritten(d->stream) : 0;
   clock_gettime(CLOCK_MONOTONIC, &d->started);
   d->reported = d->started;
   atomic_store(&d->run, true);
@@ -893,7 +1041,7 @@ static int cmp_int(const void *a, const void *b) { int x = *(const int *)a, y = 
 static unsigned probe(void)
 {
   if (!out_dir.stream) {
-    if (start_dir(true, RATE, 2)) { fprintf(stderr, "oneios-audio: probe: the speaker did not open\n"); return 0; }
+    if (start_dir(true, RATE, 2, true /* prime AU_PROBE before START */)) { fprintf(stderr, "oneios-audio: probe: the speaker did not open\n"); return 0; }
     pthread_mutex_lock(&ring_lock);
     guest_on = false;                                    // silence until the guest's START, then the linger
     pthread_mutex_unlock(&ring_lock);
@@ -907,12 +1055,30 @@ static unsigned probe(void)
     int below = AAudioStream_getFramesRead(out_dir.stream) > 0 ? below_read(&out_dir) : -1;
     if (below >= 0) samples[n++] = below;
   }
-  if (!n) { fprintf(stderr, "oneios-audio: probe: no timestamp from the speaker's stream in 1.5 s: not measured\n"); return 0; }
+  if (!n) {
+    // A silent AU_PROBE can fail before the first real PCM period even on a
+    // stream that subsequently plays. Distinguish no frames consumed from an
+    // AAudio timestamp refusal; do not invent an output latency on failure.
+    int64_t pos = 0, stamp = 0;
+    aaudio_result_t ts_rc = AAudioStream_getTimestamp(out_dir.stream, CLOCK_MONOTONIC, &pos, &stamp);
+    int64_t written = AAudioStream_getFramesWritten(out_dir.stream);
+    int64_t read = AAudioStream_getFramesRead(out_dir.stream);
+    int32_t xruns = AAudioStream_getXRunCount(out_dir.stream);
+    pthread_mutex_lock(&ring_lock);
+    unsigned aim = target;
+    pthread_mutex_unlock(&ring_lock);
+    fprintf(stderr, "oneios-audio: probe: no timestamp from the speaker's stream in 1.5 s: not measured\n");
+    fprintf(stderr, "oneios-audio: probe diagnostic: written %lld, read %lld, xruns %d, timestamp status %d (%s), target %u ms\n",
+            (long long)written, (long long)read, xruns, (int)ts_rc,
+            AAudio_convertResultToText(ts_rc), FRAMES_MS(aim));
+    return 0;
+  }
   qsort(samples, n, sizeof *samples, cmp_int);
   pthread_mutex_lock(&ring_lock);
   unsigned level = target + (out_path == PATH_MMAP_SHARED ? out_dir.burst : continuous ? 0 : (pulls.size ? pulls.size : out_dir.burst) / 2);
   pthread_mutex_unlock(&ring_lock);
   unsigned frames = (unsigned)samples[n / 2] + level;
+  audio_trace_snapshot("after successful AU_PROBE");
   fprintf(stderr, "oneios-audio: probe: speaker latency %u frames (%u ms) on %s: %u ms below AAudio's read + %u ms of level when a period "
           "comes in\n", frames, FRAMES_MS(frames), path_name(out_path), FRAMES_MS((unsigned)samples[n / 2]), FRAMES_MS(level));
   return frames;
@@ -922,6 +1088,8 @@ int main(int argc, char **argv)
 {
   if (argc != 2) { fprintf(stderr, "usage: oneios-audio SOCKET_FD (started by xnuhost)\n"); return 2; }
   sock = atoi(argv[1]);
+  const char *trace_env = getenv("ONEIOS_AUDIO_TRACE_STARTUP");
+  audio_start_trace_enabled = trace_env && !strcmp(trace_env, "1");
   setvbuf(stderr, NULL, _IOLBF, 0);
   target_env_ms = env_ms("ONEIOS_AUDIO_TARGET_MS", 0, 2, 150);
   target_decay_s = env_ms("ONEIOS_AUDIO_TARGET_DECAY_S", 20, 1, 3600);
@@ -959,7 +1127,7 @@ int main(int argc, char **argv)
     bool output = packet.header.output;
     switch (packet.header.kind) {
     case AU_START: {
-      int rc = start_dir(output, packet.header.value, packet.header.channels);
+      int rc = start_dir(output, packet.header.value, packet.header.channels, false);
       if (rc) report(output, rc);
       break;
     }

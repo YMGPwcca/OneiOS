@@ -10,12 +10,12 @@ ANDROID_CC ?= $(TOOLS)/aarch64-linux-android30-clang
 ANDROID_AR ?= $(TOOLS)/llvm-ar
 XNUHOST := ../xnuhost
 WARN := -Wall -Wextra -Werror
-INC := -Iinclude -I../../drivers/bridge -I../../drivers/net -I$(XNUHOST)/src -I$(XNUHOST)/include
+INC := -Iinclude -I../../drivers/bridge -I../../drivers/net -I../../drivers/haptics -I$(XNUHOST)/src -I$(XNUHOST)/include
 CFLAGS ?= -O2 -g
 WIFI := wifi/frames wifi/station wifi/wlan wifi/sim wifi/aidl_parcel wifi/aidl_binder wifi/supplicant
 CORE := cpu/topology hw/hw_backend hw/hw_log hal/hal haptics/haptic net/net bt/hci bt/hci_sim bt/hidl_parcel bt/hci_hidl audio/backend brightness/brightness battery/battery thermal/thermal $(WIFI)
 DEVICES := devices/bridge_dev devices/virtio_net devices/virtio_snd
-HDR := $(wildcard include/bridges/*.h hal/*.h bt/*.h audio/*.h brightness/*.h battery/*.h thermal/*.h wifi/*.h ../../drivers/bridge/*.h ../../drivers/net/*.h $(XNUHOST)/src/xnuhost.h)
+HDR := $(wildcard include/bridges/*.h hal/*.h bt/*.h audio/*.h brightness/*.h battery/*.h thermal/*.h wifi/*.h ../../drivers/bridge/*.h ../../drivers/net/*.h ../../drivers/haptics/*.h $(XNUHOST)/src/xnuhost.h)
 A := build/android
 H := build/host
 

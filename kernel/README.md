@@ -1,5 +1,9 @@
 # kernel/: the OneiOS XNU
 
+**OneiOS · SM8850 · Kernel / driver implementation**
+
+[← Handbook](../docs/README.md) · [Latest evidence](../docs/SM8850_LIVE_STATUS_2026-11-20.md)
+
 Owner: release-kernel. The XNU that xnuhost runs: **xnu-12377.121.6, arm64e with PAC, 4 KiB pages, iOS 27.0.1 /
 iPhone18,2 profile**, built from Apple's open source with UniXNU's and Droid-VM's patches.
 

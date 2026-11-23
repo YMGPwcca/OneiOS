@@ -17,6 +17,7 @@ SAN := -O1 -g -fsanitize=address,undefined
 LINK := media_device.c backend_helper.c
 LIBS := -lmediandk -ldl -lm
 HDR := $(wildcard *.h ../include/bridges/*.h $(XNUHOST)/src/xnuhost.h)
+BINDER_POOL := binder_pool.c
 A := build/android
 H := build/host
 
@@ -28,13 +29,13 @@ $(A)/liboneencoder.a: $(LINK:%.c=$(A)/obj/%.o)
 	$(ANDROID_AR) rcs $@.new $^
 	mv $@.new $@
 # The helper: dynamic (libmediandk is a shared library), with the stand-in backend for ONEIOS_ENCODER_STUB debugging.
-$(A)/oneios-encoder: helper.c backend_ndk.c backend_stub.c $(HDR)
+$(A)/oneios-encoder: helper.c backend_ndk.c backend_stub.c $(BINDER_POOL) $(HDR)
 	@mkdir -p $(A)
-	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) $(INC) helper.c backend_ndk.c backend_stub.c $(LIBS) -o $@
+	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) $(INC) helper.c backend_ndk.c backend_stub.c $(BINDER_POOL) $(LIBS) -o $@
 # encctl: the whole path in one process (dynamic), encoding a test pattern through MediaCodec directly (no helper).
-$(A)/encctl: encctl.c media_device.c backend_ndk.c $(XNUHOST)/src/virtio.c $(HDR)
+$(A)/encctl: encctl.c media_device.c backend_ndk.c backend_helper.c $(BINDER_POOL) $(XNUHOST)/src/virtio.c $(HDR)
 	@mkdir -p $(A)
-	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) $(INC) encctl.c media_device.c backend_ndk.c $(XNUHOST)/src/virtio.c $(LIBS) -o $@
+	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) $(INC) encctl.c media_device.c backend_ndk.c backend_helper.c $(BINDER_POOL) $(XNUHOST)/src/virtio.c -pthread $(LIBS) -o $@
 
 # On the build host: the helper with the stand-in encoder, and the device test that drives it over the real transport.
 $(H)/oneios-encoder: helper.c backend_stub.c $(HDR)
@@ -43,6 +44,13 @@ $(H)/oneios-encoder: helper.c backend_stub.c $(HDR)
 $(H)/test_encoder: tests/test_encoder.c media_device.c backend_helper.c $(XNUHOST)/src/virtio.c $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 $(SAN) $(WARN) $(INC) tests/test_encoder.c media_device.c backend_helper.c $(XNUHOST)/src/virtio.c -lpthread -o $@
-test: $(H)/test_encoder $(H)/oneios-encoder
+$(H)/test_encoder_errors: tests/test_encoder_errors.c backend_helper.c $(HDR)
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 $(SAN) $(WARN) $(INC) tests/test_encoder_errors.c backend_helper.c -lpthread -o $@
+test: $(H)/test_encoder $(H)/oneios-encoder $(H)/test_encoder_errors
 	ONEIOS_ENCODER_STUB=1 $(H)/test_encoder $(H)/oneios-encoder
+	@for fault in feed drain poll timeout crash; do \
+	  echo "encoder: error regression $$fault"; \
+	  ONEIOS_ENCODER_STUB=1 timeout 12 $(H)/test_encoder_errors $(H)/oneios-encoder "$$fault" || exit 1; \
+	done
 .PHONY: all test

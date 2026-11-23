@@ -2,7 +2,9 @@
 // CPU bridge: the host's cores from /sys/devices/system/cpu, the vCPU plan XNU's topology is made
 // from (P = the big and prime cores, E = the little ones), and the placement of host threads.
 // On the Galaxy S24 Ultra (SM8650): cpu0-1 Cortex-A520 (capacity-dmips-mhz 1024), cpu2-6 Cortex-A720
-// (1792), cpu7 Cortex-X4 (1894); docs/hardware.md has the sources. Linux keeps clock control: the
+// On the Galaxy S25 (SM8750, Snapdragon 8 Elite for Galaxy): two prime and six performance Oryon cores,
+// no little ones (docs/hardware.md "Galaxy S25"); the exact capacities and MIDR come from the phone
+// (tools/probe/s25-probe.sh). Linux keeps clock control: the
 // only frequency input from the guest is a utilisation clamp.
 #define _GNU_SOURCE
 #include "bridges/bridges.h"
@@ -126,7 +128,7 @@ int br_cpu_read(const char *root, br_cpu_topology *t)
     }
     if (read_number(root, "%s/devices/system/cpu/cpu%u/cpufreq/scaling_max_freq", i, &v)) c->scaling_max_khz = (uint32_t)v;
     if (c->nfreq && c->freq_khz[c->nfreq - 1] > c->max_khz) c->max_khz = c->freq_khz[c->nfreq - 1];
-    if (read_number(root, "%s/devices/system/cpu/cpu%u/regs/identification/midr_el1", i, &v)) c->part = (unsigned)(v >> 4) & 0xfff;
+    if (read_number(root, "%s/devices/system/cpu/cpu%u/regs/identification/midr_el1", i, &v)) { c->part = (unsigned)(v >> 4) & 0xfff; c->implementer = (unsigned)(v >> 24) & 0xff; }
     read_caches(root, i, c);
     // Without cpu_capacity (a kernel without the arch topology driver) the top frequency orders the cores.
     unsigned rank = c->capacity ? c->capacity : c->max_khz / 1000;
@@ -138,7 +140,8 @@ int br_cpu_read(const char *root, br_cpu_topology *t)
     br_host_cpu *c = &t->cpu[i];
     if (!c->present) continue;
     unsigned rank = c->capacity ? c->capacity : c->max_khz / 1000;
-    c->type = (low != high && rank == low) ? 'E' : 'P';
+    // Oryon (Qualcomm, implementer 0x51) has no little cores: the slower cluster is still a P cluster.
+    c->type = (low != high && rank == low && c->implementer != 0x51) ? 'E' : 'P';
     if (c->type == 'E') t->n_e++; else t->n_p++;
   }
   return 0;
@@ -182,6 +185,20 @@ int br_cpu_plan_make(const br_cpu_topology *t, unsigned nvcpu, bool pin, br_cpu_
     for (unsigned j = i + 1; j < np; j++)
       if (t->cpu[p_list[j]].capacity > t->cpu[p_list[i]].capacity ||
           (t->cpu[p_list[j]].capacity == t->cpu[p_list[i]].capacity && p_list[j] < p_list[i])) { unsigned x = p_list[i]; p_list[i] = p_list[j]; p_list[j] = x; }
+  // A host with no little cores whose cores differ in speed (the SM8750's Oryon: 2 prime + 6 performance): XNU's
+  // AMP scheduler and the iPhone's boot CPU want E cores too, so the slowest cores are lent as E: one in four
+  // vCPUs, at least one, and one P core is always kept. A host whose cores are all alike (np cores, no E) stays all P.
+  bool lent[BR_MAX_CPUS] = { false };
+  if (!ne && nvcpu > 1 && np > 1) {
+    bool differ = false;
+    for (unsigned i = 1; i < np; i++) if (t->cpu[p_list[i]].capacity != t->cpu[p_list[0]].capacity) differ = true;
+    if (differ) {
+      unsigned lend = nvcpu / 4 ? nvcpu / 4 : 1;
+      if (lend > np - 1) lend = np - 1;
+      for (unsigned i = 0; i < lend; i++) { unsigned cpu = p_list[np - lend + i]; e_list[ne++] = cpu; e_mask |= 1ull << cpu; p_mask &= ~(1ull << cpu); lent[cpu] = true; }
+      np -= lend;
+    }
+  }
   // How many E vCPUs: all the host's when every core gets a vCPU; otherwise one in four, at least
   // one (the boot CPU of an iPhone is an E core and XNU's AMP scheduler wants both kinds), none when
   // the host has no little cores or there is one vCPU.
@@ -201,7 +218,9 @@ int br_cpu_plan_make(const br_cpu_topology *t, unsigned nvcpu, bool pin, br_cpu_
     unsigned re = 0, rp = 0;
     for (unsigned c = 0; c < t->ncpu; c++) {
       if (!t->cpu[c].present) continue;
-      unsigned at = t->cpu[c].type == 'E' ? (re < n_e ? re++ : nvcpu) : (rp < n_p ? n_e + rp++ : nvcpu);
+      // A lent core (above) is an E vCPU's core although the topology calls it P.
+      bool is_e = lent[c] || t->cpu[c].type == 'E';
+      unsigned at = is_e ? (re < n_e ? re++ : nvcpu) : (rp < n_p ? n_e + rp++ : nvcpu);
       if (at >= nvcpu) continue;
       br_vcpu described;
       vcpu_from(t, 1ull << c, plan->v[at].type, &described);
