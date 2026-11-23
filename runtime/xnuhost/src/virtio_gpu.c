@@ -1077,6 +1077,19 @@ void xh_virtio_gpu_idle(xh_virtio *dev)
   pthread_mutex_unlock(&g->pl);
 }
 
+#ifdef XH_HOST_TEST
+bool xh_virtio_gpu_fence_perf_snapshot(xh_virtio *dev, struct xh_fence_perf *out)
+{
+  if (!dev || !out) return false;
+  gpu_state *g = xh_virtio_opaque(dev);
+  if (!g || !g->b || !g->fence_trace) return false;
+  pthread_mutex_lock(&g->pl);
+  *out = g->fence_perf;
+  pthread_mutex_unlock(&g->pl);
+  return true;
+}
+#endif
+
 static const xh_virtio_ops gpu_ops = { .device_id = 16, .features = 0, .nqueues = 2, .handle = gpu_handle,
                                        .config_read = gpu_config, .reset = gpu_reset };
 static const xh_virtio_ops gpu_3d_ops = { .device_id = 16, .features = F_VIRGL | F_RESOURCE_BLOB | F_CONTEXT_INIT | F_CREATE_GUEST_HANDLE, .nqueues = 2,
