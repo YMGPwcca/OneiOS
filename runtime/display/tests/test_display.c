@@ -237,7 +237,7 @@ static void *serve(void *arg)
   return NULL;
 }
 
-// The optional 40-byte frame timeline packet must not break legacy consumers
+// The optional 40/64-byte timeline packet must not break legacy consumers
 // that read only the original 20-byte XHDF prefix on SOCK_SEQPACKET.
 static void test_frame_trace(void)
 {
@@ -282,6 +282,43 @@ static void test_frame_trace(void)
   CHECK(xhd_drain_trace(pair[1], &frame, &damage, &trace) == 0);
   CHECK(trace.last_seq == 9 && trace.pending.traced == 1);
   CHECK(trace.pending.bad == 2 && trace.pending.seq_gaps == 1);
+  // v2 carries the scanout source and copy interval; a 20-byte reader still
+  // receives its rectangle and ignores the optional timing tail.
+  struct xh_frame_trace_packet_v2 v2 = {
+    .base = p,
+    .scanout_start_ns = before_ns - UINT64_C(3000000),
+    .scanout_copied_ns = before_ns - UINT64_C(1000000),
+    .scanout_kind = XH_FRAME_SCANOUT_BLOB, .resource_id = 20
+  };
+  v2.base.seq = 10;
+  v2.base.version = XH_FRAME_TRACE_VERSION_SCANOUT;
+  CHECK(xh_frame_trace_v2_valid(&v2));
+  CHECK(send(pair[0], &v2, sizeof v2, 0) == (ssize_t)sizeof v2);
+  CHECK(recv(pair[1], &legacy, sizeof legacy, 0) == (ssize_t)sizeof legacy);
+  CHECK(!memcmp(legacy.magic, "XHDF", 4) && legacy.a == v2.base.x && legacy.b == v2.base.y);
+
+  trace.pending = (struct xhd_trace_pending){ 0 };
+  damage = (struct xhd_rect){ 0 };
+  CHECK(send(pair[0], &v2, sizeof v2, 0) == (ssize_t)sizeof v2);
+  v2.base.seq = 11; v2.scanout_kind = XH_FRAME_SCANOUT_2D; v2.resource_id = 42;
+  v2.scanout_start_ns = before_ns - UINT64_C(5000000);
+  v2.scanout_copied_ns = before_ns - UINT64_C(4500000);
+  CHECK(send(pair[0], &v2, sizeof v2, 0) == (ssize_t)sizeof v2);
+  v2.base.seq = 12; v2.scanout_copied_ns = before_ns + UINT64_C(1000000);
+  CHECK(!xh_frame_trace_v2_valid(&v2));
+  CHECK(send(pair[0], &v2, sizeof v2, 0) == (ssize_t)sizeof v2);
+  CHECK(xhd_drain_trace(pair[1], &frame, &damage, &trace) == 0);
+  CHECK(damage.x == 30 && damage.y == 7 && damage.w == 10 && damage.h == 12);
+  CHECK(trace.last_seq == 11 && trace.pending.traced == 2 && trace.pending.bad == 1);
+  CHECK(trace.pending.scanout_packets == 2 && trace.pending.scanout_blob == 1 && trace.pending.scanout_2d == 1);
+  CHECK(trace.pending.scanout_copy_sum_ns == UINT64_C(2500000) && trace.pending.scanout_copy_max_ns == UINT64_C(2000000));
+  CHECK(trace.pending.oldest_scanout_start_ns == before_ns - UINT64_C(5000000));
+  // A nontracing updated helper still renders v2 damage.
+  v2.base.seq = 13; v2.scanout_copied_ns = before_ns - UINT64_C(4500000);
+  CHECK(send(pair[0], &v2, sizeof v2, 0) == (ssize_t)sizeof v2);
+  damage = (struct xhd_rect){ 0 };
+  CHECK(xhd_drain(pair[1], &frame, &damage) == 0);
+  CHECK(damage.x == 30 && damage.y == 7 && damage.w == 10 && damage.h == 12);
   close(pair[0]); close(pair[1]);
 }
 
