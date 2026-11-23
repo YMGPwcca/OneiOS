@@ -346,7 +346,9 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
     frame_shown(g, b->entries, b->nentries);     // first: session/ready before the helper is told of the frame
     const struct xh_frame_scanout sample = {
       .start_ns = scanout_start_ns, .copied_ns = scanout_copied_ns,
-      .kind = XH_FRAME_SCANOUT_BLOB, .resource_id = b->id
+      .kind = XH_FRAME_SCANOUT_BLOB, .resource_id = b->id,
+      .queue_generation = g->state_gen, .resource_generation = b->serial,
+      .owner_context = b->ctx   // 0 for GUEST display blob, not the renderer that last wrote it
     };
     xh_display_flush_scanout(rect->x, rect->y, w, hgt, trace_scanout ? &sample : NULL);
   }
@@ -519,7 +521,7 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     int r = b && (host || (a[2] & XH_GPU_BLOB_FLAG_GUEST_HANDLE)) ? b->create_blob(b, host ? h->ctx : 0, a[0], a[1], a[2], wide[0], wide[1], entries, a[3]) : 0;
     if (r && host) { nb->entries = entries; blob_del(g, nb); return r == -ENOMEM ? RESP_ERR_OUT_OF_MEMORY : RESP_ERR_UNSPEC; }
     nb->ctx = host ? h->ctx : 0; nb->mem = a[1]; nb->size = wide[1]; nb->entries = entries; nb->nentries = a[3];
-    if (g->trace) nb->serial = ++g->resource_serial;
+    if (g->trace || xh_display_trace_enabled()) nb->serial = ++g->resource_serial;  // unique across ID reuse and resets
     g->blob_bytes += wide[1];
     g->blobs_made++;
     return RESP_OK_NODATA;
@@ -639,7 +641,7 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
     r->pixels = calloc((size_t)a[2] * a[3], r->dbpp);
     if (!r->pixels) return RESP_ERR_OUT_OF_MEMORY;
     r->id = a[0]; r->format = a[1]; r->width = a[2]; r->height = a[3];
-    if (g->trace) r->serial = ++g->resource_serial;
+    if (g->trace || xh_display_trace_enabled()) r->serial = ++g->resource_serial;  // unique across ID reuse and resets
     return RESP_OK_NODATA;
   }
   case CMD_RESOURCE_UNREF: {
@@ -740,7 +742,9 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
       if (w && hgt) {
         const struct xh_frame_scanout sample = {
           .start_ns = scanout_start_ns, .copied_ns = scanout_copied_ns,
-          .kind = XH_FRAME_SCANOUT_2D, .resource_id = id
+          .kind = XH_FRAME_SCANOUT_2D, .resource_id = id,
+          .queue_generation = g->state_gen, .resource_generation = r->serial,
+          .owner_context = 0   // 2D resource has no single 3D context owner
         };
         xh_display_flush_scanout(rect.x, rect.y, w, hgt, trace_scanout ? &sample : NULL);
       }
