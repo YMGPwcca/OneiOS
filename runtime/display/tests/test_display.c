@@ -329,6 +329,12 @@ static void test_frame_trace(void)
   v3.base.base.version = XH_FRAME_TRACE_VERSION_PROVENANCE;
   v3.base.base.seq = 14;
   CHECK(xh_frame_trace_v3_valid(&v3)); // queue generation zero is valid before any reset
+  v3.resource_generation = 0;
+  CHECK(!xh_frame_trace_v3_valid(&v3));
+  v3.resource_generation = 41;
+  v3.base.base.version = XH_FRAME_TRACE_VERSION_SCANOUT;
+  CHECK(!xh_frame_trace_v3_valid(&v3));
+  v3.base.base.version = XH_FRAME_TRACE_VERSION_PROVENANCE;
   CHECK(send(pair[0], &v3, sizeof v3, 0) == (ssize_t)sizeof v3);
   CHECK(recv(pair[1], &legacy, sizeof legacy, 0) == (ssize_t)sizeof legacy);
   CHECK(!memcmp(legacy.magic, "XHDF", 4) && legacy.a == v3.base.base.x &&
