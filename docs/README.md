@@ -2,7 +2,7 @@
 
 **Galaxy S26 Ultra · SM-S948B / m3q / SM8850 · iOS 27.0.1 · experimental**
 
-[← Project home](../README.md) · [Current evidence](SM8850_LIVE_STATUS_2026-11-20.md) · [Roadmap](TODO.md) · [Companion OneOS](https://github.com/YMGPwcca/OneOS/tree/feat/sm8850-reboot-smoke/docs)
+[← Project home](../README.md) · [Latest 180s physical evidence](SM8850_180S_UNCAPPED_SESSION_FINDINGS_2026_11_24.md) · [Finding tracker](SM8850_180S_UNCAPPED_ENGINEERING_TRACKER_2026_11_24.md) · [Roadmap](TODO.md) · [Companion OneOS](https://github.com/YMGPwcca/OneOS/tree/feat/sm8850-no-root-cpu-cap-180s/docs)
 
 > [!CAUTION]
 > **Booted is not accepted.** A physical full-run reached guest-ready and first frame for ~600.6 s with KGSL acceleration. The device was very hot and visibly laggy. Unassisted recovery, independent watchdog qualification and a separate thermal guard are not yet proven. Normal OneOS app switching is blocked for SM8850.
@@ -12,6 +12,8 @@
 | Question | Start here |
 | :--- | :--- |
 | What works on the S26 Ultra today? | [Physical status & proof](SM8850_LIVE_STATUS_2026-11-20.md) |
+| What did the **latest uncapped 180s physical run** prove? | [Full exact-session findings (2026-11-24)](SM8850_180S_UNCAPPED_SESSION_FINDINGS_2026_11_24.md) |
+| Which source issues are still open, individually? | [Engineering tracker ONI-P0/P1/P2/P3](SM8850_180S_UNCAPPED_ENGINEERING_TRACKER_2026_11_24.md) |
 | What do we fix next? | [Safety-first roadmap](TODO.md) |
 | How does this system work? | [Architecture](architecture.md) |
 | How do I build and test without touching the phone? | [CachyOS local build](building.md) |
@@ -26,6 +28,8 @@
 | :--- | :--- |
 | [SM8850 LIVE STATUS 2026-11-20](SM8850_LIVE_STATUS_2026-11-20.md) | Current verified state · physical run, limitations and evidence |
 | [TODO](TODO.md) | Engineering queue · P0 safety through P3 acceptance |
+| [SM8850 180S UNCAPPED SESSION FINDINGS (2026-11-24)](SM8850_180S_UNCAPPED_SESSION_FINDINGS_2026_11_24.md) | **Latest physical** KGSL/brightness/touch/FPS/VM/thermal/recovery evidence with caveats |
+| [SM8850 180S ENGINEERING TRACKER](SM8850_180S_UNCAPPED_ENGINEERING_TRACKER_2026_11_24.md) | Per-finding owner, source, test and acceptance criteria; GitHub Issues disabled |
 | [SM8850 THERMAL GUARD](SM8850_THERMAL_GUARD.md) | Proposed independent thermal protection for `bridges=0` — **not implemented** |
 | [SM8850 RECOVERY ACCEPTANCE](SM8850_RECOVERY_ACCEPTANCE.md) | Independent watchdog, reboot and deadline proof — **not certified** |
 | [SM8850 PERFORMANCE BASELINE](SM8850_PERFORMANCE_BASELINE.md) | 600 s physical-run metrics, limitations and missing measurements |
