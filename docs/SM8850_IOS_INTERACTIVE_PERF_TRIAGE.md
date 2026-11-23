@@ -400,3 +400,28 @@ performance are not yet established. Prioritize a read-only
 thermal/policy-cap reason audit and repeatable matched UI
 workloads before selecting an adaptive scheme, virtual
 cpufreq or additional vCPUs. Avoid needless new 600s sessions.
+
+
+## 2026-11-24 follow-up — later uncapped full-bridges 180s performance findings
+
+**Do not merge this dataset into the older capped EPROTO or 600s `bridges=0` baselines.** Current session `7434ae27f8e84b76806f7a4b506e90c9`, OneiOS `f244b5c`/OneOS `f5c1b4a`, exact paired archived XNUHost/display logs (**339,854/10,203 bytes**).
+
+| Observation (current run) | Measurement | Interpretation |
+| --- | --- | --- |
+| Real guest and KGSL | Framework takeover, guest ready, first frame, GPU3D | **Observed**, not comprehensive Vulkan/Metal or FPS certification |
+| Visible brightness | Adjusted by operator; slight UI slider stutter | Physical functional observation, no latency trace |
+| Recorded GPU errors/resprings | **0/0**, stable SpringBoard `30` and backboardd `52` | Unlike separate prior EPROTO run; not controlled A/B proof |
+| GPU fence latency | **61.656ms max**; many mean windows ~2–4ms | Outlier can cause stutter if frame-critical |
+| Active display cadence | **43.91Hz estimated median**, peak **57.42 posts/s** | **Not** actual iOS animation FPS |
+| Display bridge maxima | lock **11.63ms**, copy **6.504ms**, post **4.07ms** | Copy alone does not explain long UI delays |
+| Touch-to-frame | **263.9ms max measured**; **9/16** gesture summaries without next frame by summary close | Not 9 permanently dropped touches |
+| Guest VMM | **8,889,193** traps /180.6s; **4,897,306** VM faults, **3,921,008** syscalls | Many mapping/trap operations; causal frame bottleneck not yet identified |
+| Background load | iconservicesagent **68% max**, Spotlight **13% peak** in one observed window | Prior Spotlight 100%-core conclusions do not transfer |
+| Guest ABI messages | **22** `host_statistics64` count warnings (`104 > 62`) | Caller vs host ABI source unknown |
+| Heat/recovery | chat-reported CPU junction **104.8°C** peak; normal Android reboot observed, original requester unverified | **P0 unsafe / not certified** |
+
+Source issue found during post-run inspection: `task.c` can call `order(t,NULL,0)` then unconditionally use `ops[0]` when the service-order diagnostic times out or errors. This is a **source-confirmed potential null dereference**, **not** proven the physical lag/crash path.
+
+**Priority:** P0 root thermal + independent recovery (OneOS), then P1 error-path correctness/VM fault attribution/ABI, then P2 KGSL fence and actual presented-frame latency, P3 matched safe A/B. Do not force GPU frequency, disable heat limits, or claim the uncapped run already proves 60 FPS.
+
+[Complete numeric evidence and caveats](SM8850_180S_UNCAPPED_SESSION_FINDINGS_2026_11_24.md) · [Per-finding fixes and acceptance criteria](SM8850_180S_UNCAPPED_ENGINEERING_TRACKER_2026_11_24.md).
