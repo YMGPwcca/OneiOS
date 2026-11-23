@@ -1,0 +1,67 @@
+# SM8850: 60 FPS performance execution tracker (XNUHost-first)
+
+**Scope:** Galaxy S26 Ultra / SM-S948B / SM8850, OneiOS iOS 27.0.1 guest. **Priority: visible >=60 FPS, low jank and responsive touch.** Created 2026-11-24.
+
+> Performance planning **does not authorize a new live framework takeover**, disable vendor/kernel safety protections, or change the existing OneOS root thermal/reboot-return policy. The operator's preferred fixed-duration X-second experimental profile is an existing configuration, not newly modified here. Root-side safety/evidence tasks remain independently documented and their factual status is unchanged.
+
+## What is measured (not assumed)
+
+- Latest evaluated 180.6-second physical session: OneiOS `f244b5cdfdedd592cc68bcbbb0770762def9e140` and pinned OneOS `f5c1b4a44fc45d78987694a230f7ffabb213e99c`; session `7434ae27f8e84b76806f7a4b506e90c9`.
+- Display **57.42 posts/s peak**, **43.91 Hz median estimated active post cadence**. These are **not actual presented FPS**. Nine of sixteen gesture summaries lacked a next guest frame *before summary close*, not proof of dropped touches.
+- XNUHost **8,889,193 traps**, **4,897,306 guest faults**, **3,921,008 syscalls**, about **1,895,124 actual host timer calls** during the run; GPU fence max **61.656 ms**. The CPU/VM counts are potential costs; their causal connection to each slow frame remains unknown.
+- Guest thermal junction **104.8 C** reported from earlier passive chat telemetry and recovery provenance not fully authenticated. Preserve telemetry and do not hide uncertainty; do not use temperature cutoffs as a tuning proxy.
+
+**Measurement contract:** FPS = distinct frames *presented* during a confirmed animated workload, not guest flush count, renderer policy events or ANativeWindow posts. Aim for >=60 presented FPS sustained where the display workload can deliver 60, frame budget <=16.667 ms, low active-window jank and improving p95/p99 touch-to-present latency. Keep raw interval distributions and classify idle separately. Do not declare success from an unverified presentation timestamp.
+
+## P0 — XNUHost correctness and attribution
+
+- [ ] **PERF-P0-01 — Safe deferred-only task order error diagnostic.** `runtime/xnuhost/src/task.c`: fix `order(t,NULL,0)` log dereference, cover -ETIMEDOUT, >=1000ms, explicit op and empty batch; preserve wait rc and mapping synchronization. **Status: implementation in progress on `feat/sm8850-xnuhost-perf-p0`; local project test pending.** Existing tracker: ONI-P1-01.
+- [ ] **PERF-P0-02 — XNUHost low-overhead profiler.** Add opt-in bounded counters/histograms by vCPU, guest pid/thread and event kind for syscall, VM fault, map/unmap, timer and futex; no per-event default logs, measure instrumentation overhead.
+- [ ] **PERF-P0-03 — End-to-end frame critical-path IDs.** Connect guest render/scanout, `virtio_gpu.c`, `xh_display_flush`, display seqpacket, Android lock/copy/post, and actual presentation/VSync where supported; document clock domains and trace loss.
+- [ ] **PERF-P0-04 — VM fault and deferred map attribution.** Histogram queue occupancy, joined operations, ordered unmaps, unmaps by release, stall times; never remove `map-defer` or weaken TLB ordering without concurrency proofs.
+- [ ] **PERF-P0-05 — Syscall/trap hotspot and long tails.** Group syscall/fault classes by guest pid and vCPU and time-correlate the 286.6ms syscall / 596.2ms VM-fault outliers with frame IDs before blaming a frame.
+- [ ] **PERF-P0-06 — Timer/futex wakeup churn.** Inspect duplicate timer programming, host timer call rate, guest wakeups, service-thread waits, and futex sleep/wake tails; compare no-op instrumentation baseline.
+- [ ] **PERF-P0-07 — 4/6/8 vCPU affinity benchmark.** Collect actual affinity masks, migration counts, per-vCPU load, wake latency; benchmark on matched workloads, do not interpret last observed CPU IDs as pinning.
+- [ ] **PERF-P0-08 — `host_statistics64` ABI count.** Identify owner of 22 warnings `actual:104 > HOST_VM_INFO64_COUNT:62`; investigate guest interfaces, validate sizes and add tests rather than suppress diagnostics.
+
+## P1 — CPU and VM improvement after attribution
+
+- [ ] **PERF-P1-01** Improve deferred map/unmap batching and queue contention with correctness proofs and measured p95/p99 benefit.
+- [ ] **PERF-P1-02** Improve vCPU handoff, service-thread scheduling and affinity where matched experiments show benefit.
+- [ ] **PERF-P1-03** Reduce proven redundant host timer re-arms and unnecessary wakeups without missing deadlines.
+- [ ] **PERF-P1-04** Reduce expensive fault/address-space translation paths without breaking coherency, mapping semantics or guest isolation.
+- [ ] **PERF-P1-05** Attribute and optimize guest background-service interference (Spotlight, iconservicesagent, etc.) during active UI transitions.
+
+## P2 — GPU and display after and alongside profiler
+
+- [ ] **PERF-P2-01** Distinguish 60 FPS *presented* from post cadence; active-animation frame-time p50/p95/p99, jank, refresh/VSync and duplicate/dropped frames.
+- [ ] **PERF-P2-02** Attribute 61.656ms KGSL fence maximum to GPU execution, host wait, scheduler, queue or buffer import; preserve GPU reset/error semantics.
+- [ ] **PERF-P2-03** Profile Metal-to-VirtIO-to-drm2kgsl/KGSL command submit, wait, retire and queue depth; compare same-session clocks.
+- [ ] **PERF-P2-04** Profile `flush_blob` dirty-rect copying, format conversions, `ANativeWindow_lock`, `xhd_copy` and `unlockAndPost` individually; current implementation already supports dirty rectangles.
+- [ ] **PERF-P2-05** Evaluate guest/Android VSync pacing, avoiding extra queue depth and producer/consumer phase mismatch.
+- [ ] **PERF-P2-06** Correctly pair touch down through guest input receipt, scanout, post and presentation with bounded IDs, late matches and unmatched/idle classifications.
+
+## P3 — Validate optimizations without guessing
+
+- [ ] **PERF-P3-01** One-parameter-at-a-time A/B with identical code provenance, task script, guest state and cooldown; report confidence and thermal drift.
+- [ ] **PERF-P3-02** Standard workloads: Home swipes, Settings scrolling, app transition, brightness slider, touch bursts, cold/warm launch.
+- [ ] **PERF-P3-03** Plot guest RAM, page tables, KGSL imported memory, memory pressure and resource lifecycle; separate caching from leak.
+- [ ] **PERF-P3-04** Evaluate zero-copy or buffer-sharing only if timeline demonstrates framebuffer copying dominates.
+- [ ] **PERF-P3-05** Fault-injection and sanitizer regressions for every CPU/GPU/display optimization; preserve input, frame order and guest correctness.
+
+## P4 — Acceptance and CI
+
+- [ ] **PERF-P4-01** Reproducible benchmark fixture: exact OneiOS/OneOS SHAs, image, firmware, session, mode, input script, display mode, workload windows, clock domains.
+- [ ] **PERF-P4-02** >=60 FPS actual presented within explicitly active animation windows, <=16.667ms frame budget for 60Hz, report p50/p95/p99 and jank ratio instead of invented results.
+- [ ] **PERF-P4-03** Touch-to-visible-frame and missing/late/duplicate frame report with percentiles and classification.
+- [ ] **PERF-P4-04** All feasible builds, sanitizers, Python fixtures and CI on local CachyOS x86_64 **first**; GitHub Actions only final PR validation. No implicit ADB or full-framework start.
+- [ ] **PERF-P4-05** Versioned code, docs, benchmarks and baseline evidence in both repos; update OneiOS's OneOS submodule only after selecting and validating the corresponding OneOS commit.
+
+## First implementation sprint
+
+1. Fix and test `task.c` deferred-only diagnostic without changing happy-path service order performance. **This branch has an implementation and a new portable unit-test target; not yet CachyOS-validated.**
+2. Add bounded per-vCPU, per-guest-process VM/map/syscall/timer attribution with measurable profiler overhead.
+3. Add frame IDs and common timeline across `virtio_gpu.c`, `display.c` and `runtime/display`; keep actual presentation as a separate, explicitly optional observable.
+4. Prioritize the verified critical-path long tail, then A/B at identical workload; do not extrapolate 60 FPS from peak buffer post rate.
+
+**Source evidence:** [180s findings](SM8850_180S_UNCAPPED_SESSION_FINDINGS_2026_11_24.md) · [original findings tracker](SM8850_180S_UNCAPPED_ENGINEERING_TRACKER_2026_11_24.md) · [OneOS fixed-duration/root policy](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-no-root-cpu-cap-180s/docs/SM8850_180S_UNCAPPED_ROOT_POLICY_2026_11_24.md).
