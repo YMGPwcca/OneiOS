@@ -5,11 +5,15 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-BRANCH="feat/sm8850-full-bridges-takeover"
-test "$(git branch --show-current)" = "$BRANCH" || {
-  echo "BLOCKED: wrong OneiOS branch; expected $BRANCH" >&2
-  exit 2
-}
+BRANCH="$(git branch --show-current)"
+# OneiOS's configured default integration branch is full-bridges=1.
+# Keep the former integration branch accepted for reproducible offline CI.
+case "$BRANCH" in
+  feat/oneios-sm8850-m3q|feat/sm8850-full-bridges-takeover) ;;
+  *)
+    echo "BLOCKED: wrong OneiOS branch for full bridges: $BRANCH" >&2
+    exit 2 ;;
+esac
 test "$(git -C app status --porcelain)" = "" || {
   echo "BLOCKED: OneOS submodule has local modifications" >&2
   exit 2
