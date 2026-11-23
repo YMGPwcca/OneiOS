@@ -58,6 +58,20 @@ int main(void)
   CHECK(p.flush_to_post_latest.count == 1 && p.flush_to_post_oldest.count == 1);
   xhd_perf_next_window(&p, t0 + UINT64_C(12000000000));
   CHECK(p.traced_posts == 0 && p.traced_flushes == 0 && p.flush_to_post_latest.count == 0);
+  const uint64_t t1 = t0 + UINT64_C(13000000000);
+  struct xhd_trace_pending scanout = {
+    .traced = 2, .scanout_packets = 2, .scanout_blob = 1, .scanout_2d = 1,
+    .scanout_copy_sum_ns = UINT64_C(2500000), .scanout_copy_max_ns = UINT64_C(2000000),
+    .oldest_scanout_start_ns = t1
+  };
+  xhd_perf_record_trace(&p, &scanout, t1 + UINT64_C(11000000));
+  CHECK(p.scanout_packets == 2 && p.scanout_blob == 1 && p.scanout_2d == 1);
+  CHECK(p.scanout_copy_sum_ns == UINT64_C(2500000) && p.scanout_copy_max_ns == UINT64_C(2000000));
+  CHECK(p.scanout_copy_max_per_post.count == 1 && p.scanout_copy_max_per_post.max_us == 2000);
+  CHECK(p.scanout_start_to_post_oldest.count == 1 && p.scanout_start_to_post_oldest.max_us == 11000);
+  CHECK(xhd_perf_quantile_bound_us(&p.scanout_copy_max_per_post, 95) == 2000);
+  xhd_perf_next_window(&p, t1 + XHD_PERF_WINDOW_NS);
+  CHECK(p.scanout_packets == 0 && p.scanout_copy_max_per_post.count == 0);
   printf("frame_perf tests: %d checks, %d failed\n",checks,failed);
   return failed?1:0;
 }
