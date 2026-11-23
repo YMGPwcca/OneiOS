@@ -641,6 +641,12 @@ int   xh_display_init(const xh_config *c, unsigned *width, unsigned *height, uns
 xh_display *xh_display_get(void);
 // The rectangle changed (already copied into pixels).
 void  xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h);
+// Optional scanout timing is captured in virtio_gpu.c around the shadow-frame
+// copy; a v2 XHDF record is sent only with frame-trace=1 and valid timing.
+struct xh_frame_scanout;
+bool  xh_display_trace_enabled(void);
+void  xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
+                               const struct xh_frame_scanout *scanout);
 void  xh_display_close(void);
 
 // Input (input.c): /dev/input/event* into the virtio-input device; with `pen` (NULL: none) the pen's device too, read on
