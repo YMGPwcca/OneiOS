@@ -46,15 +46,47 @@ class BoundedTimingTest(unittest.TestCase):
             adb = Path(td) / "fake-adb"
             adb.write_text("# no executable needed for isolated mocks")
             argv = ["sm8850-600s-thermal-telemetry.py", "--repo", str(ROOT),
-                    "--adb", str(adb), "--preflight-only", "--duration", "300"]
+                    "--adb", str(adb), "--preflight-only", "--duration", "180"]
             with patch("sys.argv", argv), \
+                 patch.dict(mod.os.environ, {"ONEIOS_SM8850_SOFT_THERMAL_OFF": ""}), \
                  patch.object(mod, "stock_identity", return_value={"boot_id": "test"}), \
                  patch.object(mod, "adb_shell", return_value="PREFLIGHT OK\\n") as root, \
                  patch.object(mod, "run_monitor", side_effect=AssertionError("live call")):
                 with contextlib.redirect_stdout(io.StringIO()) as stdout:
                     self.assertEqual(0, mod.main())
             self.assertIn("NO_FRAMEWORK_STOP", stdout.getvalue())
-            self.assertIn("--framework-check run 300", root.call_args.args[2])
+            self.assertIn("--framework-check run 180", root.call_args.args[2])
+
+    def test_full_bridges_rejects_300_before_device_access(self):
+        mod = load("sm8850_tel_reject_300", TELEMETRY)
+
+        argv = [
+            "sm8850-600s-thermal-telemetry.py",
+            "--repo", str(ROOT),
+            "--preflight-only",
+            "--duration", "300",
+        ]
+
+        with patch("sys.argv", argv), \
+             patch.object(
+                 mod.subprocess,
+                 "check_output",
+                 return_value="feat/oneios-sm8850-m3q",
+             ), \
+             patch.object(mod, "stock_identity") as identity, \
+             patch.object(mod, "adb_shell") as adb, \
+             contextlib.redirect_stderr(io.StringIO()) as stderr:
+
+            with self.assertRaises(SystemExit) as exc:
+                mod.main()
+
+        self.assertEqual(exc.exception.code, 2)
+        self.assertIn(
+            "requires --duration 180",
+            stderr.getvalue(),
+        )
+        identity.assert_not_called()
+        adb.assert_not_called()
 
     def test_explicit_off_mode_preflight_rejects_wrong_effective_mode(self):
         mod = load("sm8850_tel_mode_check", TELEMETRY)

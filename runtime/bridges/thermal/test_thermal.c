@@ -278,51 +278,136 @@ static void test_sysfs(void)
   CHECK(br_thermal_find(empty, &s) == -1);
 }
 
-static struct { int caps, reports; unsigned last_cap, last_level; } seen;
-static void on_cap(void *ctx, const br_thermal_state *st) { (void)ctx; __atomic_fetch_add(&seen.caps, 1, __ATOMIC_RELAXED); seen.last_cap = st->cap; }
-static void on_report(void *ctx, const br_thermal_state *st) { (void)ctx; __atomic_fetch_add(&seen.reports, 1, __ATOMIC_RELAXED); seen.last_level = st->level; }
+static struct {
+  int caps, reports;
+  unsigned last_cap, last_level;
+} seen;
 
-static void wait_ms(unsigned ms) { struct timespec t = { ms / 1000, (long)(ms % 1000) * 1000000 }; nanosleep(&t, NULL); }
+#define SEEN(field) \
+  __atomic_load_n(&seen.field, __ATOMIC_ACQUIRE)
+
+static void on_cap(void *ctx, const br_thermal_state *st)
+{
+  (void)ctx;
+  __atomic_store_n(&seen.last_cap, st->cap, __ATOMIC_RELAXED);
+  __atomic_fetch_add(&seen.caps, 1, __ATOMIC_RELEASE);
+}
+
+static void on_report(void *ctx, const br_thermal_state *st)
+{
+  (void)ctx;
+  __atomic_store_n(&seen.last_level, st->level, __ATOMIC_RELAXED);
+  __atomic_fetch_add(&seen.reports, 1, __ATOMIC_RELEASE);
+}
+
+static void wait_ms(unsigned ms)
+{
+  struct timespec t = {
+    ms / 1000,
+    (long)(ms % 1000) * 1000000
+  };
+  nanosleep(&t, NULL);
+}
+
+/*
+ * Wait for both the worker state and its delivered callbacks.
+ * Fixed 200 ms sleeps are not sufficient under concurrent CI load.
+ * The monotonic deadline prevents an unlimited wait.
+ */
+static int wait_thermal(
+    br_thermal *t, unsigned level, int caps, int reports)
+{
+  struct timespec start, now;
+  clock_gettime(CLOCK_MONOTONIC, &start);
+
+  for (;;) {
+    br_thermal_state st;
+    br_thermal_get(t, &st);
+
+    if (st.level == level &&
+        SEEN(caps) >= caps &&
+        SEEN(reports) >= reports)
+      return 1;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    int64_t elapsed =
+        (int64_t)(now.tv_sec - start.tv_sec) * 1000 +
+        (now.tv_nsec - start.tv_nsec) / 1000000;
+
+    if (elapsed >= 5000)
+      return 0;
+
+    wait_ms(10);
+  }
+}
 
 static void test_worker(void)
 {
   put("/sys/class/power_supply/battery/lrp", "350\n");
+
   br_thermal_limits l;
   br_thermal_limits_default(&l);
-  br_thermal_options o = { .root = base, .poll_ms = 20, .limits = &l };
+
+  br_thermal_options o = {
+    .root = base,
+    .poll_ms = 20,
+    .limits = &l
+  };
+
   br_thermal *t = br_thermal_open(&o);
   CHECK(t != NULL);
   if (!t) return;
+
   br_thermal_state st;
   br_thermal_get(t, &st);
-  CHECK(st.level == BR_THERMAL_NOMINAL && st.raw.skin == 350);
+  CHECK(st.level == BR_THERMAL_NOMINAL &&
+        st.raw.skin == 350);
+
   br_thermal_on_cap(t, on_cap, NULL);
   br_thermal_on_report(t, on_report, NULL);
+
   wait_ms(150);
-  CHECK(seen.caps == 0 && seen.reports == 0);            // nothing changed: no message before BR_THERMAL_REPORT_MS
+  CHECK(SEEN(caps) == 0 && SEEN(reports) == 0);
+
   put("/sys/class/power_supply/battery/lrp", "447\n");
-  wait_ms(200);
-  CHECK(seen.caps == 0);                                  // heavy: iOS is told, no step of ours (all cores)
-  CHECK(seen.reports == 1 && seen.last_level == BR_THERMAL_HEAVY);
+  CHECK(wait_thermal(t, BR_THERMAL_HEAVY, 0, 1));
+  CHECK(SEEN(caps) == 0);
+  CHECK(SEEN(reports) == 1 &&
+        SEEN(last_level) == BR_THERMAL_HEAVY);
+
   put("/sys/class/power_supply/battery/lrp", "462\n");
-  wait_ms(200);
-  CHECK(seen.caps == 0 && seen.reports == 2 && seen.last_level == BR_THERMAL_TRAPPING);
+  CHECK(wait_thermal(t, BR_THERMAL_TRAPPING, 0, 2));
+  CHECK(SEEN(caps) == 0 &&
+        SEEN(reports) == 2 &&
+        SEEN(last_level) == BR_THERMAL_TRAPPING);
+
   put("/sys/class/power_supply/battery/lrp", "505\n");
-  wait_ms(200);
-  CHECK(seen.caps == 1 && seen.last_cap == BR_THERMAL_CAP_CRITICAL && seen.last_level == BR_THERMAL_SLEEPING);   // the case at 50 C
+  CHECK(wait_thermal(t, BR_THERMAL_SLEEPING, 1, 3));
+  CHECK(SEEN(caps) == 1 &&
+        SEEN(last_cap) == BR_THERMAL_CAP_CRITICAL &&
+        SEEN(last_level) == BR_THERMAL_SLEEPING);
+
   put("/sys/class/power_supply/battery/lrp", "300\n");
-  wait_ms(200);
-  CHECK(seen.caps == 2 && seen.last_cap == 0 && seen.last_level == BR_THERMAL_NOMINAL);
+  CHECK(wait_thermal(t, BR_THERMAL_NOMINAL, 2, 4));
+  CHECK(SEEN(caps) == 2 &&
+        SEEN(last_cap) == 0 &&
+        SEEN(last_level) == BR_THERMAL_NOMINAL);
+
   br_thermal_on_cap(t, NULL, NULL);
   br_thermal_on_report(t, NULL, NULL);
+
   put("/sys/class/power_supply/battery/lrp", "510\n");
-  wait_ms(150);
-  CHECK(seen.caps == 2 && seen.reports == 4);
+  CHECK(wait_thermal(t, BR_THERMAL_SLEEPING, 2, 4));
+  CHECK(SEEN(caps) == 2 && SEEN(reports) == 4);
+
   br_thermal_get(t, &st);
-  CHECK(st.level == BR_THERMAL_SLEEPING);                 // still read with no listener: the next listener hears it
+  CHECK(st.level == BR_THERMAL_SLEEPING);
+
   br_thermal_on_cap(t, on_cap, NULL);
-  wait_ms(150);
-  CHECK(seen.caps == 3 && seen.last_cap == BR_THERMAL_CAP_CRITICAL);
+  CHECK(wait_thermal(t, BR_THERMAL_SLEEPING, 3, 4));
+  CHECK(SEEN(caps) == 3 &&
+        SEEN(last_cap) == BR_THERMAL_CAP_CRITICAL);
+
   br_thermal_close(t);
 }
 
