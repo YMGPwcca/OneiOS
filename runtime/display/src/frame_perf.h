@@ -9,6 +9,7 @@
 #define XHD_PERF_WINDOW_NS UINT64_C(5000000000)
 #define XHD_PERF_ACTIVE_GAP_US UINT64_C(250000)
 #define XHD_PERF_BUCKETS 14
+#define XHD_PERF_SOURCES 8  // bounded resource identities per five-second window; overflow counted
 
 struct xhd_perf_hist {
   uint64_t count, sum_us, max_us;
@@ -16,6 +17,10 @@ struct xhd_perf_hist {
 };
 
 struct xhd_trace_pending;
+struct xhd_source_stat {
+  uint64_t queue_generation, resource_generation, posts, last_seq;
+  uint32_t resource_id, owner_ctx;
+};
 struct xhd_frame_perf {
   uint64_t window_start_ns, last_post_ns;
   uint64_t posts, full_copies, copied_pixels;
@@ -25,6 +30,10 @@ struct xhd_frame_perf {
   uint64_t scanout_packets, scanout_blob, scanout_2d, scanout_copy_sum_ns, scanout_copy_max_ns;
   struct xhd_perf_hist flush_to_post_oldest, flush_to_post_latest, flush_to_helper;
   struct xhd_perf_hist scanout_copy_max_per_post, scanout_start_to_post_oldest;
+  // Count source identity per posted *batch*, not per GPU flush. This does NOT
+  // assert a relationship to renderer submission or fence completion.
+  uint64_t source_unique_posts, source_mixed_posts, source_unknown_posts, source_overflow_posts;
+  struct xhd_source_stat sources[XHD_PERF_SOURCES];
 };
 
 uint64_t xhd_perf_clock_ns(void);
