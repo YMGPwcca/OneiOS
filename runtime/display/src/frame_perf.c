@@ -63,6 +63,17 @@ void xhd_perf_record_trace(struct xhd_frame_perf *p, const struct xhd_trace_pend
   p->traced_posts++;
   p->traced_flushes += batch->traced;
   p->traced_coalesced += batch->traced - 1;
+  p->scanout_packets += batch->scanout_packets;
+  p->scanout_blob += batch->scanout_blob;
+  p->scanout_2d += batch->scanout_2d;
+  p->scanout_copy_sum_ns += batch->scanout_copy_sum_ns;
+  if (batch->scanout_copy_max_ns > p->scanout_copy_max_ns)
+    p->scanout_copy_max_ns = batch->scanout_copy_max_ns;
+  if (batch->scanout_packets) {
+    observe(&p->scanout_copy_max_per_post, batch->scanout_copy_max_ns / 1000);
+    if (batch->oldest_scanout_start_ns && post_done_ns >= batch->oldest_scanout_start_ns)
+      observe(&p->scanout_start_to_post_oldest, (post_done_ns - batch->oldest_scanout_start_ns) / 1000);
+  }
   if (batch->oldest_flush_ns && post_done_ns >= batch->oldest_flush_ns)
     observe(&p->flush_to_post_oldest, (post_done_ns - batch->oldest_flush_ns) / 1000);
   if (batch->newest_flush_ns && post_done_ns >= batch->newest_flush_ns)
