@@ -13,6 +13,7 @@
 #define _GNU_SOURCE
 #include "xnuhost.h"
 #include "../stub/stub_abi.h"
+#include "task_order_diag.h"
 #include <errno.h>
 #include <dirent.h>
 #include <stdio.h>
@@ -441,9 +442,20 @@ static int64_t order(task *t, const struct xs_op *ops, unsigned count)
   clock_gettime(CLOCK_MONOTONIC, &ended);
   // An order the task's service thread takes long over, or never answers, stalls the vCPU that gave it: say which.
   long took_ms = (long)((ended.tv_sec - began.tv_sec) * 1000 + (ended.tv_nsec - began.tv_nsec) / 1000000);
-  if (rc || took_ms >= 1000)
-    LOGE("tasks: pid %d: order %u (va 0x%llx, size 0x%llx, prot %u) %s after %ld ms", t->pid, ops[0].op, (unsigned long long)ops[0].va,
-         (unsigned long long)ops[0].size, ops[0].prot, rc ? "was not answered" : "took long: answered", took_ms);
+  if (rc || took_ms >= 1000) {
+    // flush_pending uses order(t, NULL, 0): never access ops[0] for a deferred-only flush.
+    // The service page contains the queued operations; its batch is serialized by t->lock.
+    const xh_task_order_diag diag = xh_task_order_diag_make(ops, count, sp->ops, first, rc, took_ms);
+    if (diag.op)
+      LOGE("tasks: pid %d: %s %u (va 0x%llx, size 0x%llx, prot %u; deferred %u, requested %u) %s after %ld ms",
+           t->pid, count ? "order" : "deferred flush", diag.op->op, (unsigned long long)diag.op->va,
+           (unsigned long long)diag.op->size, diag.op->prot, diag.deferred_count, diag.requested_count,
+           rc ? "was not answered" : "took long: answered", took_ms);
+    else
+      LOGE("tasks: pid %d: order with no operation (deferred %u, requested %u) %s after %ld ms",
+           t->pid, diag.deferred_count, diag.requested_count,
+           rc ? "was not answered" : "took long: answered", took_ms);
+  }
   if (rc == -ETIMEDOUT) log_task_threads(t->pid);
   if (count) {
     static const uint8_t which[] = { [XS_OP_MAP] = XP_ORDER_MAP, [XS_OP_UNMAP] = XP_ORDER_UNMAP, [XS_OP_PROTECT] = XP_ORDER_PROTECT,
