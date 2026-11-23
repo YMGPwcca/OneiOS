@@ -7,6 +7,19 @@
 > [!CAUTION]
 > **Current release gate: BLOCKED.** Hosted iOS booted, rendered its first frame and ran ~600.6 s, but the phone lagged badly and became very hot. Neither the OneiOS thermal guard nor the exact unattended reboot-return path is qualified. **Do not run another long takeover just to obtain performance metrics.**
 
+
+## 2026-11-24 latest physical evidence: 180s **uncapped** full bridges, not the prior 28% capped EPROTO session
+
+**Current session:** OneiOS `f244b5cdfdedd592cc68bcbbb0770762def9e140` + OneOS `f5c1b4a44fc45d78987694a230f7ffabb213e99c`, `framework.launch=7434ae27f8e84b76806f7a4b506e90c9`. Root software thermal guard **OFF**, root CPU cap **OFF**; kernel/firmware thermal policy unchanged.
+
+**Preserve this distinction:** the **previous** capped 180s physical session had KGSL `GPU_COMMAND EPROTO`, backboardd exit/SpringBoard respring and **684.274ms** max fence. The **new** uncapped session has actual iOS guest ready and first frame, user-confirmed working-but-stuttering brightness, KGSL 3D, **0 logged GPU errors/0 logged backboardd or SpringBoard exits**, **61.656ms** max host fence, **43.91Hz estimated active display post cadence** (not real FPS), peak **57.42 posts/s**, 9/16 touch summaries without frame before summary end, worst recorded successful touch→frame **263.9ms**, **8,889,193** traps/180.6s with **4,897,306** VM faults and **22** guest `host_statistics64` count warnings. The earlier passive telemetry summary reports internal CPU zone **104.8°C** (raw host series not re-parsed in the archive study). Return to a normal Android boot was observed but original authenticated root reboot requester/unassisted watchdog outcome remains **NOT VERIFIED**. No controlled A/B speedup claim is justified.
+
+**Detailed source-of-truth:** [full archived-session findings](SM8850_180S_UNCAPPED_SESSION_FINDINGS_2026_11_24.md) and [per-finding engineering tracker (11 ONI tickets)](SM8850_180S_UNCAPPED_ENGINEERING_TRACKER_2026_11_24.md). Root-owned P0 work is tracked by OneOS [evidence](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-no-root-cpu-cap-180s/docs/SM8850_180S_UNCAPPED_ROOT_POLICY_2026_11_24.md) and [five OOS tasks](https://github.com/YMGPwcca/OneOS/blob/feat/sm8850-no-root-cpu-cap-180s/docs/SM8850_180S_UNCAPPED_ROOT_TRACKER_2026_11_24.md).
+
+**New source correctness finding (not a proven physical crash):** `runtime/xnuhost/src/task.c` `flush_pending()` can call `order(t,NULL,0)`, whose long/error diagnostic dereferences `ops[0]` without checking count. Fix and regression-test this before scheduler tuning. The 22 guest ABI warnings require attribution; do not assume XNUHost caused them.
+
+**P0 remains BLOCKED:** no more guard-off/cap-off hot takeover. Independently qualify root thermal fail-closed and reboot-return provenance, then make a separately risk-reviewed physical plan. Code fixes, ARM64 build and tests are local CachyOS first. GitHub Issues is disabled in both repos, so tickets are maintained as Markdown.
+
 ## Delivery sequence
 
 | Phase | Goal | Gate to move forward |
