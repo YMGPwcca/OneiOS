@@ -113,6 +113,7 @@ typedef struct {
   bool  legacy_boot_args;
   int   setway_skip;        // a trapped dc set/way ends the guest's set/way loop of its level at once (sysreg.c): 1 (default), 0, -1 = unset
   int   perf_log;           // perf.c: seconds between two "perf:" reports; 0 = only at the stop and on SIGQUIT; -1 = unset (30)
+  bool  perf_task;          // perf-task=1: opt-in per-host-task/process + per-vCPU counters; default off (no hot-path atomic writes)
   int   spin_host, spin_task;   // task.c: microseconds a vCPU (spin-host) and an iOS thread (spin-task) spin for the other
                             // side of a hand-off before they sleep in a futex; -1 = unset (the defaults in task.c)
   bool  cpu_affinity_bench; // strictly bench/shm/exclusive-touch/bridges=0: opt-in one host core per vCPU + its guest threads;
@@ -475,6 +476,7 @@ xh_perf *xh_perf_self(void);                            // the calling vCPU's, e
 void     xh_perf_init(const xh_config *c);
 void     xh_perf_tick(void);                            // main loop: a report every perf-log seconds
 void     xh_perf_log(bool since_start);                 // the report now (the stop, SIGQUIT)
+void     xh_task_perf_log(void);                         // task.c: bounded active guest-task summary when perf-task=1
 
 // Emulates the undefined instruction `insn` trapped in kernel context. Returns false if it is not
 // one the host emulates. Advances regs->pc itself.
