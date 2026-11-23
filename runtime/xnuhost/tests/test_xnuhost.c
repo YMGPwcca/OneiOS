@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "xnuhost.h"
+#include "xnuhost/frame_trace.h"
 #include "xnuhost/free_report.h"
 #include "xnuhost/free_report_runs.h"
 #include "xnuloader/boot.h"
@@ -46,6 +47,16 @@ static xh_display fake_display;
 static unsigned flush_rect[4];
 xh_display *xh_display_get(void) { return fake_display.pixels ? &fake_display : NULL; }
 void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h) { flush_rect[0] = x; flush_rect[1] = y; flush_rect[2] = w; flush_rect[3] = h; flushes++; }
+static bool capture_scanout;
+static struct xh_frame_scanout last_scanout;
+static unsigned scanout_trace_calls;
+bool xh_display_trace_enabled(void) { return capture_scanout; }
+void xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
+                              const struct xh_frame_scanout *scanout)
+{
+  if (scanout) { last_scanout = *scanout; scanout_trace_calls++; }
+  xh_display_flush(x, y, w, h);
+}
 unsigned xh_task_filter(struct xs_filter_insn *f, uint64_t text_lo, uint64_t text_hi, int ram_fd, int trap_fd);
 
 // ---- instructions -------------------------------------------------------------------------------
@@ -456,6 +467,7 @@ static void test_virtio_blk(const char *dir)
 
 static void test_virtio_gpu(void)
 {
+  capture_scanout = true;
   fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .format = XH_PIXELS_BGRX8, .bpp = 4, .pixels = calloc(4, 32) };
   driver d = { .dev = xh_virtio_gpu_create(0, 42, 8, 4) };
   CHECK(d.dev && R(&d, 8) == 16 && R(&d, 0x108) == 1 && driver_init(&d, 0, 2, GUEST_PA + 0x10000));
@@ -484,6 +496,8 @@ static void test_virtio_gpu(void)
   CHECK(SEND(12, 24) == 24 && resp[0] == 0x1100 && resp[1] == 1 && resp[2] == 0x55);
   cmd[1] = 0;
   CHECK(flush_rect[0] == 2 && flush_rect[1] == 1 && flush_rect[2] == 4 && flush_rect[3] == 2 && ready_count == 1);
+  CHECK(scanout_trace_calls > 0 && last_scanout.kind == XH_FRAME_SCANOUT_2D && last_scanout.resource_id == 1);
+  CHECK(last_scanout.start_ns > 0 && last_scanout.copied_ns >= last_scanout.start_ns);
   const uint8_t *px = fake_display.pixels + 1 * 32 + 2 * 4;                    // pixel (2,1) = index 10: B,G,R,X
   CHECK(px[0] == 10 && px[1] == 0x80 && px[2] == 0x11);
   CHECK(fake_display.pixels[0] == 0 && fake_display.pixels[1 * 32 + 6 * 4] == 0);       // outside the flushed rectangle
@@ -576,6 +590,7 @@ static void test_virtio_gpu(void)
   W(&d, 0x70, 0);                                                              // reset frees what is left
   free(fake_display.pixels);
   fake_display.pixels = NULL;
+  capture_scanout = false;
 #undef SEND
 }
 
@@ -734,6 +749,7 @@ static bool chunks_are(int count, xh_gpu_chunk *chunks, int want, const uint8_t 
 
 static void test_virtio_gpu3d(void)
 {
+  capture_scanout = true;
   static xh_gpu3d b = { .capset_count = fake_capset_count, .capset_info = fake_capset_info, .capset = fake_capset, .ctx_create = fake_ctx_create,
                         .ctx_destroy = fake_ctx_destroy, .submit = fake_submit, .submit_fence = fake_submit_fence, .create_blob = fake_create_blob,
                         .map_blob = fake_map_blob, .attach = fake_attach, .unref = fake_unref, .hint = fake_hint };
@@ -932,6 +948,8 @@ static void test_virtio_gpu3d(void)
     CLEAR(); cmd[0] = 0x104; cmd[6] = 0; cmd[7] = 0; cmd[8] = 8; cmd[9] = 1; cmd[10] = 30;
     CHECK(G(12, 24) == 1 && resp[0] == 0x1100);
     CHECK(!memcmp(fake_display.pixels, want, sizeof want));
+    CHECK(last_scanout.kind == XH_FRAME_SCANOUT_BLOB && last_scanout.resource_id == 30);
+    CHECK(last_scanout.start_ns > 0 && last_scanout.copied_ns >= last_scanout.start_ns);
     // half floats onto the 8-bit display: encoded to sRGB, clamped
     free(fake_display.pixels);
     fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .format = XH_PIXELS_BGRX8, .bpp = 4, .pixels = eight };
@@ -1136,6 +1154,7 @@ static void test_virtio_gpu3d(void)
     cmd[4] = 41;
     CHECK(G(6, 24) == 1 && resp[0] == 0x1100);
   }
+  capture_scanout = false;
 #undef G
 #undef GX
 #undef CLEAR
