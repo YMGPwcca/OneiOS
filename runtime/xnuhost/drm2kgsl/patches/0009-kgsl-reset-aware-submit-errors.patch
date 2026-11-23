@@ -1,0 +1,38 @@
+--- a/src/drm/drm2kgsl/drm2kgsl_renderer.c
++++ b/src/drm/drm2kgsl/drm2kgsl_renderer.c
+@@ -2172,15 +2172,26 @@
+       .timestamp = KGSL_GUEST_TS(req->fence), /* guest seqno (USER_GENERATED_TS) */
+    };
+ 
+-   int ret = kgsl_ioctl(dctx->fd, IOCTL_KGSL_GPU_COMMAND, &cmd);
+-   free(kcmds);
+-
+-   if (ret) {
+-      drm_err("GPU_COMMAND failed: %s", strerror(errno));
+-      if (kctx->shmem)
+-         kctx->shmem->async_error++;
+-      return 0; /* async error, not a protocol error */
+-   }
++   int ret = kgsl_ioctl(dctx->fd, IOCTL_KGSL_GPU_COMMAND, &cmd);
++   /* Preserve errno before any cleanup or reset-status query can change it. */
++   int submit_errno = ret ? errno : 0;
++   free(kcmds);
++
++   if (ret) {
++      drm_err("GPU_COMMAND failed: errno=%d (%s) queue=%u fence=%u kgsl_timestamp=%u nr_bos=%u nr_cmds=%u ibs=%u va_slice=%d; not retried",
++              submit_errno, strerror(submit_errno), req->queue_id, req->fence,
++              cmd.timestamp, req->nr_bos, req->nr_cmds, cmd.numcmds, kctx->va_slice_idx);
++      /* KGSL returns EPROTO after some context faults; query its reset
++       * status while this queue is still alive.  The status is consumed
++       * by GETPROPERTY, so do not query again on this failure.  This
++       * reports a guilty/involved reset to MSM_PARAM_FAULTS via shmem.
++       * Never replay a GPU IB after an ambiguous submission failure. */
++      if (submit_errno == EPROTO && kctx->shmem)
++         kgsl_note_reset(kctx, req->queue_id);
++      if (kctx->shmem)
++         kctx->shmem->async_error++;
++      return 0; /* the guest checks its asynchronous-error counter */
++   }
+ 
+ 
+    /* Feed the ring timeline so the vdrm ring fence signals when the GPU passes

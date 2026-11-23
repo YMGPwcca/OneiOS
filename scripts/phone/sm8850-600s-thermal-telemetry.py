@@ -595,8 +595,8 @@ def main() -> int:
         ["git", "-C", str(repo), "branch", "--show-current"],
         text=True, timeout=10,
     ).strip()
-    if (branch == "feat/sm8850-full-bridges-takeover"
-            and not args.preflight_only and args.duration != 180):
+    if (branch in {"feat/oneios-sm8850-m3q", "feat/sm8850-full-bridges-takeover"}
+            and args.duration != 180):
         ap.error("SM8850 full bridges live trial requires --duration 180")
     if not (repo / WRAPPER).is_file():
         ap.error(f"Missing existing OneiOS wrapper: {repo / WRAPPER}")

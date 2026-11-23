@@ -39,6 +39,9 @@ for suite in \
     python3 "$suite" -v
 done
 
+echo "===== READ-ONLY GPU/RESPRING PARSER REGRESSION ====="
+python3 scripts/phone/test-sm8850-gpu-respring-forensics.py -v
+
 echo "===== NO-DEVICE TELEMETRY SELF TEST ====="
 python3 -u scripts/phone/sm8850-600s-thermal-telemetry.py --self-test --duration 300
 python3 -u scripts/phone/sm8850-600s-thermal-telemetry.py --self-test --duration 600

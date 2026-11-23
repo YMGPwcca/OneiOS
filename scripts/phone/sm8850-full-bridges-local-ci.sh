@@ -28,9 +28,20 @@ echo "===== SYNTAX + OFFLINE TESTS ====="
 sh -n app/switcher/assets/oneios_switch.sh
 python3 -m py_compile app/tests/test_sm8850_guarded_full.py
 python3 app/tests/test_sm8850_guarded_full.py -v
+echo "===== READ-ONLY GPU/RESPRING PARSER REGRESSION ====="
+python3 scripts/phone/test-sm8850-gpu-respring-forensics.py -v
+
 echo "===== COMPILE AND RUN XNUHOST PORTABLE UNIT TESTS ====="
 make -C runtime/xnuhost -j"${JOBS:-8}" build/host/test_xnuhost
 (cd runtime/xnuhost && ASAN_OPTIONS=detect_leaks=0 ./build/host/test_xnuhost)
+
+echo "===== GPU_COMMAND EPROTO FAULT-INJECTION ON PINNED DRM2KGSL ====="
+test -f external/virglrenderer/src/drm/drm2kgsl/drm2kgsl_renderer.c || {
+  echo "BLOCKED: pinned external/virglrenderer checkout missing" >&2
+  exit 2
+}
+make -C runtime/xnuhost -j"${JOBS:-8}" build/host/test_drm2kgsl
+(cd runtime/xnuhost && ASAN_OPTIONS=detect_leaks=0 ./build/host/test_drm2kgsl)
 
 # Opt in to a real arm64 link when NDK/virglrenderer dependencies are installed.
 if [ "${SM8850_BUILD_ARM64:-0}" = 1 ]; then

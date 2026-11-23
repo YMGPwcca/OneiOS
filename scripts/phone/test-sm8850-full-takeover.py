@@ -87,6 +87,23 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('bench_keys.power_only = true;', native_test)
         self.assertIn('bench_keys.suppress_volume = true;', native_test)
 
+    def test_integrated_default_branch_requires_explicit_180s_and_full_bridges(self):
+        """Post-merge regression: branch name must not weaken live takeover admission."""
+        wrapper = WRAPPER.read_text()
+        host = TAKEOVER_SOURCE.read_text()
+        telemetry = (ROOT / "scripts/phone/sm8850-600s-thermal-telemetry.py").read_text()
+        local_ci = (ROOT / "scripts/phone/sm8850-full-bridges-local-ci.sh").read_text()
+        self.assertIn('feat/oneios-sm8850-m3q|feat/sm8850-full-bridges-takeover)', wrapper)
+        self.assertIn('FULL_BRIDGES_BRANCH=1', wrapper)
+        self.assertIn('[ "$FULL_BRIDGES_BRANCH" = 1 ]', wrapper)
+        self.assertIn('I_ACCEPT_UNQUALIFIED_180S_LIVE_TEST', wrapper)
+        self.assertIn('[ "$duration_explicit" = 1 ] && [ "$duration" = 180 ]', wrapper)
+        self.assertIn('full bridges allows only stage-runtime, rearm or 180s run', wrapper)
+        self.assertIn('in {"feat/oneios-sm8850-m3q", "feat/sm8850-full-bridges-takeover"}', host)
+        self.assertIn('branch in {"feat/oneios-sm8850-m3q", "feat/sm8850-full-bridges-takeover"}', telemetry)
+        self.assertIn('feat/oneios-sm8850-m3q|feat/sm8850-full-bridges-takeover)', local_ci)
+        self.assertNotIn('feat/oneios-sm8850-m3q|feat/sm8850-guarded-duration-tracing)', wrapper)
+
     def test_reboot_return_is_still_native_oneos_without_inplace_handback(self):
         switch = ONEOS_SWITCH.read_text()
         returner = ONEOS_RETURN.read_text()

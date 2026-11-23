@@ -49,6 +49,11 @@ static unsigned nqueues;
 typedef struct { uint32_t context, type, level; } constraint;
 static constraint constraints[64];
 static unsigned nconstraints;
+// Fault-injection for a real GEM_SUBMIT -> IOCTL_KGSL_GPU_COMMAND; no GPU access.
+static unsigned gpu_command_calls;
+static uint32_t fault_queue_id; // count only the guest command, not clock-hold keepalives
+static bool fail_next_gpu_command;
+static uint32_t gpu_reset_status;
 
 static object *object_find(uint32_t id)
 {
@@ -74,6 +79,11 @@ static int fake_kgsl(unsigned long request, void *arg)
   switch (request) {
   case IOCTL_KGSL_DEVICE_GETPROPERTY: {
     struct kgsl_device_getproperty *p = arg;
+    if (p->type == KGSL_PROP_GPU_RESET_STAT && p->sizebytes == sizeof(uint32_t)) {
+      *(uint32_t *)p->value = gpu_reset_status;
+      gpu_reset_status = KGSL_CTX_STAT_NO_ERROR; // KGSL's read-to-clear status
+      return 0;
+    }
     if (p->type != KGSL_PROP_DEVICE_INFO || p->sizebytes < sizeof(struct kgsl_devinfo)) { errno = EINVAL; return -1; }
     struct kgsl_devinfo info = { .device_id = 1, .chip_id = 0x43051400, .mmu_enabled = 1, .gpu_id = 6770, .gmem_sizebytes = 3072u << 10 };
     memcpy(p->value, &info, sizeof info);
@@ -144,6 +154,19 @@ static int fake_kgsl(unsigned long request, void *arg)
     return 0;
   }
   case IOCTL_KGSL_DRAWCTXT_DESTROY: return 0;
+  case IOCTL_KGSL_GPU_COMMAND: {
+    const struct kgsl_gpu_command *submit = arg;
+    // Renderer may use a second KGSL context for short-lived clock holds.
+    if (!fault_queue_id || submit->context_id != fault_queue_id) return 0;
+    gpu_command_calls++;
+    if (fail_next_gpu_command) {
+      fail_next_gpu_command = false;
+      gpu_reset_status = KGSL_CTX_STAT_GUILTY_CONTEXT_RESET_EXT;
+      errno = EPROTO;
+      return -1;
+    }
+    return 0;
+  }
   default: errno = ENOTTY; return -1;
   }
 }
@@ -474,6 +497,52 @@ static int shown_surfaces(void)
   return 0;
 }
 
+// A real GEM_SUBMIT exercises the patched renderer against KGSL's EPROTO
+// post-reset marker. A failed ioctl must count exactly once, never be replayed,
+// and must surface both async_error and the guilty context reset to the guest.
+static int gpu_submit_ep_proto(void)
+{
+  CHECK(renderer());
+  context c;
+  CHECK(context_named(&c, 1, 1, "xnu:backboardd"));
+  const xh_gpu_entry pages = { .addr = RAM_PHYS + (4u << 20), .length = 0x4000 };
+  CHECK(guest_buffer(&c, 2, 1, c.slice + (16u << 20), 0x4000, &pages, 1) == 0);
+  uint32_t q = queue_new(&c, 0x80000000u);
+  CHECK(q != 0);
+  struct {
+    ccmd_req hdr;
+    uint32_t flags, queue_id, nr_bos, nr_cmds, fence;
+    struct { uint32_t flags, handle; uint64_t presumed; } bo;
+    struct { uint32_t type, submit_idx, submit_offset, size, pad, nr_relocs; uint64_t relocs; } ib;
+    uint32_t trailing_padding; // vdrm context command alignment is 8
+  } __attribute__((packed, aligned(4))) request = {
+    .hdr.cmd = 7, // MSM_CCMD_GEM_SUBMIT
+    .queue_id = q, .nr_bos = 1, .nr_cmds = 1, .fence = 1,
+    .bo.handle = 2,
+    .ib.type = 1, // MSM_SUBMIT_CMD_BUF
+    .ib.size = 16,
+  };
+  CHECK(sizeof request % 8 == 0); // drm_context.ccmd_alignment
+  const uint32_t before_async = c.shmem->async_error;
+  const uint32_t before_faults = c.shmem->global_faults;
+  gpu_command_calls = 0;
+  fault_queue_id = q;
+  fail_next_gpu_command = true;
+  CHECK(ccmd(&c, &request, sizeof request) == 0);
+  CHECK(gpu_command_calls == 1);  // NEVER automatically re-submit the IB
+  CHECK(!fail_next_gpu_command);
+  CHECK(c.shmem->async_error == before_async + 1);
+  CHECK(c.shmem->global_faults == before_faults + 1);
+  CHECK(strstr(last_error, "GPU was reset with this context") != NULL);
+  // Do not replay ambiguous IBs even in a regression: the guest must
+  // decide when to construct a NEW context and command buffer.
+  CHECK(gpu_command_calls == 1);
+  gpu->unref(gpu, 2);
+  gpu->unref(gpu, 1);
+  gpu->ctx_destroy(gpu, 1);
+  return 0;
+}
+
 static bool scenario(const char *name, int (*run)(void))
 {
   fflush(stdout);
@@ -493,6 +562,7 @@ int main(void)
     fake_udmabuf = true;
     bool ok = scenario("queue priorities by the owner's class (patch 0008)", classes);
     ok = scenario("a context whose surfaces the render server reads is not background", shown_surfaces) && ok;
+    ok = scenario("GPU_COMMAND EPROTO: no retry, async error and reset fault", gpu_submit_ep_proto) && ok;
     return ok ? 0 : 1;
   }
   close(node);
@@ -501,5 +571,6 @@ int main(void)
   ok = scenario("each import's IO coherence read back (patch 0007)", coherence) && ok;
   ok = scenario("queue priorities by the owner's class (patch 0008)", classes) && ok;
   ok = scenario("a context whose surfaces the render server reads is not background", shown_surfaces) && ok;
+  ok = scenario("GPU_COMMAND EPROTO: no retry, async error and reset fault", gpu_submit_ep_proto) && ok;
   return ok ? 0 : 1;
 }

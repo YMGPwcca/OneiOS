@@ -70,13 +70,15 @@ git diff --quiet && git diff --cached --quiet || {
     echo "Tracked working tree has local modifications; refusing to operate" >&2
     exit 2
 }
+FULL_BRIDGES_BRANCH=0
 case "$(git branch --show-current)" in
-    feat/oneios-sm8850-m3q|feat/sm8850-guarded-duration-tracing)
+    feat/sm8850-guarded-duration-tracing)
         [ "$mode" != stage-runtime ] || {
-            echo "BLOCKED: stage-runtime is for the full-bridges branch only" >&2
+            echo "BLOCKED: stage-runtime is for full-bridges integration only" >&2
             exit 2
         } ;;
-    feat/sm8850-full-bridges-takeover)
+    feat/oneios-sm8850-m3q|feat/sm8850-full-bridges-takeover)
+        FULL_BRIDGES_BRANCH=1
         case "$mode" in
             stage-runtime) ;;
             rearm|run)
@@ -212,7 +214,7 @@ PY
     echo "APFS_DATA=CONSUMED_NOT_REARMED"
     echo "FRAMEWORK_STOP=NO LIVE_TAKEOVER=NO"
   elif [ "$mode" = rearm ]; then
-    if [ "$(git branch --show-current)" = feat/sm8850-full-bridges-takeover ]; then
+    if [ "$FULL_BRIDGES_BRANCH" = 1 ]; then
       echo "===== FULL BRIDGES ${duration}S TRIAL: VERIFY PREVIOUSLY STAGED XNUHOST ====="
       XNUHOST=runtime/xnuhost/build/android/xnuhost
       test -s "$XNUHOST"
@@ -274,7 +276,7 @@ PY
     else
       echo "THERMAL_SAFETY=ROOT_GUARD_AND_MONOTONIC_THROTTLE_REQUIRED; 80C_THROTTLE; 90C_EMERGENCY_RETURN"
     fi
-    if [ "$(git branch --show-current)" = feat/sm8850-full-bridges-takeover ]; then
+    if [ "$FULL_BRIDGES_BRANCH" = 1 ]; then
       echo "SM8850_BRIDGES=1 CPU_PIN=1 CPU_AFFINITY_BENCH=0"
       echo "WARNING=HISTORIC_95C_101C_PEAKS; ${duration}S_DEADLINE_AND_WATCHDOG_RETURN_UNQUALIFIED"
     else
