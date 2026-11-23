@@ -14,6 +14,7 @@
 #include "xnuhost.h"
 #include "../stub/stub_abi.h"
 #include "task_order_diag.h"
+#include "task_profile.h"
 #include <errno.h>
 #include <dirent.h>
 #include <stdio.h>
@@ -128,6 +129,7 @@ typedef struct {
   unsigned nunmaps;
   bool unmaps_out;
   struct xs_op pending[XS_PENDING_MAX];
+  xh_task_profile profile;                // opt-in per-host-task/per-vCPU counters, atomic relaxed; no default writes
   uint8_t service_placed, service_epoch;     // the vCPU + 1 its service thread was last put with (xh_cpu_place)
 } task;
 
@@ -142,6 +144,7 @@ unsigned xh_cpu_place_epoch;
 static struct {
   bool available, seccomp;
   bool map_defer;                            // map-defer (default on)
+  bool profile_tasks;                        // perf-task=1: opt-in task-process telemetry, never enabled implicitly
   uint64_t spin_host, spin_task;             // counter ticks: spin-host, spin-task
   uint64_t base;                             // of the stub region = the first address tasks may not use
   int trap_fd, sock;
@@ -313,6 +316,7 @@ int xh_tasks_init(const xh_config *c)
   T.spin_host = (uint64_t)(c->spin_host < 0 ? XH_SPIN_HOST_US : c->spin_host) * hz / 1000000;
   T.spin_task = (uint64_t)(c->spin_task < 0 ? XH_SPIN_TASK_US : c->spin_task) * hz / 1000000;
   T.map_defer = c->map_defer != 0;
+  T.profile_tasks = c->perf_task;
   // Is the filter usable here? (qemu-user and some kernels have no seccomp.) Asked in a child so
   // that xnuhost itself never carries a filter.
   bool seccomp = false;
@@ -352,6 +356,8 @@ int xh_tasks_init(const xh_config *c)
        "(iOS thread), maps %s", T.factory, (unsigned long long)T.base, text, config->filter_length,
        (unsigned)(T.spin_host * 1000000 / hz), (unsigned)(T.spin_task * 1000000 / hz),
        T.map_defer ? "carried by the next release (map-defer=1)" : "ordered one by one (map-defer=0)");
+  if (T.profile_tasks)
+    LOGI("perf-task: enabled; bounded cumulative host-task-process counters by vCPU (not guest PID mapping); no per-event logging");
   return 0;
 }
 
@@ -364,6 +370,15 @@ void xh_tasks_shutdown(void)
   close(T.sock);
   T.sock = -1;
   if (T.factory > 0) { int status; for (int i = 0; i < 50 && waitpid(T.factory, &status, WNOHANG) == 0; i++) usleep(20000); kill(T.factory, SIGKILL); }
+}
+
+// The caller's active vCPU owns its CPU bucket; non-vCPU host calls use a separate slot.
+// This path is never taken when perf-task=0. No allocations, timestamps or logging.
+static inline void profile_event(task *t, unsigned event)
+{
+  if (!T.profile_tasks) return;
+  xh_vcpu *v = xh_cpu_self();
+  xh_task_profile_add(&t->profile, v ? v->cpu.index : XH_TP_HOST_BUCKET, event);
 }
 
 // ---- orders to a task's service thread ----------------------------------------------------------
@@ -592,6 +607,70 @@ int64_t xh_task_destroy(uint64_t handle)
   return 0;
 }
 
+// A bounded, lifetime-to-date summary for ACTIVE task-process slots only.
+// Reaped/retired tasks may have disappeared; host PID is not the guest's XNU PID.
+// The snapshot never allocates, never walks /proc and never holds T.lock while logging.
+// A busy task-table lock means skipping one report instead of stalling the main loop.
+void xh_task_perf_log(void)
+{
+  if (!T.profile_tasks || !T.available) return;
+  enum { TOP = 8 };
+  struct ranked {
+    int pid;
+    uint64_t events[XH_TP_EVENTS];
+    uint64_t cpu_traps[XH_MAX_CPUS];
+    uint64_t score;
+  } top[TOP] = { 0 };
+  unsigned active = 0, with_events = 0;
+  if (pthread_mutex_trylock(&T.lock)) {
+    LOGI("perf-task: snapshot skipped: task table busy");
+    return;
+  }
+  for (unsigned i = 0; i < MAX_TASKS; i++) {
+    const task *t = &T.tasks[i];
+    if (!t->used || t->pid <= 0) continue;
+    active++;
+    struct ranked item = { .pid = t->pid };
+    for (unsigned cpu = 0; cpu < XH_TP_BUCKETS; cpu++)
+      for (unsigned ev = 0; ev < XH_TP_EVENTS; ev++) {
+        uint64_t n = xh_task_profile_read(&t->profile, cpu, ev);
+        item.events[ev] += n;
+        item.score += n;
+        if (cpu < XH_MAX_CPUS && ev <= XH_TP_TRAP_OTHER) item.cpu_traps[cpu] += n;
+      }
+    if (!item.score) continue;
+    with_events++;
+    unsigned place = 0;
+    while (place < TOP && item.score <= top[place].score) place++;
+    if (place == TOP) continue;
+    for (unsigned shift = TOP - 1; shift > place; shift--) top[shift] = top[shift - 1];
+    top[place] = item;
+  }
+  pthread_mutex_unlock(&T.lock);
+  LOGI("perf-task: active %u, with events %u; top %u by cumulative activity since each host task's creation (host_pid != XNU pid)",
+       active, with_events, TOP);
+  for (unsigned i = 0; i < TOP && top[i].score; i++) {
+    const struct ranked *it = &top[i];
+    unsigned busiest = 0;
+    for (unsigned cpu = 1; cpu < XH_MAX_CPUS; cpu++)
+      if (it->cpu_traps[cpu] > it->cpu_traps[busiest]) busiest = cpu;
+    LOGI("perf-task: host_pid %d sys %llu fault %llu irq %llu other %llu; map defer/ordered %llu/%llu "
+         "unmap defer/ordered %llu/%llu; futex host/task %llu/%llu; vcpu%u traps %llu",
+         it->pid,
+         (unsigned long long)it->events[XH_TP_TRAP_SYSCALL],
+         (unsigned long long)it->events[XH_TP_TRAP_FAULT],
+         (unsigned long long)it->events[XH_TP_TRAP_INTERRUPT],
+         (unsigned long long)it->events[XH_TP_TRAP_OTHER],
+         (unsigned long long)it->events[XH_TP_MAP_DEFERRED],
+         (unsigned long long)it->events[XH_TP_MAP_ORDERED],
+         (unsigned long long)it->events[XH_TP_UNMAP_DEFERRED],
+         (unsigned long long)it->events[XH_TP_UNMAP_ORDERED],
+         (unsigned long long)it->events[XH_TP_HOST_FUTEX_WAIT],
+         (unsigned long long)it->events[XH_TP_TASK_FUTEX_SLEEP],
+         busiest, (unsigned long long)it->cpu_traps[busiest]);
+  }
+}
+
 static int64_t ram_offset(uint64_t phys, uint64_t size)
 {
   if (phys < g_mem.phys || phys - g_mem.phys > g_mem.size || size > g_mem.size - (phys - g_mem.phys)) return -1;
@@ -636,10 +715,11 @@ int64_t xh_task_map(uint64_t handle, uint64_t va, uint64_t size, uint32_t prot, 
     bool queued = joined || (!t->dead && t->npending < XS_PENDING_MAX);
     if (queued && !joined) { t->pending[t->npending] = op; __atomic_store_n(&t->npending, t->npending + 1, __ATOMIC_SEQ_CST); }   // read by releases without qlock
     pthread_mutex_unlock(&t->qlock);
-    if (queued) { p->maps_deferred++; p->ops_joined += joined; return 0; }
+    if (queued) { p->maps_deferred++; p->ops_joined += joined; profile_event(t, XH_TP_MAP_DEFERRED); return 0; }
     if (t->dead) return -ESRCH;
   }
   p->maps_ordered++;
+  profile_event(t, XH_TP_MAP_ORDERED);
   return order(t, &op, 1);
 }
 
@@ -678,10 +758,11 @@ int64_t xh_task_unmap(uint64_t handle, uint64_t va, uint64_t size)
       }
     }
     pthread_mutex_unlock(&t->qlock);
-    if (queued) { p->unmaps_deferred++; p->ops_joined += joined; return 0; }
+    if (queued) { p->unmaps_deferred++; p->ops_joined += joined; profile_event(t, XH_TP_UNMAP_DEFERRED); return 0; }
     if (t->dead) return -ESRCH;
   }
   p->unmaps_ordered++;
+  profile_event(t, XH_TP_UNMAP_ORDERED);
   return order(t, &op, 1);
 }
 
@@ -851,10 +932,16 @@ static void run_ended(task *t)
 }
 
 // thread_run's end, for perf.c: the trap's kind and when it was handed to the kernel.
-static void run_done(xh_vcpu *v, uint32_t kind)
+static void run_done(xh_vcpu *v, task *t, uint32_t kind)
 {
   xh_perf *p = &v->perf;
   p->traps[kind & 15]++;
+  if (T.profile_tasks) {
+    unsigned category = kind == XH_TRAP_SYSCALL ? XH_TP_TRAP_SYSCALL :
+                        kind == XH_TRAP_FAULT ? XH_TP_TRAP_FAULT :
+                        kind == XH_TRAP_INTERRUPT ? XH_TP_TRAP_INTERRUPT : XH_TP_TRAP_OTHER;
+    xh_task_profile_add(&t->profile, v->cpu.index, category);
+  }
   p->ret_at = xh_counter();
   p->ret_idle = p->ticks_idle;
   p->ret_kind = kind;
@@ -877,9 +964,9 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
     p->ret_at = 0;
   }
   memset(trap, 0, sizeof *trap);
-  if (t->dead) { trap->kind = XH_TRAP_EXITED; trap->exit_status = t->exit_status; run_done(v, trap->kind); return 0; }
+  if (t->dead) { trap->kind = XH_TRAP_EXITED; trap->exit_status = t->exit_status; run_done(v, t, trap->kind); return 0; }
   // An interrupt already waiting is taken before any user instruction runs.
-  if (v->cpu.irq_pending) { trap->kind = XH_TRAP_INTERRUPT; run_done(v, trap->kind); return 0; }
+  if (v->cpu.irq_pending) { trap->kind = XH_TRAP_INTERRUPT; run_done(v, t, trap->kind); return 0; }
   // iOS code runs on the task's Linux thread, not on the vCPU's: it follows the vCPU's host CPUs.
   const uint8_t epoch = (uint8_t)__atomic_load_n(&xh_cpu_place_epoch, __ATOMIC_ACQUIRE);
   if (xh_cpu_place && (th->placed != v->cpu.index + 1 || th->epoch != epoch)) {
@@ -959,7 +1046,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
       trap->kind = XH_TRAP_EXITED; trap->exit_status = t->exit_status;
       run_ended(t);
       p->ticks_user += xh_counter() - released;
-      run_done(v, trap->kind);
+      run_done(v, t, trap->kind);
       return 0;
     }
     // The vCPU's interrupt line rose (its timer or another CPU signalled this thread, which ended
@@ -980,6 +1067,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
       continue;                                  // look at the words once more before the first sleep
     }
     p->host_sleeps++;
+    profile_event(t, XH_TP_HOST_FUTEX_WAIT);
     futex(&tp->to_host, FUTEX_WAIT, 0, &step);
   }
   if (sleeping) __atomic_store_n(&tp->host_sleeping, 0, __ATOMIC_RELAXED);
@@ -992,7 +1080,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   uint64_t woken = tp->t_woken, entered_stub = tp->t_enter;
   if (woken >= released && woken <= seen) xh_hist_add(&p->h[XP_DOWN], xh_ticks_ns(woken - released));
   if (entered_stub >= woken && entered_stub <= seen) xh_hist_add(&p->h[XP_UP], xh_ticks_ns(seen - entered_stub));
-  if (tp->slept) p->task_sleeps++;
+  if (tp->slept) { p->task_sleeps++; profile_event(t, XH_TP_TASK_FUTEX_SLEEP); }
   if (kicked && trap->kind == XH_TRAP_INTERRUPT) xh_hist_add(&p->h[XP_KICK], xh_ticks_ns(seen - kicked_at));
   if (xh_text_fixup_svc && trap->kind == XH_TRAP_ILLEGAL && trap->insn == XH_SVC_MARK) {
     // The system call text_fixup marked: as a trapped svc reports it, with pc after the instruction.
@@ -1000,7 +1088,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
     trap->svc = 0x80;
     state->pc += 4;
   }
-  run_done(v, trap->kind);
+  run_done(v, t, trap->kind);
   v->stat_traps++;
   // A trap no fault handler of the kernel can resolve by mapping a page: a data or instruction address outside
   // what an iOS task may use (a pointer that kept its authentication code, a wild jump), an undefined instruction,
@@ -1026,5 +1114,6 @@ bool xh_tasks_seccomp(void) { return false; }
 void xh_tasks_dump(void) {}
 uint64_t xh_tasks_va_limit(void) { return 0; }
 void xh_tasks_shutdown(void) {}
+void xh_task_perf_log(void) {}
 
 #endif
