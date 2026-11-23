@@ -62,6 +62,12 @@ struct xh_gpu3d {
 xh_virtio *xh_virtio_gpu_create_3d(uint64_t base, unsigned spi, unsigned width, unsigned height, xh_gpu3d *b);
 // Test hook: waits until the 3D device's thread has nothing left to do.
 void xh_virtio_gpu_idle(xh_virtio *dev);
+#ifdef XH_HOST_TEST
+// Host-only regression hook: snapshot the in-memory VirtIO wait metrics.
+// Never changes device state, no guest code or physical GPU required.
+#include "gpu_fence_perf.h"
+bool xh_virtio_gpu_fence_perf_snapshot(xh_virtio *dev, struct xh_fence_perf *out);
+#endif
 
 // gpu3d_kgsl.c: drm2kgsl on /dev/kgsl-3d0. Guest pages are imported through /dev/udmabuf from the RAM memfd
 // (`ram_fd`, guest physical `ram_phys` at offset 0, `ram_size` bytes); host blobs (the contexts' shmem) are carved
