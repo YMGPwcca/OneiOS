@@ -114,6 +114,7 @@ typedef struct {
   int   setway_skip;        // a trapped dc set/way ends the guest's set/way loop of its level at once (sysreg.c): 1 (default), 0, -1 = unset
   int   perf_log;           // perf.c: seconds between two "perf:" reports; 0 = only at the stop and on SIGQUIT; -1 = unset (30)
   bool  perf_task;          // perf-task=1: opt-in per-host-task/process + per-vCPU counters; default off (no hot-path atomic writes)
+  bool  frame_trace;        // frame-trace=1: opt-in versioned XHDF timestamps; legacy 20-byte prefix preserved
   int   spin_host, spin_task;   // task.c: microseconds a vCPU (spin-host) and an iOS thread (spin-task) spin for the other
                             // side of a hand-off before they sleep in a futex; -1 = unset (the defaults in task.c)
   bool  cpu_affinity_bench; // strictly bench/shm/exclusive-touch/bridges=0: opt-in one host core per vCPU + its guest threads;
