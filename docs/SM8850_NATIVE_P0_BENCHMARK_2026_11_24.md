@@ -66,7 +66,7 @@ Checkout `a56a49e30cc2a38842daa74569d7de9599adf822`; the same verified P0 binary
 
 Reject the tested same-core pairing candidate for this synthetic 3-vCPU configuration. The prior unrestricted 0-7 run reported 81.874 us with profiler ON, versus 6.199 us here: approximately 13.2x between sessions, not a matched mask speedup. CPU frequency/residency and scheduler/background state were not controlled between these sessions. Do not extrapolate to an eight-vCPU full bridge configuration, change production defaults or claim UI FPS gains.
 
-## P1 first code batch (CI and native A/B pending)
+## P1 first code batch (design and test plan)
 
 Optimize the freestanding stub's signal-state copies: use volatile, naturally aligned, alias-safe 64-bit/32-bit scalar accesses where possible, exact byte fallback otherwise. The old byte loop touched GPR, FPSIMD, ESR and SVE state each trap; this reduces scalar copy iterations without modifying the ABI, register values, memory ordering, seccomp, wait/wake protocol, VM mapping, timer policy, or thermal/CPU policy. No SIMD instructions are allowed by existing stub compiler flags. Host ASAN/UBSAN tests cover every offset pair 0-15, exact lengths including GPR/FPSIMD and guard pages; test kernel checks all 32 vectors, untouched GPRs, FPCR/FPSR/NZCV. Full local CI required.
 
@@ -75,6 +75,27 @@ Archive the exact old xnuhost binary before rebuilding; its hash is pinned above
 
 ### P1 CI launch correction and CPU topology
 
-The operator's first P1 local CI attempt at `f56964b` stopped before compilation with `Permission denied`: the consolidated Git tree edit accidentally changed `scripts/ci-local.sh` from mode 100755 to 100644. Restore the original executable bit without altering its contents. Recursive tree comparison against `a56a49e` found no other tracked mode changes. The old binary was successfully archived and its hash validated; reuse it. The first P1 batch still requires full local CI.
+The operator's first P1 local CI attempt at `f56964b` stopped before compilation with `Permission denied`: the consolidated Git tree edit accidentally changed `scripts/ci-local.sh` from mode 100755 to 100644. Restore the original executable bit without altering its contents. Recursive tree comparison against `a56a49e` found no other tracked mode changes. The old binary was successfully archived and its hash validated; reuse it. The corrected CI and native receipts are recorded below.
 
 For both placement conditions in the previous A/B, the inherited allowed mask was 0-2; CPUs 6 and 7 were excluded in both conditions. vCPU0 did most of the trap benchmark, so a difference among CPUs 0-2 or scheduling within that group is still plausible. The matrix now records read-only per-CPU capacity, cluster/core ID, related CPU list and reported hardware/configured maximum frequencies in kHz from Android sysfs, with unknown for unreadable fields. Those are static topology/policy values, not measured sustained clock rates. The old/new 0-2/0-7 matrix remains unchanged; a separate equally sized prime-rich CPU set would require topology evidence and a matched experiment, not assumed numbering. No affinity or thermal policy change.
+
+
+## P1 register-copy validation — full local CI and native Deep Doze matrix PASS
+
+Operator receipt at `f9893c73ddec1b583cd1efbe6e010c0c02a8a2e7` (OneOS remains `f5c1b4a44fc45d78987694a230f7ffabb213e99c`): executable bit restored; full CachyOS CI PASS, 11,051 stub-copy checks, 67 task-profiler checks, 14,354 XNUHost host tests, 956 GPU leak checks, ARM64 profiler OFF/ON and placement parser PASS. CI log: `/tmp/oneios-p1-copy-ci.M9GFh7.log`.
+
+First native P1 matrix passed at `/tmp/oneios-native-placement.ezxz2_lo`, but the operator used the phone concurrently; timing is confounded (do not use it as the primary comparison). Second matrix: `/tmp/oneios-native-placement.7igxs42l`, console `/tmp/oneios-p1-doze.DareBS.log`, 16 valid runs, three measured rotating blocks after one warmup. Deep IDLE and screen=false confirmed at start/end, battery 30.7-30.9 C, forced idle released at exit. Not a guarantee of suspend, steady clock, or no background activity. Raw runs.json remains on operator host.
+
+Firmware confirms CPUs 0-5 share cluster 0, capacity 741 and advertised max 3,628,800 kHz; CPUs 6-7 share cluster 1, capacity 1024 and max 4,742,400 kHz. Both scaling maxima match at observation. These are advertised limits, not observed residency or actual clock traces.
+
+| Metric | Copy code on 0-2 paired delta | Copy code on 0-7 paired delta | Old code widening mask paired delta | New code widening mask paired delta |
+|---|---:|---:|---:|---:|
+| syscall_round | -7.39% | -2.94% | +51.80% | +104.82% |
+| syscall_up | -8.54% | -1.80% | +48.71% | +104.77% |
+| syscall_down | -6.58% | -4.15% | +55.06% | +104.77% |
+| fault_resolve | -1.89% | +0.88% | +0.16% | -1.74% |
+| timer_kick | -14.61% | +5.31% | +2.36% | +19.65% |
+
+Separate per-condition median syscall means: old/new on 0-2 = 8.325/5.853 us; on 0-7 = 12.613/11.988 us. Do not calculate the paired median delta from ratios of separate medians. Only three measured blocks; mixed secondary metrics (especially tiny enqueue costs near counter resolution) do not establish universal improvements. Retain the exact scalar copy candidate provisionally based on correctness and favorable syscall signal, not a proven full iOS speedup. Wider mask is unfavorable for this synthetic workload, not evidence that Prime cores are intrinsically slower or that production affinity should change.
+
+Next optional focused topology study uses only the existing validated P1 candidate binary and fixture hashes from the completed Doze runs.json. Three equal-cardinality masks: 0-2 (hex 7), 3-5 (hex 38), and 5-7 (hex e0; one regular plus two Prime cores). All cpu-pin=0, same 3 vCPU workload and existing safety/admission checks. Require Deep IDLE and screen off before/after every run, exact final vCPU mask, and unchanged runtime source. One warmup and three measured rotating blocks. No rebuild, full CI rerun, root, takeover, clock/thermal changes or new default. This isolates mask composition at fixed cardinality better than 0-2 vs 0-7 but does not isolate Prime-only behavior, actual CPU residency, or full iOS scaling. Keep P1 VM, timer and fault optimizations evidence-gated; P0 frame/ABI and physical release gates remain open.

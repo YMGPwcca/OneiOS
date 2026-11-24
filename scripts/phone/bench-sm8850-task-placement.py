@@ -27,6 +27,7 @@ from bench_task_profiler import parse_log, summarize, self_test as parser_self_t
 
 SOURCE = "08a5b8576e8da8c10c3a2ac3d989bf75240cba3f"
 ONEOS = "f5c1b4a44fc45d78987694a230f7ffabb213e99c"
+P1_SOURCE = "f9893c73ddec1b583cd1efbe6e010c0c02a8a2e7"
 BUILD = ROOT / "runtime/xnuhost/build/android"
 FILES = {
     "xnuhost": "16587e4c88e4ab5d0bc23b80e00fc711ebb13c5265ebff79264f8b742f2c8a10",
@@ -95,6 +96,23 @@ def self_test():
         return "\n".join(f"perf-affinity: vcpu={i} tid={100+i} allowed={i if paired else '0-2'} migrations=10 last_cpu={i}" for i in range(3))
     assert placement(fixture(False), False)[2]["allowed"] == "0-2"
     assert placement(fixture(True), True)[2]["allowed"] == "2"
+    for allowed in ("3-5", "5-7"):
+        assert placement(fixture(False).replace("allowed=0-2", "allowed=" + allowed),
+                         False, allowed)[0]["allowed"] == allowed
+    receipt = {"checkout": P1_SOURCE, "source": SOURCE, "oneos": ONEOS,
+               "timing_mode": "native_android_arm64",
+               "sha256": {"baseline/xnuhost": FILES["xnuhost"],
+                          "candidate/xnuhost": "a" * 64,
+                          "testimage/kernel.kc": "b" * 64, "testimage/os.img": "c" * 64},
+               "runs": [{"pair": i, "condition": name} for i in range(4) for name in
+                        ("base-narrow", "new-narrow", "base-wide", "new-wide")]}
+    assert validated_p1_hashes(receipt)["xnuhost"] == "a" * 64
+    try:
+        validated_p1_hashes(dict(receipt, runs=receipt["runs"][:-1]))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("incomplete P1 receipt accepted")
     assert placement(fixture(False).replace("allowed=0-2", "allowed=0-7"), False, "0-7")[0]["allowed"] == "0-7"
     for bad, paired in [(fixture(False), True), (fixture(True), False),
                         (fixture(True).splitlines()[0], True),
@@ -115,12 +133,46 @@ def self_test():
     print("placement receipt parser: PASS")
 
 
-def run(adb, baseline_binary=None):
+def validated_p1_hashes(receipt):
+    require(receipt.get("checkout") == P1_SOURCE and receipt.get("source") == SOURCE
+            and receipt.get("oneos") == ONEOS
+            and receipt.get("timing_mode") == "native_android_arm64",
+            "not the validated P1 native matrix receipt")
+    expected = {(i, name) for i in range(4) for name in
+                ("base-narrow", "new-narrow", "base-wide", "new-wide")}
+    runs = receipt.get("runs", [])
+    require(len(runs) == 16 and {(r["pair"], r["condition"]) for r in runs} == expected,
+            "incomplete P1 matrix receipt")
+    h = receipt["sha256"]
+    require(h.get("baseline/xnuhost") == FILES["xnuhost"], "wrong P0 baseline hash")
+    hashes = {"xnuhost": h["candidate/xnuhost"],
+              "testimage/kernel.kc": h["testimage/kernel.kc"],
+              "testimage/os.img": h["testimage/os.img"]}
+    require(all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v)
+                for v in hashes.values()), "invalid artifact hashes")
+    require(hashes["xnuhost"] != FILES["xnuhost"], "P1 binary equals P0 baseline")
+    return hashes
+
+
+def run(adb, baseline_binary=None, topology_receipt=None):
     head = git("rev-parse", "HEAD")
     require(git("status", "--porcelain") == "", "dirty repository")
     require(git("-C", str(ROOT / "app"), "rev-parse", "HEAD") == ONEOS, "OneOS revision differs")
     call(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", SOURCE, head])
-    if baseline_binary is None:
+    if topology_receipt is not None:
+        call(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", P1_SOURCE, head])
+        call(["git", "-C", str(ROOT), "diff", "--quiet", P1_SOURCE, head, "--", "runtime/xnuhost"])
+        hashes = validated_p1_hashes(json.loads(Path(topology_receipt).read_text()))
+        for name, digest in hashes.items():
+            require(sha(BUILD / name) == digest, f"P1 artifact differs from native receipt: {name}")
+        artifacts = [(BUILD / "xnuhost", "xnuhost", hashes["xnuhost"])]
+        configs = [("cluster0-low", "xnuhost", "7", "0-2", 0),
+                   ("cluster0-high", "xnuhost", "38", "3-5", 0),
+                   ("prime-rich", "xnuhost", "e0", "5-7", 0)]
+        comparisons = [("same_cluster", "cluster0-low", "cluster0-high"),
+                       ("prime_rich_vs_low", "cluster0-low", "prime-rich"),
+                       ("prime_rich_vs_high", "cluster0-high", "prime-rich")]
+    elif baseline_binary is None:
         call(["git", "-C", str(ROOT), "diff", "--quiet", SOURCE, head, "--", "runtime/xnuhost"])
         for name, digest in FILES.items():
             require(sha(BUILD / name) == digest, f"not the previously verified artifact: {name}")
@@ -163,6 +215,10 @@ def run(adb, baseline_binary=None):
         require(value("getprop sys.boot_completed") == "1", "Android is not booted")
         require(re.fullmatch(r"\d+(?:\s+\d+)*", value("pidof system_server")), "Android framework not running")
         no_guest()
+        if topology_receipt is not None:
+            require(value("dumpsys deviceidle get deep") == "IDLE"
+                    and value("dumpsys deviceidle get screen") == "false",
+                    "Deep Doze or screen-off condition lost")
         t = battery_temp(value("dumpsys battery"))
         # Conservative experiment admission only, not an override of firmware.
         require(t < 42.0, f"battery temperature {t:.1f} C: stop experiment and allow cooling")
@@ -178,11 +234,15 @@ def run(adb, baseline_binary=None):
     # set. No root, system cpuset writes or attempts to enlarge allowed masks.
     require(value("taskset 7 sh -c 'grep ^Cpus_allowed_list: /proc/self/status'").split()[-1] == "0-2",
             "CPUs 0-2 are not all allowed; do not run placement comparison")
-    if baseline_binary is not None:
+    if baseline_binary is not None or topology_receipt is not None:
         require(value("grep ^Cpus_allowed_list: /proc/self/status").split()[-1] == "0-7",
                 "full 0-7 mask is not inherited; do not expand permissions")
         require(value("taskset ff sh -c 'grep ^Cpus_allowed_list: /proc/self/status'").split()[-1] == "0-7",
                 "CPUs 0-7 unavailable")
+    if topology_receipt is not None:
+        for _, _, mask, allowed, _ in configs:
+            require(value(f"taskset {mask} sh -c 'grep ^Cpus_allowed_list: /proc/self/status'").split()[-1] == allowed,
+                    f"requested inherited CPU mask {allowed} unavailable")
     initial_temp = safe_state()
     # Read-only sysfs evidence before the experiment. CPU numbering and
     # reported hardware maxima are properties of this firmware, not guesses.
@@ -207,7 +267,9 @@ done""")
         "source": SOURCE, "checkout": head, "oneos": ONEOS,
         "sha256": hashes, "timing_mode": "native_android_arm64",
         "cpu_topology_file": "cpu-topology.txt",
-        "scope": ("3-vCPU synthetic, matched binary/mask experiment with shared test kernel, not production iOS"
+        "scope": ("3-vCPU synthetic, equal-size CPU masks 0-2 / 3-5 / 5-7, Deep Doze"
+                  if topology_receipt is not None else
+                  "3-vCPU synthetic, matched binary/mask experiment with shared test kernel, not production iOS"
                   if baseline_binary is not None else
                   "3-vCPU synthetic, common inherited CPUs 0-2, not production iOS"),
         "warmup_pairs": 1, "measured_pairs": 3, "runs": [],
@@ -284,7 +346,8 @@ done""")
         report = {"timing_mode": manifest["timing_mode"], "scope": manifest["scope"],
                   "comparisons": summaries}
         (out / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
-        print("P1_MATRIX=PASS" if baseline_binary is not None else "PLACEMENT_BENCHMARK=PASS")
+        print("TOPOLOGY_BENCHMARK=PASS" if topology_receipt is not None else
+              "P1_MATRIX=PASS" if baseline_binary is not None else "PLACEMENT_BENCHMARK=PASS")
         print(f"BENCH_DIR={out}")
         print("Observed vCPU masks only; synthetic latency is not full iOS performance.")
     finally:
@@ -298,16 +361,19 @@ done""")
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--self-test", action="store_true")
-    ap.add_argument("--baseline-binary", type=Path,
-                    help="archived verified P0 xnuhost; compare it with the CI-built current binary")
+    modes = ap.add_mutually_exclusive_group()
+    modes.add_argument("--baseline-binary", type=Path,
+                       help="archived verified P0 xnuhost; compare it with the CI-built current binary")
+    modes.add_argument("--topology-receipt", type=Path,
+                       help="completed P1 runs.json; reuse verified candidate for equal-size mask study in Deep Doze")
     ap.add_argument("--adb", default=os.environ.get("ADB", str(Path.home() / "Android/Sdk/platform-tools/adb")))
     args = ap.parse_args()
     if args.self_test:
         self_test()
         return
     try:
-        run(args.adb, args.baseline_binary)
-    except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as e:
+        run(args.adb, args.baseline_binary, args.topology_receipt)
+    except (RuntimeError, ValueError, KeyError, TypeError, OSError, subprocess.TimeoutExpired) as e:
         print("PLACEMENT_BENCHMARK=STOP: " + str(e), file=sys.stderr)
         sys.exit(1)
 
