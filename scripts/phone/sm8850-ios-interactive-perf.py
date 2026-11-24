@@ -83,9 +83,10 @@ def analyze_logs(host, display):
                         for key, value in values.items()})
     active = [float(row["active_cadence"]) for row in windows
               if row["active_gaps"] >= 3 and float(row["active_cadence"]) > 0]
-    lock_peak = max((row["lock_max_us"] for row in windows), default=0)
-    copy_peak = max((row["copy_max_us"] for row in windows), default=0)
-    post_peak = max((row["post_max_us"] for row in windows), default=0)
+    # Empty windows emit zero histogram sentinels, not measurements.
+    lock_peak = max((row["lock_max_us"] for row in windows if row["posts"] > 0), default=None)
+    copy_peak = max((row["copy_max_us"] for row in windows if row["posts"] > 0), default=None)
+    post_peak = max((row["post_max_us"] for row in windows if row["posts"] > 0), default=None)
     host_gaps = _values(host, r"input: touch:[^\n]*?guest's next frame ([0-9]+\.[0-9]+) ms", float)
     cpu_traps = _values(host, r"xnuhost I perf: [0-9]+(?:\.[0-9]+)? s(?: since the start)?: [0-9]+ task traps \(([0-9]+(?:\.[0-9]+)?)/s\)", float)
     gpu_fences = _values(host, r"gpu: [0-9]+ s host: backboardd fences (\d+)")

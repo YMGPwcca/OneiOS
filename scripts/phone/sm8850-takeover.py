@@ -278,7 +278,7 @@ def audit(phone, destination=None, *, reboot_only=False):
     return result.returncode
 
 
-def collect(phone, output):
+def collect(phone, output, expected_launch=None):
     with (output / "device-logs.tar").open("wb") as archive:
         result = phone.root(f"""cd {STAGE} || exit 1
 set --
@@ -297,7 +297,7 @@ done
             p = subprocess.run(
                 [sys.executable, str(HERE / "sm8850-frame-stall-report.py"),
                  "--archive", str(output / "device-logs.tar"),
-                 "--output", str(report_file)],
+                 "--output", str(report_file)] + (["--expected-launch", expected_launch] if expected_launch else []),
                 capture_output=True, text=True, timeout=25,
             )
             if p.returncode == 0:

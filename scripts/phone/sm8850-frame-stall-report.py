@@ -33,44 +33,65 @@ class MissingTraceInputs(Exception):
 
 def read_logs(
     archive: Path | None, folder: Path | None, archive_session: str | None = None,
+    *, expected_launch: str | None = None, metadata: dict | None = None,
 ) -> tuple[str, str]:
-    # Select a matched pair from ONE specific session. A current xnuhost
-    # trace must never be joined with a historical display trace.
+    # Never join current and archived sessions, or silently substitute a stale
+    # launch when the collector knows the requested launch identifier.
     prefix = f'logs/session.{archive_session}/' if archive_session else ''
     names = (prefix + 'session/xnuhost.log', prefix + 'control/display.log')
+    controls = {key: prefix + 'control/' + file for key, file in (
+        ('launch_id', 'framework.launch'), ('perf_profile', 'framework.perf-profile'),
+        ('boot_id', 'boot'), ('mode', 'framework.mode'))}
+
+    def finish(read):
+        meta = {key: read(name, 256, optional=True) for key, name in controls.items()}
+        meta = {key: value.strip() if value is not None else None for key, value in meta.items()}
+        if expected_launch is not None and meta['launch_id'] != expected_launch:
+            raise MissingTraceInputs(['launch metadata absent or mismatched'])
+        if metadata is not None:
+            metadata.update(meta)
+        return tuple(read(name, MAX_BYTES) for name in names)
+
     if archive:
         with tarfile.open(archive, 'r:*') as tf:
-            # A thermal abort can happen before xnuhost ever starts.
-            # Missing guest traces are an expected, non-fatal outcome
-            # of evidence collection and must not produce a traceback.
-            members = {member.name: member for member in tf.getmembers()}
-            missing = [name for name in names if name not in members]
-            if missing:
-                raise MissingTraceInputs(missing)
-            parts = []
-            for name in names:
-                member = members[name]
-                if not member.isfile() or member.size > MAX_BYTES:
+            members = {}
+            relevant = set(names) | set(controls.values())
+            for member in tf.getmembers():
+                if member.name not in relevant:
+                    continue
+                if member.name in members:
+                    raise ValueError(f'Duplicate session member: {member.name}')
+                members[member.name] = member
+
+            def read(name, limit, optional=False):
+                member = members.get(name)
+                if member is None:
+                    if optional:
+                        return None
+                    raise MissingTraceInputs([name])
+                if not member.isfile() or member.size > limit:
                     raise ValueError(f'Invalid or oversized archive member: {name}')
                 stream = tf.extractfile(member)
                 if stream is None:
                     raise ValueError(f'Cannot read archive member: {name}')
-                raw = stream.read(MAX_BYTES + 1)
-                if len(raw) > MAX_BYTES:
+                with stream:
+                    raw = stream.read(limit + 1)
+                if len(raw) > limit:
                     raise ValueError(f'Oversized archive member: {name}')
-                parts.append(raw.decode('utf-8', 'replace'))
-            return parts[0], parts[1]
+                return raw.decode('utf-8', 'replace')
+            return finish(read)
+
     assert folder is not None
-    missing = [name for name in names if not (folder / name).is_file()]
-    if missing:
-        raise MissingTraceInputs(missing)
-    parts = []
-    for name in names:
+    def read(name, limit, optional=False):
         path = folder / name
-        if path.stat().st_size > MAX_BYTES:
+        if not path.is_file():
+            if optional:
+                return None
+            raise MissingTraceInputs([name])
+        if path.stat().st_size > limit:
             raise ValueError(f'Oversized file: {path}')
-        parts.append(path.read_text(encoding='utf-8', errors='replace'))
-    return parts[0], parts[1]
+        return path.read_text(encoding='utf-8', errors='replace')
+    return finish(read)
 
 
 def nearest(events, at, max_diff):
@@ -173,12 +194,15 @@ def main() -> int:
     src.add_argument('--folder', type=Path)
     p.add_argument('--thermal-csv', type=Path)
     p.add_argument('--output', type=Path)
+    p.add_argument('--expected-launch', help='Reject a paired session whose control/framework.launch differs')
     p.add_argument('--archive-session', metavar='TOKEN',
                    help='Use paired logs/session.TOKEN/{session/xnuhost.log,control/display.log} '
                         'from this archive, never mix sessions')
     p.add_argument('--list-sessions', action='store_true',
                    help='List archive sessions with paired xnuhost/display logs; no analysis')
     args = p.parse_args()
+    if args.expected_launch and not re.fullmatch(r'[a-f0-9]{32}', args.expected_launch):
+        p.error('invalid --expected-launch identifier')
     if args.archive_session and not args.archive:
         p.error('--archive-session requires --archive')
     if args.archive_session and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', args.archive_session):
@@ -207,8 +231,20 @@ def main() -> int:
                   file=sys.stderr)
             return 2
     try:
-        data = analyze(*read_logs(args.archive, args.folder, args.archive_session),
-                       thermal_csv=args.thermal_csv)
+        metadata = {}
+        xnu, display = read_logs(args.archive, args.folder, args.archive_session,
+                                 expected_launch=args.expected_launch, metadata=metadata)
+        data = analyze(xnu, display, thermal_csv=args.thermal_csv)
+        data['session_metadata'] = metadata
+        data['runtime_trace_observed'] = {
+            'runtime_profile_markers': re.findall(r'(?m)^ONEIOS_PERF_PROFILE=(off|frame|task|frame-task)$', xnu),
+            'queue_lines': xnu.count('gpu-queue-trace:'),
+            'fence_lines': xnu.count('gpu-fence-trace:'),
+            'task_profile_lines': xnu.count('perf-task:'),
+            'transport_lines': display.count('oneios-display: frame-trace:'),
+            'scanout_lines': display.count('oneios-display: scanout-trace:'),
+        }
+        data['expected_launch_matched'] = True if args.expected_launch else None
         data['source_session'] = (f'logs/session.{args.archive_session}'
                                   if args.archive_session else 'current')
         data['source_pairing'] = 'SAME_SESSION_ONLY_NOT_CROSS_BOOT_PROOF'
