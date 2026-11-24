@@ -34,7 +34,7 @@ meta() { printf 'M\t%s\t%s\n' "$1" "$2"; }
 val() { [ ! -r "$1" ] || meta "$2" "$(cat "$1" 2>/dev/null)"; }
 val /proc/sys/kernel/random/boot_id boot_id
 meta uptime "$(cut -d' ' -f1 /proc/uptime)"
-for k in boot state framework.launch framework.mode framework.duration framework.deadline framework.takeover-confirmed watchdog.phase; do
+for k in boot state framework.launch framework.mode framework.duration framework.perf-profile framework.deadline framework.takeover-confirmed watchdog.phase; do
     val "$ST/control/$k" "ctl/$k"
 done
 # The previous session's stage is intentionally retained across a reboot.
@@ -425,6 +425,8 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
         console.say("SENSOR_COVERAGE=VISIBLE_SYSFS_NODES_ONLY; NOT_ALL_INTERNAL_FIRMWARE_SENSORS")
         # This is the existing, risk-acknowledged, state-gated OneiOS runner.
         cmd = ["bash", str(WRAPPER), "run", args.serial, RISK, "--duration", str(duration)]
+        if args.perf_profile != "off":
+            cmd += ["--perf-profile", args.perf_profile]
         console.say(f"===== LAUNCH GUARDED ONEIOS FULL {duration}S TAKEOVER =====")
         proc, thread = run_existing(repo, cmd, console, out / "takeover.log", async_mode=True)
         deadline = None
@@ -570,6 +572,8 @@ def main() -> int:
     ap.add_argument("--i-accept-10-minute-legacy-watchdog-risk", action="store_true")
     ap.add_argument("--duration", type=int, default=600,
                     help="Seconds after verified Framework stop, 60..600 (default 600)")
+    ap.add_argument("--perf-profile", choices=("off", "frame", "task", "frame-task"), default="off",
+                    help="opt-in bounded runtime instrumentation; does not change admission or thermal policy")
     ap.add_argument("--no-rearm", action="store_true", help="skip rearm; preflight must still admit a fresh Data clone")
     ap.add_argument("--self-test", action="store_true", help="parse/unit checks only, never connects to a phone")
     ap.add_argument("--preflight-only", action="store_true",
@@ -616,7 +620,7 @@ def main() -> int:
         result = adb_shell(
             args.adb, args.serial,
             prefix + "/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run " +
-            str(args.duration) + profile_token,
+            str(args.duration) + profile_token + (" perf-" + args.perf_profile if args.perf_profile != "off" else ""),
             root=True, timeout=120,
         )
         print(result, end="" if result.endswith("\n") else "\n")
@@ -626,6 +630,10 @@ def main() -> int:
         cap_disabled = "SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER" in result
         if no_guard != cap_disabled:
             raise RuntimeError("root preflight CPU cap profile mismatch; no Framework stop or data consumption")
+        profiles = [line.split("=", 1)[1] for line in result.splitlines()
+                    if line.startswith("SM8850_PERF_PROFILE=")]
+        if (profiles and profiles != [args.perf_profile]) or (args.perf_profile != "off" and not profiles):
+            raise RuntimeError("root preflight performance profile mismatch; no Framework stop or data consumption")
         if no_guard:
             print("NO_USERSPACE_THERMAL_180S_PREFLIGHT=PASS_NO_FRAMEWORK_STOP_NO_DATA_CONSUMPTION")
         else:

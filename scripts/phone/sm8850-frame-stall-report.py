@@ -13,10 +13,11 @@ from pathlib import Path
 import re
 import tarfile
 import sys
+from sm8850_perf_metrics import active_post_summary
 
 TS = re.compile(r'^\[\s*(\d+\.\d+)\]')
 KVS = re.compile(r'([a-z][a-z0-9_]*)=([0-9.]+)')
-CPU = re.compile(r'oneios-cpu: 10 s:.*\(all (\d+)%\)')
+CPU = re.compile(r'(?:oneios-cpu|neios-cpu):\s*[0-9]+(?:\.[0-9]+)?\s*s:.*?\(all (\d+)%\)')
 TRAPS = re.compile(r'xnuhost I perf: [\d.]+ s: (\d+) task traps \((\d+)/s\)')
 TOUCH = re.compile(r'input: touch: .*?(no guest frame after the touch-down|the guest.s next frame ([\d.]+) ms after the touch-down)')
 MAX_BYTES = 80 * 1024 * 1024
@@ -102,11 +103,17 @@ def analyze(xnu: str, display: str, thermal_csv: Path | None = None) -> dict:
         if 'mono_ms' not in data:
             continue
         t = data['mono_ms'] / 1000
-        display_events.append({'t': t, 'posts': int(data.get('posts', 0)),
-                               'gap_p95_ms': data.get('gap_p95_us', 0) / 1000,
-                               'copy_max_ms': data.get('copy_max_us', 0) / 1000,
-                               'post_max_ms': data.get('post_max_us', 0) / 1000,
-                               'window_ms': data.get('window_ms', 0)})
+        def ms(key):
+            return data[key] / 1000 if key in data else None
+        active_fields = {key: data[key] for key in
+                         ('active_gaps', 'active_gap_p95_us', 'active_gap_p99_us',
+                          'active_gap_max_us', 'active_over_60', 'active_over_120')
+                         if key in data}
+        display_events.append({'t': t, 'posts': data.get('posts'),
+                               'gap_p95_ms': ms('gap_p95_us'),
+                               'copy_max_ms': ms('copy_max_us'),
+                               'post_max_ms': ms('post_max_us'),
+                               'window_ms': data.get('window_ms'), **active_fields})
     thermal_events = []
     if thermal_csv:
         with thermal_csv.open(newline='', encoding='utf-8') as f:
@@ -122,7 +129,7 @@ def analyze(xnu: str, display: str, thermal_csv: Path | None = None) -> dict:
                                        'cpu_max_c': temp})
     candidates = []
     for event in display_events:
-        if event['gap_p95_ms'] < 1000:
+        if event['gap_p95_ms'] is None or event['gap_p95_ms'] < 1000:
             continue
         t = event['t']
         touch = nearest(touch_events, t, 6)
@@ -132,7 +139,9 @@ def analyze(xnu: str, display: str, thermal_csv: Path | None = None) -> dict:
             'touch_nearby': touch,
             'cpu_nearby': cpu,
             'traps_nearby': traps,
-            'interpretation': 'touch-linked candidate' if touch is not None else 'possibly idle; NOT a proven stall'})
+            'interpretation': 'all-gap candidate near touch; may include idle; NOT a proven stall' if touch is not None else 'possibly idle; NOT a proven stall'})
+    summary = active_post_summary(display_events)
+    active_p95 = summary['max_window_active_p95_bucket_bound_us']
     return {
         'provenance': 'READ_ONLY_CANDIDATES_NOT_CAUSAL_PROOF',
         'touch_summaries': len(touch_events),
@@ -140,10 +149,16 @@ def analyze(xnu: str, display: str, thermal_csv: Path | None = None) -> dict:
         'max_recorded_touch_to_guest_frame_ms': max((x['next_guest_frame_ms'] for x in touch_events
                                                      if x['next_guest_frame_ms'] is not None), default=None),
         'display_five_second_windows': len(display_events),
-        'windows_with_post': sum(x['posts'] > 0 for x in display_events),
+        'windows_with_post': sum(x['posts'] is not None and x['posts'] > 0 for x in display_events),
         'windows_without_post': sum(x['posts'] == 0 for x in display_events),
-        'largest_active_gap_p95_ms': max((x['gap_p95_ms'] for x in display_events), default=0),
-        'max_display_copy_ms': max((x['copy_max_ms'] for x in display_events), default=0),
+        'windows_missing_post_count': sum(x['posts'] is None for x in display_events),
+        'largest_active_gap_p95_ms': active_p95 / 1000 if active_p95 is not None else None,
+        'largest_all_gap_p95_bucket_bound_ms': max((x['gap_p95_ms'] for x in display_events
+                                                   if x['gap_p95_ms'] is not None and x['gap_p95_ms'] > 0), default=None),
+        'active_post_summary': summary,
+        'candidate_windows_scope': 'all-gap p95 bucket bound >= 1000ms; may include idle',
+        'max_display_copy_ms': max((x['copy_max_ms'] for x in display_events
+                                    if x['copy_max_ms'] is not None and x['posts'] is not None and x['posts'] > 0), default=None),
         'peak_guest_cpu_pct_window': max((x['guest_cpu_pct'] for x in cpu_events), default=None),
         'peak_traps_per_s_window': max((x['traps_per_s'] for x in trap_events), default=None),
         'candidate_windows': candidates,
@@ -209,7 +224,9 @@ def main() -> int:
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(result, encoding='utf-8')
-    print(f"FRAME_STALL_CANDIDATES={len(data['candidate_windows'])}; TOUCH_NO_FRAME={data['touch_without_frame_before_summary_end']}/{data['touch_summaries']}; MAX_DISPLAY_COPY_MS={data['max_display_copy_ms']:.2f}")
+    copy_max = data['max_display_copy_ms']
+    print(f"FRAME_STALL_CANDIDATES={len(data['candidate_windows'])}; TOUCH_NO_FRAME={data['touch_without_frame_before_summary_end']}/{data['touch_summaries']}; MAX_DISPLAY_COPY_MS=" +
+          (f"{copy_max:.2f}" if copy_max is not None else "UNKNOWN"))
     for item in data['candidate_windows'][:20]:
         print(f"WINDOW_MONO={item['t']:.3f} gap_p95={item['gap_p95_ms']:.0f}ms posts={item['posts']} cpu={item['cpu_nearby']} traps={item['traps_nearby']} {item['interpretation']}")
     if args.output:

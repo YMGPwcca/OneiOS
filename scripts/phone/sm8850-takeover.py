@@ -36,7 +36,7 @@ STATUS = f"""stage={STAGE}
 echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
 echo "boot_completed=$(getprop sys.boot_completed)"
 echo "boot_reason=$(getprop ro.boot.bootreason)"
-for name in boot state framework.mode framework.return framework.takeover-confirmed framework.launch framework.duration framework.deadline framework.result watchdog.phase thermal.guard.required thermal.cap.required thermal.guard.heartbeat thermal.cap.heartbeat thermal.guard.fault thermal.cap.fault; do
+for name in boot state framework.mode framework.return framework.takeover-confirmed framework.launch framework.duration framework.perf-profile framework.deadline framework.result watchdog.phase thermal.guard.required thermal.cap.required thermal.guard.heartbeat thermal.cap.heartbeat thermal.guard.fault thermal.cap.fault; do
     if [ -f "$stage/control/$name" ]; then printf 'control/%s=' "$name"; cat "$stage/control/$name"; fi
 done
 if [ -f "$stage/return.outcome" ]; then printf 'outcome='; cat "$stage/return.outcome"; fi
@@ -513,7 +513,8 @@ def full_takeover_deadline_result(baseline, after, token):
 
 
 def launch(phone, mode, output, *, reboot_only=False, duration=600,
-           passive_soft_thermal=False, on_reboot_smoke_ready=None, smoke_seconds=20):
+           passive_soft_thermal=False, on_reboot_smoke_ready=None, smoke_seconds=20,
+           perf_profile="off"):
     # SM8850 full-run deliberately uses the same legacy OneOS V watchdog
     # feeder and mandatory reboot-return path as the observed smoke.
     # It is separately risk-acknowledged, NEVER an in-place handback.
@@ -522,6 +523,9 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
     if type(smoke_seconds) is not int or smoke_seconds not in (20, 30) or (
             smoke_seconds != 20 and (mode != "smoke" or not reboot_only or on_reboot_smoke_ready is None)):
         raise ValueError("30-second window is restricted to the headless CPU reboot-smoke callback")
+    if perf_profile not in ("off", "frame", "task", "frame-task") or (perf_profile != "off" and mode != "run"):
+        raise ValueError("performance instrumentation profile is restricted to full run")
+    perf_token = f" perf-{perf_profile}" if perf_profile != "off" else ""
     legacy_reboot = reboot_only or mode == "run"
     if passive_soft_thermal and (mode != "run" or duration != 180):
         raise ValueError("passive software thermal experiment requires exactly 180s run")
@@ -540,7 +544,7 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
     smoke_token = f" {smoke_seconds}" if reboot_only and smoke_seconds != 20 else ""
     check = phone.root(f"{experimental_prefix}{shell} --framework-check {session_mode}" +
                        (f" {duration}" if mode == "run" else smoke_token) +
-                       (" I_ACCEPT_SOFT_GUARD_OFF_180S" if passive_soft_thermal else ""),
+                       (" I_ACCEPT_SOFT_GUARD_OFF_180S" if passive_soft_thermal else "") + perf_token,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
     check_output = check.stdout.decode("utf-8", "replace") if isinstance(check.stdout, bytes) else (check.stdout or "")
     if check_output:
@@ -560,6 +564,13 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
         print("BLOCKED: root preflight CPU cap profile mismatch; nothing was launched",
               file=sys.stderr, flush=True)
         return 2
+    if mode == "run":
+        profiles = [line.split("=", 1)[1] for line in check_output.splitlines()
+                    if line.startswith("SM8850_PERF_PROFILE=")]
+        if (profiles and profiles != [perf_profile]) or (perf_profile != "off" and not profiles):
+            print("BLOCKED: root preflight performance profile mismatch; nothing was launched",
+                  file=sys.stderr, flush=True)
+            return 2
     baseline = status(phone)
     (output / "baseline.txt").write_text(baseline)
     boot = re.search(r"^boot=(.+)$", baseline, re.M).group(1)
@@ -569,13 +580,21 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
     # Explicit positional thermal profile survives detached su -> setsid -> sh -c.
     # A lost command-scoped env must NOT silently change the live profile.
     thermal_profile_token = " I_ACCEPT_SOFT_GUARD_OFF_180S" if passive_soft_thermal else ""
+    if mode == "run":
+        (output / "performance-profile.json").write_text(json.dumps({
+            "session_id": token, "requested_profile": perf_profile,
+            "preflight_profile": profiles[0] if profiles else None,
+            "frame_trace_requested": perf_profile in ("frame", "frame-task"),
+            "task_profile_requested": perf_profile in ("task", "frame-task"),
+            "scope": "requested and preflight acknowledged; runtime telemetry must be verified",
+        }, indent=2) + "\n", encoding="utf-8")
     if phone.root(f"""set -eu
 umask 077
 cd {STAGE}
 mkdir -p launches
 mkdir launches/{token}
 /data/adb/ksu/bin/busybox setsid /system/bin/sh -c '
-    {experimental_prefix}{shell} --framework-session {session_mode} {ACK} {token}{risk_token}{duration_token}{thermal_profile_token}
+    {experimental_prefix}{shell} --framework-session {session_mode} {ACK} {token}{risk_token}{duration_token}{thermal_profile_token}{perf_token}
     rc=$?
     printf "%s\n" "$rc" > launches/{token}/exit
 ' </dev/null > launches/{token}/switch.log 2>&1 &
@@ -775,6 +794,8 @@ def main():
     parser.add_argument("--no-userspace-thermal-180", "--passive-soft-thermal-180",
                         dest="passive_soft_thermal_180", action="store_true",
                         help="exact 180s full-bridges: no on-device thermal guard, nonfatal best-effort 28pct CPU cap; kernel thermal unchanged")
+    parser.add_argument("--perf-profile", choices=("off", "frame", "task", "frame-task"), default="off",
+                        help="full run only: bounded frame/fence/queue trace and/or task profiler; default off")
     parser.add_argument("--gpu", choices=["3d"])
     parser.add_argument("--bench-manifest", type=Path)
     parser.add_argument("--output", type=Path, help="New local evidence directory")
@@ -788,6 +809,8 @@ def main():
         parser.error("--run requires --gpu 3d and --duration between 60 and 600 seconds (default 600)")
     if args.mode != "run" and (args.duration is not None or args.gpu):
         parser.error("--duration and --gpu apply to --run")
+    if args.perf_profile != "off" and args.mode != "run":
+        parser.error("--perf-profile applies to --run")
     if args.passive_soft_thermal_180 and (args.mode != "run" or args.duration != 180):
         parser.error("--no-userspace-thermal-180 requires --run --duration 180")
     if (args.mode == "prepare") != bool(args.bench_manifest):
@@ -827,7 +850,8 @@ def main():
         return launch(phone, "smoke", output, reboot_only=True)
     return launch(phone, "smoke" if args.mode == "recovery-smoke" else "run", output,
                   duration=args.duration if args.duration is not None else 600,
-                  passive_soft_thermal=args.passive_soft_thermal_180)
+                  passive_soft_thermal=args.passive_soft_thermal_180,
+                  perf_profile=args.perf_profile)
 
 
 if __name__ == "__main__":

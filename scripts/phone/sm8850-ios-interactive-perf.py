@@ -11,6 +11,7 @@ import json
 import re
 from pathlib import Path
 from statistics import median
+from sm8850_perf_metrics import active_post_summary, process_cpu_samples
 
 ROOT = Path(__file__).resolve().parents[2]
 LOG_DIR = ROOT / "out/sm8850/gpu-acceptance"
@@ -92,12 +93,8 @@ def analyze_logs(host, display):
     memory = _values(host, r"memory: host MemAvailable (\d+) MiB")
     # Top-eight process sampling: absent entries mean unknown, not 0% CPU.
     # Some older builds printed "neios-cpu" for a few sampler lines.
-    cpu_top = [line for line in host.splitlines()
-               if re.search(r"\b(?:oneios-cpu|neios-cpu): 10 s:", line)]
-    icons = [int(m.group(1)) for line in cpu_top
-             if (m := re.search(r"\biconservicesagent\[\d+\] (\d+)%", line))]
-    spotlight = [int(m.group(1)) for line in cpu_top
-                 if (m := re.search(r"\bSpotlight\[\d+\] (\d+)%", line))]
+    icons = process_cpu_samples(host, "iconservicesagent")
+    spotlight = process_cpu_samples(host, "Spotlight")
     detailed_gpu_trace_lines = sum("gpu trace:" in line for line in host.splitlines())
     springboard = list(dict.fromkeys(_values(host, r"SpringBoard\[(\d+)\]")))
     backboardd = list(dict.fromkeys(_values(host, r"backboardd\[(\d+)\]")))
@@ -115,6 +112,7 @@ def analyze_logs(host, display):
             "post_max_us": post_peak if windows else None,
         },
         "frame_trace": trace_windows(host, display, windows),
+        "active_post_summary": active_post_summary(windows),
         "touch": {"next_frame_latency_ms": host_gaps,
                   "max_next_frame_ms": max(host_gaps, default=None),
                   "no_subsequent_guest_frame": no_frame},
@@ -193,6 +191,13 @@ def _show(report):
         print(f"ACTIVE_POST_WINDOW mono_ms={r['mono_ms']} gaps={r['active_gaps']} "
               f"p95_us={r['active_gap_p95_us']} p99_us={r['active_gap_p99_us']} "
               f"max_us={r['active_gap_max_us']} over60={r['active_over_60']} over120={r['active_over_120']}")
+    summary = report["active_post_summary"]
+    for key in ("active_gaps_reported", "active_gaps_with_budget_counts", "budget_count_windows",
+                "budget_coverage_complete", "over_60_budget", "over_120_budget",
+                "over_60_budget_percent", "over_120_budget_percent",
+                "max_window_active_p95_bucket_bound_us", "max_window_active_p99_bucket_bound_us",
+                "max_active_gap_us"):
+        print("ACTIVE_POST_" + key.upper() + "=" + str(summary[key]))
     print("SETTINGS_ICON_COLD_WARM_LATENCY=MANUAL_OBSERVATION_REQUIRED")
 
 
