@@ -334,8 +334,19 @@ ONEIOS_MOUNT_PROBE
         fail "consumed Data directory missing or untrusted"
     extra=$(find "$stage/data" -mindepth 1 -maxdepth 1 ! -name data.img ! -name unique-chip-id -print -quit)
     [ -z "$extra" ] || fail "consumed Data has unexpected files; preserve and inspect manually"
-    [ "$(df -Pk "$stage" | awk 'NR==2 {print $4}')" -ge "$((MIN_FREE + 8388608 + 65536))" ] ||
-        fail "not enough free space for one fresh APFS Data clone plus reserve"
+    # Prefer the established full logical-size budget. On low-space phones
+    # only, use the same measured sparse helper as the visual runner. It
+    # pre-scans nonzero 4 KiB pages before writing Data payload and requires
+    # the 30 GiB reserve, 64 MiB headroom and an additional 2 GiB margin.
+    rearm_free=$(df -Pk "$stage" | awk 'NR==2 {print $4}')
+    case "$rearm_free" in ''|*[!0-9]*) fail "unreadable Data rearm free space" ;; esac
+    rearm_clone="$clone"
+    if [ "$rearm_free" -lt "$((MIN_FREE + 8388608 + 65536))" ]; then
+        [ "$rearm_free" -ge "$((MIN_FREE + 65536 + 2097152))" ] ||
+            fail "not enough free space for reserve and compact copy margin"
+        rearm_clone=compact
+        echo "APFS_REARM_COPY=MEASURED_COMPACT; STORAGE_RESERVE_UNCHANGED"
+    fi
     # The original benchmark Data is a DIFFERENT file from the guest's
     # private, already-consumed clone. The guest is allowed to modify its
     # clone, so equality with the original is NOT a valid rearm predicate.
@@ -380,8 +391,10 @@ ONEIOS_MOUNT_PROBE
             fail "cannot record benchmark seed digest"
         dest="$incoming/data/$name"
         (set -C; true > "$dest") || fail "replacement Data output already exists: $name"
-        "$incoming/image-copy" "$clone" "$source" "$dest" ||
-            fail "failed to clone untouched APFS source: $name"
+        method="$clone"
+        [ "$name" != data.img ] || method="$rearm_clone"
+        timeout -s TERM 900 "$incoming/image-copy" "$method" "$source" "$dest" ||
+            fail "failed to clone untouched APFS source: $name (check compact required bytes)"
         [ "$(stat -c '%s:%h' "$dest")" = "$expected_size:1" ] &&
             [ "$(stat -c '%d:%i' "$dest")" != "$(stat -c '%d:%i' "$source")" ] &&
             [ "$(hash_of "$dest")" = "$source_sha" ] &&
@@ -389,6 +402,9 @@ ONEIOS_MOUNT_PROBE
             fail "replacement Data clone hash or source identity changed: $name"
         echo "APFS_DATA_FRESH_CLONE_VERIFIED=$name"
     done
+    sync
+    [ "$(df -Pk "$stage" | awk 'NR==2 {print $4}')" -ge "$((MIN_FREE + 65536))" ] ||
+        fail "Data rearm would cross reserve; existing guest Data and ready marker unchanged"
     [ ! -e "$stage/image.ready.rearm-pending" ] &&
         [ ! -L "$stage/image.ready.rearm-pending" ] ||
         fail "previous incomplete Data rearm; manual recovery required"

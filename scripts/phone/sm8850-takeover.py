@@ -173,7 +173,7 @@ def upload(phone, operation, manifest=None):
                     if (operation == "upgrade-runtime" and
                             subprocess.check_output(
                                 ["git", "-C", str(REPO), "branch", "--show-current"],
-                                text=True).strip() in {"feat/oneios-sm8850-m3q", "feat/sm8850-full-bridges-takeover"} and
+                                text=True).strip() in {"feat/oneios-sm8850-m3q", "feat/sm8850-full-bridges-takeover", "feat/sm8850-xnuhost-perf-p0"} and
                             b"SM8850_FULL_BRIDGES=ACTIVE" not in data):
                         raise ValueError("xnuhost lacks SM8850 full-bridges marker; refusing stage")
                 files["native/" + name] = source

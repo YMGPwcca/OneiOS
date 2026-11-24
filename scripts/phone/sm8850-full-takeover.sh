@@ -77,7 +77,7 @@ case "$(git branch --show-current)" in
             echo "BLOCKED: stage-runtime is for full-bridges integration only" >&2
             exit 2
         } ;;
-    feat/oneios-sm8850-m3q|feat/sm8850-full-bridges-takeover)
+    feat/oneios-sm8850-m3q|feat/sm8850-full-bridges-takeover|feat/sm8850-xnuhost-perf-p0)
         FULL_BRIDGES_BRANCH=1
         case "$mode" in
             stage-runtime) ;;

@@ -595,7 +595,7 @@ def main() -> int:
         ["git", "-C", str(repo), "branch", "--show-current"],
         text=True, timeout=10,
     ).strip()
-    if (branch in {"feat/oneios-sm8850-m3q", "feat/sm8850-full-bridges-takeover"}
+    if (branch in {"feat/oneios-sm8850-m3q", "feat/sm8850-full-bridges-takeover", "feat/sm8850-xnuhost-perf-p0"}
             and args.duration != 180):
         ap.error("SM8850 full bridges live trial requires --duration 180")
     if not (repo / WRAPPER).is_file():
