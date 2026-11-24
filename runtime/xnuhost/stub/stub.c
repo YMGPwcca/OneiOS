@@ -9,6 +9,7 @@
 //     it hands the register state to xnuhost through the thread's trap page and waits to be resumed.
 // The design is gVisor's systrap platform and User-Mode Linux's skas mode; the code is new.
 #include "stub_abi.h"
+#include "stub_copy.h"
 
 // Every symbol is local to the blob: no GOT, so no absolute address that would need relocating.
 #pragma GCC visibility push(hidden)
@@ -69,13 +70,6 @@ static inline __attribute__((always_inline)) long sys6(long nr, long a, long b, 
 }
 #define sys(nr, ...) sys6_(nr, ##__VA_ARGS__, 0, 0, 0, 0, 0, 0)
 #define sys6_(nr, a, b, c, d, e, f, ...) sys6(nr, (long)(a), (long)(b), (long)(c), (long)(d), (long)(e), (long)(f))
-
-static void copy(void *to, const void *from, unsigned long n)
-{
-  volatile unsigned char *d = to;
-  const volatile unsigned char *s = from;
-  while (n--) *d++ = *s++;
-}
 
 static void wait_for(uint32_t *word)
 {
@@ -148,21 +142,21 @@ void xs_handler(int signo, struct k_siginfo *info, struct k_ucontext *uc)
   struct xh_trap *trap = &tp->trap;
 
   tp->t_enter = counter();
-  copy(st->x, mc->regs, sizeof st->x);
+  xs_copy_state(st->x, mc->regs, sizeof st->x);
   st->sp = mc->sp;
   st->pc = mc->pc;
   st->pstate = mc->pstate;
   __asm__ volatile("mrs %0, tpidr_el0" : "=r"(st->tsd));
   uint8_t *fp = find_record(mc, FPSIMD_MAGIC);
   if (fp) {
-    copy(&st->fpsr, fp + 8, 4);
-    copy(&st->fpcr, fp + 12, 4);
-    copy(st->v, fp + 16, sizeof st->v);
+    xs_copy_state(&st->fpsr, fp + 8, 4);
+    xs_copy_state(&st->fpcr, fp + 12, 4);
+    xs_copy_state(st->v, fp + 16, sizeof st->v);
   }
   uint8_t *esr = find_record(mc, ESR_MAGIC);
   trap->signo = (uint32_t)signo;
   trap->esr = 0;
-  if (esr) copy(&trap->esr, esr + 8, 8);
+  if (esr) xs_copy_state(&trap->esr, esr + 8, 8);
   trap->far = 0;
   trap->svc = trap->access = trap->insn = trap->exit_status = 0;
 
@@ -226,14 +220,14 @@ void xs_handler(int signo, struct k_siginfo *info, struct k_ucontext *uc)
     tp->pac_set = 0;
     sys(NR_prctl, PR_PAC_SET_ENABLED_KEYS, 0xf, tp->pac_enabled & 0xf, 0, 0);
   }
-  copy(mc->regs, st->x, sizeof st->x);
+  xs_copy_state(mc->regs, st->x, sizeof st->x);
   mc->sp = st->sp;
   mc->pc = st->pc;
   mc->pstate = st->pstate & 0xf0000000ull;        // NZCV; EL0t, interrupts unmasked
   if (fp) {
-    copy(fp + 8, &st->fpsr, 4);
-    copy(fp + 12, &st->fpcr, 4);
-    copy(fp + 16, st->v, sizeof st->v);
+    xs_copy_state(fp + 8, &st->fpsr, 4);
+    xs_copy_state(fp + 12, &st->fpcr, 4);
+    xs_copy_state(fp + 16, st->v, sizeof st->v);
   }
   // A thread with live SVE state (none of iOS's code has any, but the host's may) is restored from
   // the SVE record instead: V[n] is the low 128 bits of Z[n]. Record: head, u16 vl, ..., then Z0..Z31.
@@ -241,7 +235,7 @@ void xs_handler(int signo, struct k_siginfo *info, struct k_ucontext *uc)
   if (sve) {
     uint32_t size = ((struct k_record *)sve)->size, vl = *(uint16_t *)(sve + 8);
     if (vl >= 16 && size >= 16 + 32 * vl)
-      for (unsigned n = 0; n < 32; n++) copy(sve + 16 + n * vl, &st->v[n], 16);
+      for (unsigned n = 0; n < 32; n++) xs_copy_state(sve + 16 + n * vl, &st->v[n], 16);
   }
   __asm__ volatile("msr tpidr_el0, %0" : : "r"(st->tsd));
 }

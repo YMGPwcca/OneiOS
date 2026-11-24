@@ -44,3 +44,30 @@ No aborted/invalid acknowledgment samples. Deferred orders have larger individua
 Prioritize the frequent trap/handoff/release path (round-trip 81.7 us; both directions about 40 us). Keep map-defer and TLB ordering intact; no evidence to disable batching. Do not change timer policy based on a deliberately rearming timer workload. Existing cpu-pin=2 requests co-location of vCPU and its task/service threads, and docs/booter.md documents earlier synthetic ARM64 improvement; existing spin knobs default OFF and shared-core spins previously regressed latency. Before altering runtime, compare existing unpaired and paired placement in one bounded experiment with the exact same inherited CPU set (0-2), fixed 3 vCPUs, profiler ON, map-defer=1, spin-host=spin-task=0.
 
 `python3 scripts/phone/bench-sm8850-task-placement.py --self-test` checks parsers; `python3 scripts/phone/bench-sm8850-task-placement.py` executes only the validated artifacts on normal Android. It verifies artifact hashes, device/firmware/shell, allowed CPUs and final vCPU masks, uses isolated Data directories, alternates one warmup plus three measured pairs, collects per-run logs and summaries, fails closed if any run or mask check fails. A battery temperature admission check is only for this synthetic experiment, not a substitute for firmware thermal protection. Task/service-thread affinity is requested by the existing implementation but not independently proven by vCPU masks. This compares placement within CPUs 0-2, not the previous full allowed 0-7 baseline, not 4/6/8 vCPU topology, and not an FPS guarantee. No default, global policy, recovery or OneOS change.
+
+
+## Native CPU placement A/B — operator receipt PASS
+
+Checkout `a56a49e30cc2a38842daa74569d7de9599adf822`; the same verified P0 binary and test image hashes above. Android shell, 3 vCPUs, 256 MiB, profiler ON, map-defer=1, spin-host/task=0; both conditions inherit CPUs 0-2. Eight successful runs, one warmup pair discarded and three measured alternating pairs. Final vCPU masks 0-2 for all unpaired runs and 0/1/2 for all paired runs. Individual task/service affinity was not independently verified. Battery 29.4-29.5 C (battery temperature only, not SoC junction). Raw receipts: `/tmp/oneios-native-placement.b6erwbod`.
+
+| Metric | Unpaired us | Paired us | Paired delta % |
+|---|---:|---:|---:|
+| syscall_round | 6.199 | 8.302 | +33.92 |
+| syscall_up | 3.314 | 4.318 | +30.51 |
+| syscall_down | 2.881 | 3.982 | +37.94 |
+| fault_resolve | 15.320 | 19.936 | +30.13 |
+| task_map | 0.031 | 0.031 | +3.33 |
+| task_unmap | 0.028 | 0.032 | +7.14 |
+| timer_kick | 12.883 | 17.991 | +39.56 |
+| discard_one | 2.353 | 2.685 | +14.11 |
+| discard_64 | 79.127 | 79.998 | +0.98 |
+| fill_resident | 0.604 | 0.605 | +0.17 |
+| fill_given | 3.604 | 3.749 | +4.02 |
+
+Reject the tested same-core pairing candidate for this synthetic 3-vCPU configuration. The prior unrestricted 0-7 run reported 81.874 us with profiler ON, versus 6.199 us here: approximately 13.2x between sessions, not a matched mask speedup. CPU frequency/residency and scheduler/background state were not controlled between these sessions. Do not extrapolate to an eight-vCPU full bridge configuration, change production defaults or claim UI FPS gains.
+
+## P1 first code batch (CI and native A/B pending)
+
+Optimize the freestanding stub's signal-state copies: use volatile, naturally aligned, alias-safe 64-bit/32-bit scalar accesses where possible, exact byte fallback otherwise. The old byte loop touched GPR, FPSIMD, ESR and SVE state each trap; this reduces scalar copy iterations without modifying the ABI, register values, memory ordering, seccomp, wait/wake protocol, VM mapping, timer policy, or thermal/CPU policy. No SIMD instructions are allowed by existing stub compiler flags. Host ASAN/UBSAN tests cover every offset pair 0-15, exact lengths including GPR/FPSIMD and guard pages; test kernel checks all 32 vectors, untouched GPRs, FPCR/FPSR/NZCV. Full local CI required.
+
+Archive the exact old xnuhost binary before rebuilding; its hash is pinned above. The extended placement script accepts `--baseline-binary PATH` and compares that binary with the new CI-built binary on the **same current test kernel and OS fixture**, using four conditions (old/new on 0-2 and 0-7, both unpaired), one warmup block and three measured rotating blocks. Each run verifies native selftest/admission, artifacts and vCPU masks, records raw metrics and battery checks. This distinguishes code improvement from mask/session effects without changing production CPU affinity. Timing remains synthetic, not representative iOS or an eight-vCPU benchmark; no change to OneOS or physical release gates.

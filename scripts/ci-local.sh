@@ -113,6 +113,7 @@ scripts/setup/get-references.sh virglrenderer
 test -f external/virglrenderer/src/drm/drm2kgsl/drm2kgsl_renderer.c
 
 runtime/host-tests.sh
+python3 scripts/phone/bench-sm8850-task-placement.py --self-test
 kernel/tests/host.sh
 # Also exercise driver-side PCM haptics, camera and userland host tests.
 # The runtime suite already covers runtime/; do not run its tests twice.

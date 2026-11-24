@@ -449,7 +449,16 @@ static void test_tasks(void)
   st.pc = trapped ? code_va : code_va + 12;
   st.x[0] = 7;
   st.tsd = 0x1234500;
-  st.v[3].lo = 0x1122334455667788ull;
+  // Exercise the entire signal-state copy in both directions, not just v3.lo.
+  // x0, x1, x16 are deliberately changed by the small guest program below.
+  for (unsigned i = 2; i < 31; i++) st.x[i] = 0x1122334455660000ull + i;
+  for (unsigned i = 0; i < 32; i++) {
+    st.v[i].lo = 0x0123456789abcdefull ^ (uint64_t)i;
+    st.v[i].hi = 0xfedcba9876543210ull ^ ((uint64_t)i << 32);
+  }
+  st.fpcr = 0x00400000u;  // valid ARM64 rounding mode, no exception enables
+  st.fpsr = 0x08000010u;  // QC and IXC, valid cumulative flags
+  st.pstate = 0xa0000000ull;
   if (trapped) {
     check(H->thread_run(C0, thread, &st, &trap) == 0 && trap.kind == XH_TRAP_SYSCALL && trap.svc == 0x80 && st.x[16] == 1 &&
           st.x[0] == 42 && st.pc == code_va + 12, "svc #0x80 arrives as a system-call trap with x16 and x0 intact");
@@ -457,8 +466,17 @@ static void test_tasks(void)
   } else put("SKIP the svc trap: this host has no task layer\n");
   check(H->thread_run(C0, thread, &st, &trap) == 0 && trap.kind == XH_TRAP_FAULT && trap.far == data_va &&
         (trap.access == XH_PROT_WRITE || trap.access == 0) && st.pc == code_va + 16, "a store to an unmapped page arrives as a fault");
-  if (!(st.tsd == 0x1234500 && st.v[3].lo == 0x1122334455667788ull)) { put("  tsd, v3: "); hex(st.tsd); put(" "); hex(st.v[3].lo); put("\n"); }
-  check(st.tsd == 0x1234500 && st.v[3].lo == 0x1122334455667788ull, "the thread register and a vector register came back unchanged");
+  bool gpr_ok = true, vec_ok = true;
+  for (unsigned i = 2; i < 31; i++)
+    if (i != 16 && st.x[i] != 0x1122334455660000ull + i) gpr_ok = false;
+  for (unsigned i = 0; i < 32; i++)
+    if (st.v[i].lo != (0x0123456789abcdefull ^ (uint64_t)i) ||
+        st.v[i].hi != (0xfedcba9876543210ull ^ ((uint64_t)i << 32))) vec_ok = false;
+  check(gpr_ok, "all untouched GPRs x2-x30 survived the trap round trip");
+  check(st.tsd == 0x1234500 && vec_ok, "thread register and all 32 vector registers survived the trap round trip");
+  check(st.fpcr == 0x00400000u && st.fpsr == 0x08000010u &&
+        (st.pstate & 0xf0000000ull) == 0xa0000000ull,
+        "FPCR, FPSR and NZCV survived the trap round trip");
   check(H->task_map(C0, task, data_va, 0x4000, XH_PROT_READ | XH_PROT_WRITE, data_pa) == 0, "the kernel maps the page (pmap_enter)");
   check(H->thread_run(C0, thread, &st, &trap) == 0 && trap.kind == XH_TRAP_BRK && st.pc == code_va + 20, "the store is retried, then brk traps");
   // the store's fault came just before on this task: Linux's SIGTRAP carries that fault's syndrome as its own
