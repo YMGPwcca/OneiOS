@@ -518,9 +518,16 @@ static int create_blob_now(xh_gpu3d *b, uint32_t id, uint32_t res, uint32_t blob
   }
   unsigned n = (unsigned)nchunks;
   if (blob_mem == XH_GPU_BLOB_GUEST) {
-    // Only a display GUEST resource needs this duplicate. HOST3D_GUEST
-    // uses get_blob below; do not dup and immediately close a throwaway fd.
-    int first = n ? fcntl(chunks[0].fd, F_DUPFD_CLOEXEC, 0) : -1;
+    // For a single chunk, the virgl resource can own the original
+    // CLOEXEC fd. Keep a duplicate only when the multi-chunk table also
+    // needs the original list for future imports by other contexts.
+    int first = -1;
+    if (n == 1) {
+      first = chunks[0].fd;
+      chunks[0].fd = -1;  // transfer; failure path below closes first
+    } else if (n > 1) {
+      first = fcntl(chunks[0].fd, F_DUPFD_CLOEXEC, 0);
+    }
     if (n && first < 0) { xh_gpu3d_chunks_free(chunks, n); return -EMFILE; }
     // The display's surface: known as a dma-buf (its first, when it is chunked), for a context that attaches it.
     struct virgl_resource *r = n ? virgl_resource_create_from_fd(res, VIRGL_RESOURCE_FD_DMABUF, first, NULL, 0, NULL) : NULL;
@@ -537,9 +544,18 @@ static int create_blob_now(xh_gpu3d *b, uint32_t id, uint32_t res, uint32_t blob
   // A context's blob: get_blob gives the resource its fd.
   struct virgl_context *ctx = virgl_context_lookup(id);
   if (!ctx) { xh_gpu3d_chunks_free(chunks, n); return -EINVAL; }
-  // The pages of a guest-allocated BO are parked in the context for the get_blob that follows. It takes the fds it
-  // is given: copies of them, so that the chunk list above stays whole.
-  if (n) {
+  // The renderer takes the parked fd(s), including on failure. No extra
+  // owner is needed for a one-chunk blob: the returned resource supplies
+  // its fd to future imports. Multi-chunk resources still keep the list.
+  if (n == 1) {
+    const int fd = chunks[0].fd;
+    const uint64_t bytes = chunks[0].size;
+    chunks[0].fd = -1;
+    if (drm2kgsl_renderer_set_guest_blob_chunks(ctx, blob_id, &fd, &bytes, 1)) {
+      xh_gpu3d_chunks_free(chunks, n);
+      return -EINVAL;
+    }
+  } else if (n > 1) {
     int fds[n];
     uint64_t sizes[n];
     bool ok = true;

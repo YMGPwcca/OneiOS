@@ -278,6 +278,33 @@ static int leaks(void)
     }
     CHECK(same(kind ? "30x 16 KiB display blob in 2 contexts, unref" : "30x 72 MiB display blob in 2 contexts, unref", base));
   }
+  // Reuse the same resource id and guest IOVA with a different backing
+  // page. Never retain a single-chunk fd/BO across the resource lifetime.
+  // Both display and context blobs exercise ownership transfer, with
+  // a foreign context import of the new resource.
+  xh_gpu_entry second = { .addr = RAM_PHYS + (2u << 20), .length = 0x4000 };
+  for (unsigned kind = 0; kind < 2; kind++) {
+    uint32_t reused = ++res;
+    for (unsigned i = 0; i < 4; i++) {
+      xh_gpu_entry *e = i & 1 ? &second : &small;
+      xh_gpu_entry *other = i & 1 ? &small : &second;
+      uint8_t *target = ram + (e->addr - RAM_PHYS) + 0x1000;
+      uint8_t *old = ram + (other->addr - RAM_PHYS) + 0x1000;
+      *target = 0x11; *old = 0x22;
+      if (kind) {
+        CHECK(guest_buffer(&c, reused, ++blob, c.slice + (256u << 20), 0x4000, e, 1) == 0);
+      } else {
+        CHECK(gpu->create_blob(gpu, 0, reused, XH_GPU_BLOB_GUEST,
+                               XH_GPU_BLOB_FLAG_GUEST_HANDLE, 0, 0x4000, e, 1) == 0);
+      }
+      CHECK(gpu->attach(gpu, 2, reused, true) == 0);
+      CHECK(set_iova(&d, reused, d.slice + (64u << 20)) == 0);
+      CHECK(upload(&d, reused) == 0);
+      CHECK(*target == 0xab && *old == 0x22);
+      gpu->unref(gpu, reused);
+    }
+    CHECK(same(kind ? "single ctx resource id/backing reuse" : "single display resource id/backing reuse", base));
+  }
   // 3. a context destroyed with resources still attached (its own and others'), then the resources unref'ed
   for (int i = 0; i < cycles / 3; i++) {
     context e;

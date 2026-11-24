@@ -62,6 +62,11 @@ int xh_gpu3d_udmabufs(int ram_fd, uint64_t ram_phys, uint64_t ram_size, const xh
     uint64_t addr = entries[i].addr, length = entries[i].length;
     if (!length || ((addr | length) & 0xfff) || addr < ram_phys || addr - ram_phys > ram_size || length > ram_size - (addr - ram_phys)) { errno = EINVAL; return -1; }
   }
+  // A chunk cannot have more distinct runs than the supplied entries.
+  // Splitting an entry at max_bytes starts a new chunk; it does not add
+  // another run within that chunk. Avoid allocating the full kernel list
+  // limit for the common one/few-entry blob, without changing chunk limits.
+  if (max_runs > n) max_runs = n;
   struct udmabuf_create_list *list = calloc(1, sizeof *list + max_runs * sizeof(struct udmabuf_create_item));
   xh_gpu_chunk *chunks = NULL;
   unsigned nchunks = 0, room = 0, count = 0;
