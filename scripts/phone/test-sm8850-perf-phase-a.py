@@ -134,5 +134,57 @@ class PhaseA(unittest.TestCase):
                 takeover.launch(phone, "smoke", Path(d), perf_profile="frame")
             phone.root.assert_not_called()
 
+    def test_cpu_profile_detached_and_acknowledged(self):
+        for acknowledged in ("prime-first", "default", None):
+            with self.subTest(acknowledged=acknowledged), tempfile.TemporaryDirectory() as d, \
+                    patch.object(takeover, "audit", return_value=0), patch.object(takeover, "upload", return_value=0), \
+                    patch.object(takeover, "status", return_value="boot=mock\n"), \
+                    patch.object(takeover.time, "monotonic", side_effect=[0.0, 1000.0]):
+                phone = Mock()
+                lines = "SM8850_PERF_PROFILE=frame-task\n"
+                if acknowledged:
+                    lines += f"SM8850_CPU_PROFILE_REQUESTED={acknowledged}\n"
+                phone.root.side_effect = [subprocess.CompletedProcess([], 0, lines.encode()),
+                                          subprocess.CompletedProcess([], 0, b"")]
+                rc = takeover.launch(phone, "run", Path(d), duration=180, perf_profile="frame-task",
+                                     cpu_profile="prime-first")
+                calls = [c.args[0] for c in phone.root.call_args_list]
+                if acknowledged == "prime-first":
+                    self.assertEqual(4, rc)
+                    self.assertEqual(2, len(calls))
+                    self.assertIn("180 perf-frame-task cpu-prime-first", calls[0])
+                    self.assertIn("180 perf-frame-task cpu-prime-first", calls[1])
+                    self.assertEqual("prime-first", json.loads((Path(d) / "performance-profile.json").read_text())["preflight_cpu_profile"])
+                else:
+                    self.assertEqual(2, rc)
+                    self.assertEqual(1, len(calls))
+        with tempfile.TemporaryDirectory() as d:
+            phone = Mock()
+            with self.assertRaises(ValueError):
+                takeover.launch(phone, "smoke", Path(d), cpu_profile="prime-first")
+            phone.root.assert_not_called()
+
+    def test_placement_evidence_does_not_pool_cumulative_values(self):
+        host = "\n".join((
+            "SM8850_CPU_PROFILE=PRIME_FIRST_ACTIVE (experimental)",
+            "cpu0: host CPU mask 0x40",
+            "cpu: vCPU 0 (E) is described to iOS as host CPU 6: 768000-4742400 kHz, 2 table entries, capacity 1024",
+            "perf-affinity: vcpu=0 tid=123 allowed=6 migrations=1 last_cpu=6",
+            "perf-affinity: vcpu=1 tid=124 allowed=unknown migrations=unknown last_cpu=-1",
+            "perf-placement: vcpu=0 role=guest-thread calls=4 failed=0 readback_samples=3 readback_errors=0 readback_mismatches=1 current_target=0x40",
+            "perf-placement: vcpu=0 role=guest-thread calls=8 failed=0 readback_samples=4 readback_errors=0 readback_mismatches=1 current_target=0x3f",
+            "perf-placement: vcpu=0 role=service-thread calls=2 failed=0 readback_samples=2 readback_errors=0 readback_mismatches=0 current_target=0x3f",
+        ))
+        a = perf.analyze_logs(host, "")["cpu_placement"]
+        self.assertEqual(["PRIME_FIRST_ACTIVE"], a["runtime_profile_markers"])
+        self.assertEqual("0x40", a["initial_target_masks"][0]["target_mask"])
+        self.assertEqual(6, a["described_cores"][0]["host_cpu"])
+        self.assertEqual("6", a["vcpu_affinity_samples"][0]["allowed"])
+        self.assertIsNone(a["vcpu_affinity_samples"][1]["allowed"])
+        self.assertEqual([4, 8, 2], [x["calls"] for x in a["placement_cumulative_samples"]])
+        self.assertIsNone(a["residency"])
+        self.assertEqual(a, stall.analyze(host, "")["cpu_placement"])
+        self.assertEqual([], perf.analyze_logs("", "")["cpu_placement"]["runtime_profile_markers"])
+
 if __name__ == "__main__":
     unittest.main()

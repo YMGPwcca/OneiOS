@@ -11,7 +11,7 @@ import json
 import re
 from pathlib import Path
 from statistics import median
-from sm8850_perf_metrics import active_post_summary, process_cpu_samples
+from sm8850_perf_metrics import active_post_summary, placement_evidence, process_cpu_samples
 
 ROOT = Path(__file__).resolve().parents[2]
 LOG_DIR = ROOT / "out/sm8850/gpu-acceptance"
@@ -114,6 +114,7 @@ def analyze_logs(host, display):
         },
         "frame_trace": trace_windows(host, display, windows),
         "active_post_summary": active_post_summary(windows),
+        "cpu_placement": placement_evidence(host),
         "touch": {"next_frame_latency_ms": host_gaps,
                   "max_next_frame_ms": max(host_gaps, default=None),
                   "no_subsequent_guest_frame": no_frame},
@@ -192,6 +193,10 @@ def _show(report):
         print(f"ACTIVE_POST_WINDOW mono_ms={r['mono_ms']} gaps={r['active_gaps']} "
               f"p95_us={r['active_gap_p95_us']} p99_us={r['active_gap_p99_us']} "
               f"max_us={r['active_gap_max_us']} over60={r['active_over_60']} over120={r['active_over_120']}")
+    placement = report["cpu_placement"]
+    print("CPU_PLACEMENT_PROFILE=" + ",".join(placement["runtime_profile_markers"]) if placement["runtime_profile_markers"] else "CPU_PLACEMENT_PROFILE=UNKNOWN")
+    print("CPU_PLACEMENT_AFFINITY_SAMPLES=" + str(len(placement["vcpu_affinity_samples"])))
+    print("CPU_PLACEMENT_ROLE_SAMPLES=" + str(len(placement["placement_cumulative_samples"])))
     summary = report["active_post_summary"]
     for key in ("active_gaps_reported", "active_gaps_with_budget_counts", "budget_count_windows",
                 "budget_coverage_complete", "over_60_budget", "over_120_budget",

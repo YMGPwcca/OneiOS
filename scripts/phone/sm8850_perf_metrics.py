@@ -64,3 +64,38 @@ def active_post_summary(rows):
         "max_window_active_p99_bucket_bound_us": peak("active_gap_p99_us"),
         "max_active_gap_us": peak("active_gap_max_us"),
     }
+
+def placement_evidence(host):
+    """Separate requested topology, sampled effective masks and placement
+    call outcomes. Never sum cumulative counters or infer CPU residency."""
+    plans, targets, affinities, outcomes, profiles = [], [], [], [], []
+    for line in host.splitlines():
+        if m := re.search(r"SM8850_CPU_PROFILE=(PRIME_FIRST_ACTIVE|DEFAULT_FALLBACK|DEFAULT)\b", line):
+            profiles.append(m.group(1))
+        if m := re.search(r"cpu: vCPU (\d+) \(([EP])\) is described to iOS as host CPU (\d+): (\d+)-(\d+) kHz, (\d+) table entries, capacity (\d+)", line):
+            vcpu, cluster, cpu, low, high, nfreq, capacity = m.groups()
+            plans.append(dict(vcpu=int(vcpu), cluster=cluster, host_cpu=int(cpu),
+                              min_khz=int(low), max_khz=int(high),
+                              nfreq=int(nfreq), capacity=int(capacity)))
+        if m := re.search(r"cpu(\d+): host CPU mask (0x[0-9a-fA-F]+)", line):
+            targets.append(dict(vcpu=int(m.group(1)), target_mask=m.group(2)))
+        if m := re.search(r"perf-affinity: vcpu=(\d+) tid=(\d+) allowed=(\S+) migrations=(\S+) last_cpu=(-?\d+)", line):
+            vcpu, tid, allowed, migrations, last_cpu = m.groups()
+            affinities.append(dict(vcpu=int(vcpu), tid=int(tid),
+                                  allowed=None if allowed == "unknown" else allowed,
+                                  migrations=int(migrations) if migrations.isdecimal() else None,
+                                  last_cpu=int(last_cpu) if int(last_cpu) >= 0 else None))
+        if m := re.search(r"perf-placement: vcpu=(\d+) role=(vcpu|guest-thread|service-thread) calls=(\d+) failed=(\d+) readback_samples=(\d+) readback_errors=(\d+) readback_mismatches=(\d+) current_target=(0x[0-9a-fA-F]+)", line):
+            vcpu, role, calls, failed, samples, errors, mismatches, target = m.groups()
+            outcomes.append(dict(vcpu=int(vcpu), role=role, calls=int(calls), failed=int(failed),
+                                 readback_samples=int(samples), readback_errors=int(errors),
+                                 readback_mismatches=int(mismatches), current_target=target))
+    return {
+        "runtime_profile_markers": profiles,
+        "described_cores": plans,
+        "initial_target_masks": targets,
+        "vcpu_affinity_samples": affinities,
+        "placement_cumulative_samples": outcomes,
+        "residency": None,
+        "scope": "target masks are not effective affinity; sampled readback is not CPU residency or proof of GPU/display worker contention",
+    }

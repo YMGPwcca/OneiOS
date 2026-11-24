@@ -1874,6 +1874,10 @@ static void test_config(const char *dir)
   CHECK(xh_config_set(&c, "frame-trace", "invalid") != 0 && !c.frame_trace);
   CHECK(xh_config_set(&c, "frame-trace", "1") == 0 && c.frame_trace);
   CHECK(xh_config_set(&c, "frame-trace", "0") == 0 && !c.frame_trace);
+  CHECK(!c.sm8850_prime_first);
+  CHECK(xh_config_set(&c, "sm8850-prime-first", "wrong") != 0 && !c.sm8850_prime_first);
+  CHECK(xh_config_set(&c, "sm8850-prime-first", "1") == 0 && c.sm8850_prime_first);
+  CHECK(xh_config_set(&c, "sm8850-prime-first", "0") == 0 && !c.sm8850_prime_first);
   CHECK(xh_config_set(&c, "cpu-affinity-bench", "wrong") != 0);
   CHECK(xh_config_set(&c, "cpu-affinity-bench", "1") == 0 && c.cpu_affinity_bench);
   CHECK(xh_config_set(&c, "cpu-affinity-bench", "0") == 0 && !c.cpu_affinity_bench);
@@ -1902,6 +1906,7 @@ static void test_config(const char *dir)
   CHECK(c.disk[2].data_store && c.disk[2].writable && strstr(c.disk[2].path, "/data.img") && strstr(c.disk[2].seed, "data.seed"));
   CHECK(c.ncpu >= 1 && c.ncpu <= XH_MAX_CPUS && !strcmp(c.display, "shm") && c.input && c.tasks);
   CHECK(c.bridges == 1 && !strcmp(c.bluetooth, "auto") && !strcmp(c.wifi, "auto"));
+  CHECK(xh_config_set(&c, "sm8850-prime-first", "1") == 0 && xh_config_finish(&c) != 0);
   // The exclusive physical touchscreen may only be grabbed in a non-takeover
   // bench using the SHM display and no hardware bridges. All other modes fail.
   char *touch_ok[] = { "xnuhost", "--image", image, "--mode", "bench", "--display", "shm",
@@ -1964,6 +1969,22 @@ static void test_config(const char *dir)
         c.sm8850_full_bridges && c.bridges == 1 && c.touch_exclusive &&
         !c.touch_sleep && !c.cpu_affinity_bench && c.cpu_pin == 1 &&
         c.ncpu == 8);
+  // An opt-in candidate still has to pass the exact full-bridge gate.
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, touch_bridges) == 0);
+  CHECK(xh_config_set(&c, "sm8850-full-bridges", "1") == 0);
+  CHECK(xh_config_set(&c, "sm8850-prime-first", "1") == 0);
+  CHECK(xh_config_set(&c, "touch-sleep", "0") == 0);
+  CHECK(xh_config_set(&c, "cpus", "8") == 0);
+  CHECK(xh_config_set(&c, "gpu", "3d") == 0);
+  CHECK(xh_config_set(&c, "wifi", "off") == 0);
+  CHECK(xh_config_set(&c, "bluetooth", "virtual") == 0);
+  CHECK(xh_config_set(&c, "haptics", "off") == 0);
+  CHECK(xh_config_set(&c, "runtime", "/data/runtime") == 0);
+  CHECK(xh_config_set(&c, "session", "/data/session") == 0);
+  CHECK(xh_config_set(&c, "data", "/data/data") == 0);
+  CHECK(xh_config_finish(&c) == 0 && c.sm8850_prime_first);
+  CHECK(xh_config_set(&c, "clusters", "PPPPPPPP") == 0 && xh_config_finish(&c) != 0);
 
   struct { const char *key, *value; } full_bridge_bad[] = {
     { "bridges", "0" },

@@ -13,7 +13,7 @@ from pathlib import Path
 import re
 import tarfile
 import sys
-from sm8850_perf_metrics import active_post_summary
+from sm8850_perf_metrics import active_post_summary, placement_evidence
 
 TS = re.compile(r'^\[\s*(\d+\.\d+)\]')
 KVS = re.compile(r'([a-z][a-z0-9_]*)=([0-9.]+)')
@@ -41,7 +41,7 @@ def read_logs(
     names = (prefix + 'session/xnuhost.log', prefix + 'control/display.log')
     controls = {key: prefix + 'control/' + file for key, file in (
         ('launch_id', 'framework.launch'), ('perf_profile', 'framework.perf-profile'),
-        ('boot_id', 'boot'), ('mode', 'framework.mode'))}
+        ('boot_id', 'boot'), ('mode', 'framework.mode'), ('cpu_profile', 'framework.cpu-profile'))}
 
     def finish(read):
         meta = {key: read(name, 256, optional=True) for key, name in controls.items()}
@@ -177,6 +177,7 @@ def analyze(xnu: str, display: str, thermal_csv: Path | None = None) -> dict:
         'largest_all_gap_p95_bucket_bound_ms': max((x['gap_p95_ms'] for x in display_events
                                                    if x['gap_p95_ms'] is not None and x['gap_p95_ms'] > 0), default=None),
         'active_post_summary': summary,
+        'cpu_placement': placement_evidence(xnu),
         'candidate_windows_scope': 'all-gap p95 bucket bound >= 1000ms; may include idle',
         'max_display_copy_ms': max((x['copy_max_ms'] for x in display_events
                                     if x['copy_max_ms'] is not None and x['posts'] is not None and x['posts'] > 0), default=None),
