@@ -304,3 +304,7 @@ sRGB color tagging and --takeover defaults are unchanged.
 See `docs/SM8850_IOS_INTERACTIVE_PERF_CAPTURE.md` for a bounded visual
 run and its offline CPU/GPU/Settings correlation. Do not use this telemetry
 as proof of measured iOS animation FPS or a Vulkan API device.
+
+### Phase D source batch: late damage and CPU scanout runs (2026-11-25)
+
+The display helper's SHM-to-Android copy is still one explicit copy, in addition to XNUHost's guest-to-SHM scanout copy. After a valid **full-frame** Android lock, the helper can now drain up to 32 late damage records before copying. A partial lock never drains late records: its dirty rectangle remains what Android granted. Existing damage clipping, union, sequence/provenance, ready wait, format fallback and buffer release remain. This is nonblocking coalescing of notifications, not a queue of immutable frames; concurrent shadow writes can still tear. `post_lock_drain_attempts`, `post_lock_damage_packets`, `post_lock_drain_n`, `post_lock_drain_p95_us`, `post_lock_drain_max_us` and `post_lock_drain_invalid_clock` describe this separately from the copy; counts can include a failed post, and do not assert avoided posts or physical FPS. XNUHost also joins adjacent RAM segments once when a blob becomes a scanout, not when importing it to KGSL. Portable socket, scanout, profiler and analyzer regressions added. Local CI/Android build and live acceptance pending; no new wire protocol or AHardwareBuffer sharing.

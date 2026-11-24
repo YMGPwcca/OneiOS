@@ -75,6 +75,32 @@ def trace_windows(host, display, windows):
             "scope": "host stage and post telemetry, not causal GPU-to-frame or physical presentation"}
 
 
+def post_lock_drain_summary(windows):
+    # Legacy/partial reports do not establish zero late damage. Sum only
+    # windows with a complete, internally consistent set of counters.
+    keys = {"post_lock_drain_attempts", "post_lock_damage_packets",
+            "post_lock_drain_n", "post_lock_drain_p95_us",
+            "post_lock_drain_max_us", "post_lock_drain_invalid_clock"}
+    valid = [r for r in windows if keys <= r.keys()
+             and all(isinstance(r[k], int) and r[k] >= 0 for k in keys)
+             and r["post_lock_drain_n"] + r["post_lock_drain_invalid_clock"] == r["post_lock_drain_attempts"]
+             and r["post_lock_damage_packets"] <= 32 * r["post_lock_drain_attempts"]]
+    if not valid:
+        return None
+    timed = [r for r in valid if r["post_lock_drain_n"]]
+    return {
+        "windows": len(valid), "display_windows": len(windows),
+        "coverage_complete": len(valid) == len(windows),
+        "attempts": sum(r["post_lock_drain_attempts"] for r in valid),
+        "damage_packets": sum(r["post_lock_damage_packets"] for r in valid),
+        "timed_attempts": sum(r["post_lock_drain_n"] for r in valid),
+        "invalid_clocks": sum(r["post_lock_drain_invalid_clock"] for r in valid),
+        "max_us": max((r["post_lock_drain_max_us"] for r in timed), default=None),
+        "max_window_p95_bucket_bound_us": max((r["post_lock_drain_p95_us"] for r in timed), default=None),
+        "scope": "accepted damage notifications after full-frame lock; not distinct frames, saved posts or physical presentation",
+    }
+
+
 def analyze_logs(host, display):
     """Return descriptive evidence only: no inferred root cause or fake FPS."""
     windows = []
@@ -113,6 +139,7 @@ def analyze_logs(host, display):
         "display": {
             "instrumentation_present": bool(windows), "windows": len(windows),
             "window_samples": windows,
+            "post_lock_drain": post_lock_drain_summary(windows),
             "posted_rate_max": max((float(row["posted_rate"]) for row in windows), default=None),
             "active_cadence_median": round(median(active), 2) if active else None,
             "active_cadence_windows": len(active),
@@ -172,6 +199,14 @@ def _show(report):
     print("DISPLAY_ANATIVEWINDOW_LOCK_MAX_MS=" + (str(round(display["lock_max_us"] / 1000, 2)) if display["lock_max_us"] is not None else "UNKNOWN"))
     print("DISPLAY_FRAME_COPY_MAX_MS=" + (str(round(display["copy_max_us"] / 1000, 2)) if display["copy_max_us"] is not None else "UNKNOWN"))
     print("DISPLAY_UNLOCK_POST_MAX_MS=" + (str(round(display["post_max_us"] / 1000, 2)) if display["post_max_us"] is not None else "UNKNOWN"))
+    late = display["post_lock_drain"]
+    if late is None:
+        print("DISPLAY_POST_LOCK_DRAIN=UNKNOWN")
+    else:
+        print(f"DISPLAY_POST_LOCK_DRAIN windows={late['windows']}/{late['display_windows']} "
+              f"attempts={late['attempts']} damage_packets={late['damage_packets']} "
+              f"timed_attempts={late['timed_attempts']} invalid_clocks={late['invalid_clocks']} "
+              f"max_us={late['max_us']} max_window_p95_bucket_bound_us={late['max_window_p95_bucket_bound_us']}")
     print("TOUCH_TO_FRAME_MAX_MS=" + str(report["touch"]["max_next_frame_ms"]))
     print("TOUCH_NO_GUEST_FRAME=" + str(report["touch"]["no_subsequent_guest_frame"]))
     print("GPU_FENCE_MAX_MS=" + (str(round(report["gpu"]["max_submit_to_retire_us"] / 1000, 2)) if report["gpu"]["max_submit_to_retire_us"] is not None else "UNKNOWN"))

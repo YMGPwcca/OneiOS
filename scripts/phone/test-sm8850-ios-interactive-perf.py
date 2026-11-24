@@ -15,6 +15,31 @@ SPEC.loader.exec_module(perf)
 
 
 class InteractivePerfTests(unittest.TestCase):
+    def test_post_lock_drain_preserves_legacy_and_partial_coverage(self):
+        legacy = ("oneios-display: perf: mono_ms=1000 window_ms=5000 posts=5 "
+                  "posted_rate=1.0 active_cadence=0.0 active_gaps=1 gap_p95_us=1000000 "
+                  "lock_p95_us=2000 lock_max_us=1000 copy_p95_us=2000 copy_max_us=1000 "
+                  "post_p95_us=2000 post_max_us=1000")
+        extra = (" post_lock_drain_attempts=3 post_lock_damage_packets=5 post_lock_drain_n=2 "
+                 "post_lock_drain_p95_us=250 post_lock_drain_max_us=40 post_lock_drain_invalid_clock=1")
+        self.assertIsNone(perf.analyze_logs("", legacy)["display"]["post_lock_drain"])
+        modern = legacy.replace("mono_ms=1000", "mono_ms=6000") + extra
+        partial = modern.replace("mono_ms=6000", "mono_ms=11000").replace("post_lock_drain_n=2", "post_lock_drain_n=3")
+        stats = perf.analyze_logs("", "\n".join((legacy, modern, partial)))["display"]["post_lock_drain"]
+        self.assertEqual(1, stats["windows"])
+        self.assertEqual(3, stats["display_windows"])
+        self.assertFalse(stats["coverage_complete"])
+        self.assertEqual(3, stats["attempts"])
+        self.assertEqual(5, stats["damage_packets"])
+        self.assertEqual(40, stats["max_us"])
+        self.assertEqual(250, stats["max_window_p95_bucket_bound_us"])
+        idle = legacy + (" post_lock_drain_attempts=0 post_lock_damage_packets=0 post_lock_drain_n=0 "
+                         "post_lock_drain_p95_us=0 post_lock_drain_max_us=0 post_lock_drain_invalid_clock=0")
+        stats = perf.analyze_logs("", idle)["display"]["post_lock_drain"]
+        self.assertTrue(stats["coverage_complete"])
+        self.assertEqual(0, stats["attempts"])
+        self.assertIsNone(stats["max_us"])
+
     def test_fence_used_publication_separate_from_backend_wait(self):
         legacy = ("gpu-fence-trace: mono_ms=1000 window_ms=5000 "
                   "render_wait_n=3 mean_us=2000 p95_le_us=4000 p99_le_us=8000 max_us=6000 "

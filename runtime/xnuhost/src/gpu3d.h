@@ -37,7 +37,8 @@ struct xh_gpu3d {
   int      (*submit_fence)(xh_gpu3d *b, uint32_t ctx, uint32_t ring, uint64_t fence);
   // Blobs. HOST3D_GUEST blobs (a context's BOs) come with the guest's pages; HOST3D ones (a context's shmem) are the
   // renderer's; GUEST ones (ctx 0: the display's surfaces, made with the GUEST_HANDLE flag) are only made known, so
-  // that a context can attach them. All calls but `retire` come from the device's one thread.
+  // that a context can attach them. create_blob borrows the entries only for the call; a backend retaining the layout
+  // must copy it. Command calls are serialized by the device; retire can arrive on another thread.
   int      (*create_blob)(xh_gpu3d *b, uint32_t ctx, uint32_t res, uint32_t blob_mem, uint32_t flags, uint64_t blob_id,
                           uint64_t size, const xh_gpu_entry *entries, unsigned nentries);
   // Where a host blob is in the pool the guest knows (/arm-io/virtio-gpu drm-host-pool), and how to cache it.
