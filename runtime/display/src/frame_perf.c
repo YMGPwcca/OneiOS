@@ -32,6 +32,18 @@ void xhd_perf_begin(struct xhd_frame_perf *p, uint64_t start_ns)
   p->window_start_ns = start_ns;
 }
 
+void xhd_perf_record_post_lock_drain(struct xhd_frame_perf *p, uint64_t start_ns,
+                                     uint64_t end_ns, unsigned accepted)
+{
+  p->post_lock_drain_attempts++;
+  p->post_lock_damage_packets += accepted;
+  if (!start_ns || end_ns < start_ns) {
+    p->post_lock_drain_invalid_clock++;
+    return;
+  }
+  observe(&p->post_lock_drain, (end_ns - start_ns) / 1000u);
+}
+
 void xhd_perf_record(struct xhd_frame_perf *p, uint64_t post_time_ns,
                      uint64_t lock_ns, uint64_t copy_ns, uint64_t post_ns,
                      uint64_t copied_pixels, bool full_copy)

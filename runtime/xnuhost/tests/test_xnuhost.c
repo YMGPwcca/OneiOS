@@ -1030,6 +1030,43 @@ static void test_virtio_gpu3d(void)
     CHECK(G(24, 24) == 1 && resp[0] == 0x1100);                                                           // back to the B,G,R,X scanout
     for (int i = 0; i < 4 * 10; i++) bgrx[i] = 0x00102000u | (uint32_t)i;
   }
+  // Adjacent pages compact only in the CPU scanout view. A subsequent
+  // disjoint run stays in its logical position; the backend got all entries.
+  {
+    const uint64_t runs[6] = { GUEST_PA + 0x46000, 0x1000, GUEST_PA + 0x47000, 0x1000,
+                              GUEST_PA + 0x49000, 0x1000 };
+    CLEAR(); cmd[0] = 0x10c; cmd[6] = 51; cmd[7] = 1; cmd[8] = 8; cmd[9] = 3; cmd[12] = 0x3000;
+    memcpy(extra, runs, sizeof runs);
+    CHECK(GX(14, sizeof runs, 24) == 1 && resp[0] == 0x1100 && fake.nentries == 3);
+    uint8_t want[128];
+    for (unsigned i = 0; i < sizeof want; i++) want[i] = (uint8_t)(17 + i);
+    // Offset 4080 crosses the original adjacent-entry boundary.
+    memcpy(xh_ram(GUEST_PA + 0x46ff0, sizeof want), want, sizeof want);
+    CLEAR(); cmd[0] = 0x10d; cmd[8] = 8; cmd[9] = 4; cmd[11] = 51;
+    cmd[12] = 8; cmd[13] = 4; cmd[14] = 2; cmd[16] = 32; cmd[20] = 4080;
+    CHECK(G(24, 24) == 1 && resp[0] == 0x1100);
+    CLEAR(); cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 4; cmd[10] = 51;
+    CHECK(G(12, 24) == 1 && resp[0] == 0x1100 && !memcmp(fake_display.pixels, want, sizeof want));
+    // Re-select the same resource with a new offset crossing the disjoint
+    // boundary. Partial damage may not overwrite the other columns/rows.
+    memcpy(xh_ram(GUEST_PA + 0x47ff0, 16), want, 16);
+    memcpy(xh_ram(GUEST_PA + 0x49000, 112), want + 16, 112);
+    CLEAR(); cmd[0] = 0x10d; cmd[8] = 8; cmd[9] = 4; cmd[11] = 51;
+    cmd[12] = 8; cmd[13] = 4; cmd[14] = 2; cmd[16] = 32; cmd[20] = 8176;
+    CHECK(G(24, 24) == 1 && resp[0] == 0x1100);
+    memset(fake_display.pixels, 0xa5, 128);
+    CLEAR(); cmd[0] = 0x104; cmd[6] = 2; cmd[8] = 4; cmd[9] = 2; cmd[10] = 51;
+    CHECK(G(12, 24) == 1 && resp[0] == 0x1100);
+    CHECK(!memcmp(fake_display.pixels + 8, want + 8, 16) &&
+          !memcmp(fake_display.pixels + 40, want + 40, 16));
+    CHECK(fake_display.pixels[7] == 0xa5 && fake_display.pixels[24] == 0xa5 &&
+          fake_display.pixels[64] == 0xa5);
+    CLEAR(); cmd[0] = 0x102; cmd[6] = 51;
+    CHECK(G(8, 24) == 1 && resp[0] == 0x1100);
+    CLEAR(); cmd[0] = 0x10d; cmd[8] = 8; cmd[9] = 4; cmd[11] = 20;
+    cmd[12] = 8; cmd[13] = 4; cmd[14] = 2; cmd[16] = 40;
+    CHECK(G(24, 24) == 1 && resp[0] == 0x1100);
+  }
   // the 2D commands stay
   CLEAR(); cmd[0] = 0x100;
   CHECK(G(6, 24 + 16 * 24) == 1 && resp[0] == 0x1101 && resp[8] == 8 && resp[9] == 4);

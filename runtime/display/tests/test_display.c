@@ -411,6 +411,50 @@ static void test_frame_trace(void)
   close(pair[0]); close(pair[1]);
 }
 
+static void test_post_lock_drain(void)
+{
+  int pair[2];
+  CHECK(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, pair) == 0);
+  struct xhd_frame frame = { .width = 64, .height = 48 };
+  struct xhd_rect damage = { 1, 1, 2, 2 };
+  const struct xhd_rect partial = { 1, 1, 2, 2 }, full = { 0, 0, 64, 48 };
+  struct xhd_trace_state trace = { 0 };
+  unsigned accepted = 99;
+  CHECK(xhd_send_flush(pair[0], 50, 40, 30, 30) == 0);
+  CHECK(xhd_drain_after_lock(pair[1], &frame, partial, &damage, &trace, &accepted) == 0);
+  CHECK(!accepted && damage.x == 1 && damage.w == 2 && !trace.pending.legacy);
+  CHECK(xhd_drain_after_lock(pair[1], &frame, full, &damage, &trace, &accepted) == 0);
+  CHECK(accepted == 1 && damage.x == 1 && damage.y == 1 && damage.w == 63 && damage.h == 47);
+  CHECK(trace.pending.legacy == 1);
+  // A second batch of traced damage joins the same pending record/sequence.
+  struct timespec ts;
+  CHECK(clock_gettime(CLOCK_MONOTONIC, &ts) == 0);
+  struct xh_frame_trace_packet p = {
+    .magic = { 'X', 'H', 'D', 'F' }, .x = 3, .y = 4, .w = 2, .h = 2,
+    .version = XH_FRAME_TRACE_VERSION, .seq = 1,
+    .flush_mono_ns = (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec
+  };
+  CHECK(send(pair[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  CHECK(xhd_drain_trace(pair[1], &frame, &damage, &trace) == 0);
+  p.seq = 2;
+  CHECK(send(pair[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  CHECK(xhd_drain_after_lock(pair[1], &frame, full, &damage, &trace, &accepted) == 0);
+  CHECK(accepted == 1 && trace.pending.traced == 2 && trace.pending.first_seq == 1 &&
+        trace.pending.last_seq == 2 && !trace.pending.seq_gaps);
+  // Bound work even if a producer is continuously ahead of the helper.
+  for (unsigned i = 0; i < XHD_POST_LOCK_DRAIN_LIMIT + 2; i++)
+    CHECK(xhd_send_flush(pair[0], 0, 0, 1, 1) == 0);
+  CHECK(xhd_drain_after_lock(pair[1], &frame, full, &damage, &trace, &accepted) == 0);
+  CHECK(accepted == XHD_POST_LOCK_DRAIN_LIMIT);
+  CHECK(xhd_drain_after_lock(pair[1], &frame, full, &damage, &trace, &accepted) == 0 && accepted == 2);
+  CHECK(xhd_drain_after_lock(pair[1], &frame, full, &damage, &trace, &accepted) == 0 && !accepted);
+  CHECK(xhd_send_flush(pair[0], 65, 0, 1, 1) == 0);  // outside, not accepted
+  CHECK(xhd_send_flush(pair[0], 0, 0, 1, 1) == 0);
+  close(pair[0]);
+  CHECK(xhd_drain_after_lock(pair[1], &frame, full, &damage, &trace, &accepted) == -1 && accepted == 1);
+  close(pair[1]);
+}
+
 static void test_panel_report(void)
 {
   int pair[2];
@@ -641,6 +685,7 @@ int main(int argc, char **argv)
   test_formats();
   test_copy_formats();
   test_frame_trace();
+  test_post_lock_drain();
   test_panel_report();
   test_hold_first(dir);
   test_protocol(dir);

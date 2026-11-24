@@ -84,6 +84,13 @@ struct xhd_trace_state {
 // Extended packets are optional: a legacy XHDF remains valid, and older helpers
 // receive the exact 20-byte prefix even when the sender writes 40, 64 or 88 bytes.
 int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace);
+// After a successful full-frame window lock, absorb a bounded number of
+// late notifications before copying the shadow. Partial locks do not
+// consume anything: their Android dirty rectangle cannot be enlarged.
+// Counts accepted damage records (not unique frames or saved posts).
+#define XHD_POST_LOCK_DRAIN_LIMIT 32u
+int xhd_drain_after_lock(int fd, const struct xhd_frame *frame, struct xhd_rect locked,
+                         struct xhd_rect *damage, struct xhd_trace_state *trace, unsigned *accepted);
 // Read every pending flush without blocking, adding each (clipped to the frame) to *damage.
 // 0 the socket is open, -1 it closed.
 int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage);

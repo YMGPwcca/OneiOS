@@ -77,6 +77,7 @@ typedef struct {
   uint64_t size, serial;
   gpu_entry *entries;
   unsigned nentries;
+  bool scanout_compacted;          // CPU scanout only, not the backend's import list
 } blob;
 
 // A fenced command whose chain goes back to the guest when its context's ring passes the fence.
@@ -297,6 +298,32 @@ static void flush_note(uint64_t took, uint64_t bytes)
          (unsigned long long)n, (unsigned long long)(sum / n), (unsigned long long)max, (unsigned long long)(total >> 20));
     since = now; n = sum = max = total = 0;
   }
+}
+
+// Compact only the CPU scanout view, once a blob actually becomes the
+// scanout. The backend has already imported the original list. Logical
+// byte order/length must not change; validate the whole merged RAM span
+// and retain distinct runs when it cannot be translated as one.
+static void compact_scanout(blob *b)
+{
+  if (b->scanout_compacted) return;
+  unsigned out = 0;
+  for (unsigned i = 0; i < b->nentries; i++) {
+    gpu_entry e = b->entries[i];
+    if (out) {
+      gpu_entry *prev = &b->entries[out - 1];
+      uint64_t length = (uint64_t)prev->length + e.length;
+      if (length <= UINT32_MAX && prev->addr <= UINT64_MAX - prev->length &&
+          prev->addr + prev->length == e.addr &&
+          xh_virtio_translate(prev->addr, length)) {
+        prev->length = (uint32_t)length;
+        continue;
+      }
+    }
+    b->entries[out++] = e;
+  }
+  b->nentries = out;
+  b->scanout_compacted = true;
 }
 
 // RESOURCE_FLUSH of a blob: when it is the scanout (SET_SCANOUT_BLOB), its rows go from the guest's pages to the display.
@@ -637,6 +664,7 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     if (v[4] == FMT_RGBA16F && g->scan.format != FMT_RGBA16F && half_said++ < 4)
       LOGI("display: the guest scans out half floats (R,G,B,A 16F, %ux%u, stride %u) onto a %s frame", v[2], v[3], v[6],
            xh_pixels_name(display_format()));
+    compact_scanout(bl);
     g->scanout_resource = v[1];
     g->scan.width = v[2]; g->scan.height = v[3]; g->scan.format = v[4]; g->scan.stride = v[6]; g->scan.offset = v[10];
     return RESP_OK_NODATA;

@@ -192,10 +192,12 @@ static void xhd_trace_note(struct xhd_trace_state *state, const struct xh_frame_
   p->provenance_packets++;
 }
 
-int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace)
+static int drain_trace_limit(int fd, const struct xhd_frame *frame, struct xhd_rect *damage,
+                             struct xhd_trace_state *trace, unsigned limit, unsigned *accepted)
 {
   // Bounded, nonblocking drain: an overactive guest cannot starve posting.
-  for (int i = 0; i < 4096; i++) {
+  if (accepted) *accepted = 0;
+  for (unsigned i = 0; i < limit; i++) {
     struct xh_frame_trace_packet_v3 packet;
     // Linux SOCK_SEQPACKET + MSG_TRUNC returns the actual record length even
     // when only the prefix fits. Never accept an oversized record as valid v3.
@@ -222,6 +224,7 @@ int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *dama
       continue;
     }
     xhd_rect_union(damage, &r);
+    if (accepted) (*accepted)++;
     if (!trace) continue;
     if (n == (ssize_t)sizeof packet.base.base)
       xhd_trace_note(trace, &packet, xh_frame_trace_valid(&packet.base.base), xhd_mono_ns());
@@ -233,6 +236,20 @@ int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *dama
     else trace->pending.bad++;
   }
   return 0;
+}
+
+int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace)
+{
+  return drain_trace_limit(fd, frame, damage, trace, 4096, NULL);
+}
+
+int xhd_drain_after_lock(int fd, const struct xhd_frame *frame, struct xhd_rect locked,
+                         struct xhd_rect *damage, struct xhd_trace_state *trace, unsigned *accepted)
+{
+  if (accepted) *accepted = 0;
+  if (locked.x || locked.y || locked.w != frame->width || locked.h != frame->height ||
+      !locked.w || !locked.h) return 0;
+  return drain_trace_limit(fd, frame, damage, trace, XHD_POST_LOCK_DRAIN_LIMIT, accepted);
 }
 
 int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage)
