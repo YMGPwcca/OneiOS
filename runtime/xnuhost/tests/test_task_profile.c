@@ -9,8 +9,11 @@ enum { THREADS = 4, LOOPS = 25000 };
 static void *count_concurrently(void *arg)
 {
   xh_task_profile *p = arg;
-  for (unsigned i = 0; i < LOOPS; i++)
+  for (unsigned i = 0; i < LOOPS; i++) {
     xh_task_profile_add(p, 2, XH_TP_TRAP_OTHER);
+    xh_tq_record_batch(&p->queue, false, 1, 0);
+    if (!(i % 5)) xh_tq_record_fallback(&p->queue, XH_TQ_UNMAP_TASK_RUNNING);
+  }
   return NULL;
 }
 
@@ -68,6 +71,36 @@ int main(void)
   for (unsigned i = 0; i < started; i++) pthread_join(workers[i], NULL);
   CHECK(started == THREADS);
   CHECK(xh_task_profile_read(&p, 2, XH_TP_TRAP_OTHER) == (uint64_t)THREADS * LOOPS);
+  CHECK(xh_tq_read(&p.queue.batches[0]) == (uint64_t)THREADS * LOOPS);
+  CHECK(xh_tq_read(&p.queue.queued_ops[0]) == (uint64_t)THREADS * LOOPS);
+  CHECK(xh_tq_read(&p.queue.depth_bins[0][0]) == (uint64_t)THREADS * LOOPS);
+  CHECK(xh_tq_read(&p.queue.fallbacks[XH_TQ_UNMAP_TASK_RUNNING]) ==
+        (uint64_t)THREADS * (LOOPS / 5));
+
+  // Explicit queue depths, release vs ordered drains, and logical unmap
+  // requests (which may exceed entries after a queue join).
+  xh_task_queue_profile q = { 0 };
+  CHECK(xh_tq_depth_bucket(0) == 0 && xh_tq_depth_bucket(1) == 0);
+  CHECK(xh_tq_depth_bucket(2) == 1 && xh_tq_depth_bucket(3) == 1);
+  CHECK(xh_tq_depth_bucket(4) == 2 && xh_tq_depth_bucket(31) == 4);
+  CHECK(xh_tq_depth_bucket(32) == 5 && xh_tq_depth_bucket(255) == 7);
+  CHECK(xh_tq_depth_bucket(256) == 8 && xh_tq_depth_bucket(1024) == 8);
+  xh_tq_record_batch(&q, false, 0, 0);  // empty queue is not a drain
+  xh_tq_record_batch(&q, false, 1, 0);
+  xh_tq_record_batch(&q, false, 3, 4);
+  xh_tq_record_batch(&q, true, 256, 300);
+  CHECK(q.batches[0] == 2 && q.batches[1] == 1);
+  CHECK(q.queued_ops[0] == 4 && q.queued_ops[1] == 256);
+  CHECK(q.queued_unmap_requests[0] == 4 && q.queued_unmap_requests[1] == 300);
+  CHECK(q.depth_bins[0][0] == 1 && q.depth_bins[0][1] == 1 && q.depth_bins[1][8] == 1);
+  xh_tq_record_fallback(&q, XH_TQ_MAP_QUEUE_FULL);
+  xh_tq_record_fallback(&q, XH_TQ_UNMAP_QUEUE_FULL);
+  xh_tq_record_fallback(&q, XH_TQ_UNMAP_TASK_RUNNING);
+  xh_tq_record_fallback(&q, (enum xh_tq_reason)XH_TQ_REASONS);
+  xh_tq_record_fallback(NULL, XH_TQ_MAP_QUEUE_FULL);
+  xh_tq_record_batch(NULL, true, 10, 1);
+  CHECK(q.fallbacks[0] == 1 && q.fallbacks[1] == 1 && q.fallbacks[2] == 1);
+  CHECK(xh_tq_read(&q.batches[1]) == 1);
 
   printf("task profile: %u checks, %u failed\n", checks, failed);
   return failed != 0;
