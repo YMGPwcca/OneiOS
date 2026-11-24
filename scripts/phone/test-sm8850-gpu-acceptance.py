@@ -100,6 +100,50 @@ class GPUAcceptanceTests(unittest.TestCase):
         self.assertFalse(tool.host_submit_pass(SUCCESS_HOST.replace("gpu id 6860", "gpu id 6850")))
         self.assertFalse(tool.host_submit_pass("submit: queue 20, fence retired\nok\n"))
 
+    @staticmethod
+    def timing_fixture():
+        lines = [SUCCESS_HOST.strip().splitlines()[0]]
+        start = 1000000000
+        n = 0
+        for phase, count in tool.TIMING_PHASES:
+            for _ in range(count):
+                n += 1
+                start += 20000000
+                lines.append(f"gpu-timing: n={n} phase={phase} start_ns={start} "
+                             "submit_ns=100000 register_ns=200000 callback_ns=400000 total_ns=500000")
+        lines.append(f"gpu-timing-result: completed={n} before_known=1 after_known=1 faults_before=0 faults_after=0 async_errors=0")
+        lines.append("ok")
+        return "\n".join(lines)
+
+    def test_timing_exact_matrix_and_overlapping_callback(self):
+        log = self.timing_fixture()
+        result = tool.parse_timing(log)
+        self.assertEqual(69, len(result["samples"]))
+        self.assertEqual("UNCHANGED", result["fault_counter_status"])
+        self.assertEqual(32, result["phases"]["hot"]["n"])
+        self.assertEqual(0.5, result["phases"]["hot"]["total"]["median_ms"])
+        self.assertEqual(0.1, result["phases"]["hot"]["after_register_to_callback"]["median_ms"])
+        overlap = tool.parse_timing(log.replace("callback_ns=400000", "callback_ns=200000"))
+        self.assertEqual(32, overlap["phases"]["hot"]["callback_during_register"])
+        self.assertEqual(0, overlap["phases"]["hot"]["after_register_to_callback"]["max_ms"])
+        unknown = tool.parse_timing(log.replace("before_known=1", "before_known=0"))
+        self.assertEqual("UNVERIFIED", unknown["fault_counter_status"])
+        self.assertIsNone(unknown["faults_before"])
+
+    def test_timing_rejects_bad_rows_faults_and_partial_matrix(self):
+        log = self.timing_fixture()
+        for bad in (log.replace("gpu id 6860", "gpu id 6850"),
+                    log.replace("n=2 phase=warmup", "n=1 phase=warmup"),
+                    log.replace("callback_ns=400000", "callback_ns=500001"),
+                    log.replace("start_ns=1040000000", "start_ns=1020000000"),
+                    log.replace("register_ns=200000", "register_ns=900000"),
+                    log.replace("faults_after=0", "faults_after=1"),
+                    log.replace("async_errors=0", "async_errors=1"),
+                    "\n".join(line for line in log.splitlines() if "n=69 phase=" not in line)):
+            with self.subTest(bad=bad[-170:]):
+                with self.assertRaises(tool.Blocked):
+                    tool.parse_timing(bad)
+
     def test_guest_requires_every_distinct_gpu_milestone(self):
         complete = tool.analyze_guest(SUCCESS_GUEST)
         self.assertEqual("PASS", complete["IOS_VULKAN"])

@@ -11,6 +11,8 @@ import json
 import re
 import secrets
 import shutil
+import statistics
+import math
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -162,6 +164,69 @@ def host_submit_pass(logs):
             and "FAILED at:" not in logs and logs.rstrip().endswith("ok"))
 
 
+TIMING_PHASES = (("first", 1), ("warmup", 4), ("hot", 32), ("pace60", 16), ("pace120", 16))
+TIMING_ROW = re.compile(r"gpu-timing: n=(\d+) phase=(\w+) start_ns=(\d+) submit_ns=(\d+) "
+                        r"register_ns=(\d+) callback_ns=(\d+) total_ns=(\d+)")
+TIMING_RESULT = re.compile(r"gpu-timing-result: completed=(\d+) before_known=([01]) after_known=([01]) "
+                           r"faults_before=(\d+) faults_after=(\d+) async_errors=(\d+)")
+
+
+def parse_timing(log):
+    if ("FAILED at:" in log or not log.rstrip().endswith("ok")
+            or not re.search(r"capset: DRM \(6\)[^\n]*chip 0x44050a00, gpu id 6860\b", log)):
+        raise Blocked("GPU timing lacks successful matching native capset/completion")
+    rows = []
+    expected = [phase for phase, count in TIMING_PHASES for _ in range(count)]
+    for line in log.splitlines():
+        if not line.startswith("gpu-timing:"):
+            continue
+        m = TIMING_ROW.fullmatch(line)
+        if not m:
+            raise Blocked("malformed GPU timing row")
+        idx, phase, start, submit, register, callback, total = m.groups()
+        idx, start, submit, register, callback, total = map(int, (idx, start, submit, register, callback, total))
+        if (idx != len(rows) + 1 or idx > len(expected) or phase != expected[idx - 1]
+                or start <= 0 or not 0 <= submit <= callback <= total
+                or submit + register > total or total <= 0
+                or (rows and start < rows[-1]["start_ns"] + rows[-1]["total_ns"])):
+            raise Blocked("GPU timing row order or timestamp invalid")
+        spacing = start - rows[-1]["start_ns"] if rows else None
+        if phase in ("pace60", "pace120") and (spacing is None or spacing < (16666667 if phase == "pace60" else 8333334)):
+            raise Blocked("offered pacing interval violated")
+        rows.append({"n": idx, "phase": phase, "start_ns": start, "submit_ns": submit,
+                     "register_ns": register, "callback_ns": callback, "total_ns": total,
+                     "after_register_to_callback_ns": max(0, callback - submit - register),
+                     "callback_to_caller_ns": total - callback,
+                     "callback_during_register": callback < submit + register, "start_spacing_ns": spacing})
+    results = [TIMING_RESULT.fullmatch(line) for line in log.splitlines() if line.startswith("gpu-timing-result:")]
+    if len(rows) != len(expected) or len(results) != 1 or not results[0]:
+        raise Blocked("incomplete GPU timing workload")
+    completed, bk, ak, before, after, errors = map(int, results[0].groups())
+    if completed != len(expected) or errors or (bk and ak and before != after):
+        raise Blocked("GPU timing fault or incomplete completion")
+    def stats(values):
+        values = sorted(values)
+        return {"min_ms": values[0] / 1e6, "median_ms": statistics.median(values) / 1e6,
+                "p95_le_ms": values[math.ceil(len(values) * .95) - 1] / 1e6,
+                "max_ms": values[-1] / 1e6}
+    groups = {}
+    for phase, count in TIMING_PHASES:
+        selected = [x for x in rows if x["phase"] == phase]
+        groups[phase] = {"n": count,
+            **{k[:-3]: stats([x[k] for x in selected]) for k in
+               ("submit_ns", "register_ns", "callback_ns", "total_ns",
+                "after_register_to_callback_ns", "callback_to_caller_ns")},
+            "over_60_budget": sum(x["total_ns"] > 16666667 for x in selected),
+            "over_120_budget": sum(x["total_ns"] > 8333334 for x in selected),
+            "callback_during_register": sum(x["callback_during_register"] for x in selected),
+            "start_spacing": stats([x["start_spacing_ns"] for x in selected if x["start_spacing_ns"] is not None])
+                if phase != "first" else None}
+    return {"scope": "one outstanding host CP_NOP submission; not GPU execution or iOS FPS",
+            "fault_counter_status": "UNCHANGED" if bk and ak else "UNVERIFIED",
+            "faults_before": before if bk else None, "faults_after": after if ak else None,
+            "async_errors": errors, "samples": rows, "phases": groups}
+
+
 def storage_summary(v):
     """Precise, read-only storage gate evidence; no attempt to reclaim space."""
     raw = v.get("free_kib", "")
@@ -222,18 +287,27 @@ def hardware(adb, gpuctl, report):
         staged = True
         if remote_digest != local_digest:
             raise Blocked("root-owned staged gpuctl SHA-256 does not match host")
-        for action in ("nodes", "probe", "submit"):
+        final_action = "bench" if report["action"] == "host-timing" else "submit"
+        for action in ("nodes", "probe", final_action):
             # Device-side timeout survives host ADB/SSH cancellation.
-            command = f"exec timeout -s TERM 20 '{private}/gpuctl' {action} -v"
+            # No verbose renderer logs in the measured timing arm.
+            verbosity = "" if action == "bench" else " -v"
+            command = f"exec timeout -s TERM 20 '{private}/gpuctl' {action}{verbosity}"
             outcome = root(adb, command, seconds=30, check=False)
             logs.append(f"===== gpuctl {action} (rc={outcome.returncode}) =====\n{outcome.stdout}")
             if outcome.returncode or not outcome.stdout.rstrip().endswith("ok"):
                 raise Blocked(f"gpuctl {action} failed with exit {outcome.returncode}")
         combined = "\n".join(logs)
-        if not host_submit_pass(combined.split("===== gpuctl submit")[-1]):
-            # capset and submit are both emitted by the submit invocation.
-            raise Blocked("cannot prove matching SM8850 DRM capset plus retired, fault-free fence")
-        report["HOST_ADRENO"] = "PASS"
+        report["gpuctl_sha256"] = local_digest
+        if final_action == "bench":
+            report["timing"] = parse_timing(outcome.stdout)
+            report["HOST_TIMING"] = "PASS"
+            report["HOST_ADRENO"] = ("PASS" if report["timing"]["fault_counter_status"] == "UNCHANGED"
+                                     else "FENCE_RETIRE_OBSERVED_FAULT_COUNTER_UNVERIFIED")
+        else:
+            if not host_submit_pass(combined.split("===== gpuctl submit")[-1]):
+                raise Blocked("cannot prove matching SM8850 DRM capset plus retired, fault-free fence")
+            report["HOST_ADRENO"] = "PASS"
     finally:
         report["gpuctl_log"] = "\n".join(logs)
         # Only our unpredictable, path-validated temporary files are removed.
@@ -248,7 +322,7 @@ def hardware(adb, gpuctl, report):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("preflight", "host-submit", "analyze"))
+    parser.add_argument("action", choices=("preflight", "host-submit", "host-timing", "analyze"))
     parser.add_argument("--serial", help="authorized USB ADB serial")
     parser.add_argument("--adb", default=shutil.which("adb") or str(Path.home() / "Android/Sdk/platform-tools/adb"))
     parser.add_argument("--gpuctl", type=Path, default=ROOT / "runtime/xnuhost/build/android/gpuctl")
@@ -277,8 +351,22 @@ def main(argv=None):
             print("TAKEOVER_STATE_STATUS=" + report["preflight"]["takeover_state_status"])
             print("SPACE_FREE_KIB=" + str(report["storage"]["free_kib"]))
             print("SPACE_REQUIRED_KIB=" + str(report["storage"]["required_kib"]))
-            if args.action == "host-submit":
+            if args.action in ("host-submit", "host-timing"):
                 print("HOST_ADRENO=" + report.get("HOST_ADRENO", "UNVERIFIED"))
+            if args.action == "host-timing":
+                print("HOST_TIMING=" + report["HOST_TIMING"])
+                print("GPU_FAULT_COUNTER=" + report["timing"]["fault_counter_status"])
+                for phase, g in report["timing"]["phases"].items():
+                    print(f"{phase}: n={g['n']} submit_med={g['submit']['median_ms']:.3f} ms "
+                          f"register_med={g['register']['median_ms']:.3f} ms "
+                          f"after_register_to_callback_med={g['after_register_to_callback']['median_ms']:.3f} ms "
+                          f"callback_to_caller_med={g['callback_to_caller']['median_ms']:.3f} ms "
+                          f"total_med={g['total']['median_ms']:.3f} ms "
+                          f"total_p95={g['total']['p95_le_ms']:.3f} ms "
+                          f"total_max={g['total']['max_ms']:.3f} ms "
+                          f"over60={g['over_60_budget']}/{g['n']} over120={g['over_120_budget']}/{g['n']} "
+                          f"overlap={g['callback_during_register']} "
+                          f"spacing_med_ms={g['start_spacing']['median_ms'] if g['start_spacing'] else 'NA'}")
             print("IOS_VULKAN=UNVERIFIED (a host GPU submit does NOT verify guest Vulkan)")
     except (Blocked, ValueError) as exc:
         exit_code = 2

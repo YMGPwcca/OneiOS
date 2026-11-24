@@ -9,6 +9,8 @@
 //   gpuctl submit     probe, then what one guest context does: the context, its response buffer from the pool, GET_PARAM
 //                     answered there, a buffer of "guest" pages imported through /dev/udmabuf and bound at a GPU address,
 //                     a submit queue, one command buffer of CP_NOPs run by the GPU, and its fence retired
+//   gpuctl bench      one context/queue/BO, 69 sequential CP_NOP fences: first, warmup, hot, 60/120 Hz offered pacing
+//                     times GEM_SUBMIT, fence registration, callback and caller wake separately; no policy overrides
 //   gpuctl large      probe, then buffers past udmabuf's limits, split the way xnuhost splits them: 96 MiB in one run
 //                     (two udmabufs, by size) and 1100 separate pages (two, by count); commands at the end of each are
 //                     run by the GPU, so the last udmabuf is bound where it belongs
@@ -54,13 +56,26 @@ static void log_line(int level, const char *line) { if (level <= 1 || verbose) p
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t retired_cond = PTHREAD_COND_INITIALIZER;
-static uint64_t retired_fence;
+static uint64_t retired_fence, retired_ns;
+static uint32_t retired_ctx;
+
+static uint64_t mono_ns(void)
+{
+  struct timespec t;
+  if (clock_gettime(CLOCK_MONOTONIC, &t)) return 0;
+  return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
+}
+
 static void retired(xh_virtio *dev, uint32_t ctx, uint32_t ring, uint64_t fence)
 {
-  (void)dev; (void)ctx; (void)ring;
+  (void)dev;
+  uint64_t at = mono_ns();
   pthread_mutex_lock(&lock);
-  if (fence > retired_fence) retired_fence = fence;
-  pthread_cond_broadcast(&retired_cond);
+  if (ctx == retired_ctx && ring == 1 && fence > retired_fence) {
+    retired_fence = fence;
+    retired_ns = at;
+    pthread_cond_broadcast(&retired_cond);
+  }
   pthread_mutex_unlock(&lock);
 }
 
@@ -349,7 +364,8 @@ static int context_open(uint32_t ctx, uint32_t shmem_res, uint64_t *va_start, ui
   int r;
   seqno = 0;
   pthread_mutex_lock(&lock);
-  retired_fence = 0;
+  retired_ctx = ctx;
+  retired_fence = retired_ns = 0;
   pthread_mutex_unlock(&lock);
   r = gpu->ctx_create(gpu, ctx, XH_GPU_CAPSET_DRM, "gpuctl", 6);
   STEP("the context", r == 0, "%s (a KGSL context needs /dev/kgsl-3d0 and /dev/dma_heap/system)", strerror(-r));
@@ -391,8 +407,15 @@ static int guest_buffer(uint32_t ctx, uint32_t res, uint32_t blob, uint64_t iova
   return 0;
 }
 
-// 32 CP_NOPs at `offset` of the buffer `res` (bound at `iova`, its bytes at `words`), run by the GPU; its fence retired.
-static int run_nops(uint32_t ctx, uint32_t queue, uint32_t res, uint64_t iova, uint32_t offset, uint32_t *words, uint32_t fence)
+// One outstanding fence; all clocks use host CLOCK_MONOTONIC. Callback
+// may arrive before submit_fence returns. Its timestamp is not a hardware
+// execution timestamp and the condition-variable wake is a separate stage.
+struct nop_sample {
+  uint64_t start_ns, submit_ns, register_ns, callback_ns, total_ns;
+};
+
+static int timed_nops(uint32_t ctx, uint32_t queue, uint32_t res, uint64_t iova,
+                      uint32_t offset, uint32_t *words, uint32_t fence, struct nop_sample *sample)
 {
   for (unsigned i = 0; i < 64; i += 2) { words[i] = pkt7(0x10 /* CP_NOP */, 1); words[i + 1] = 0x6f6e6569; }
   struct {
@@ -404,25 +427,44 @@ static int run_nops(uint32_t ctx, uint32_t queue, uint32_t res, uint64_t iova, u
     .hdr.cmd = CCMD_GEM_SUBMIT, .flags = PIPE_3D0 | SUBMIT_FENCE_SN_IN, .queue_id = queue, .nr_bos = 1, .nr_cmds = 1, .fence = fence,
     .bo = { .flags = SUBMIT_BO_READ, .handle = res, .presumed = iova }, .cmd = { .type = SUBMIT_CMD_BUF, .submit_offset = offset, .size = 64 * 4 },
   };
-  struct timespec start, end;
-  uint64_t value = 0, before = 0;
-  bool counted = get_param(ctx, 0x09 /* FAULTS */, &before) == 0;
-  clock_gettime(CLOCK_MONOTONIC, &start);
+  uint64_t start = mono_ns();
+  STEP("the monotonic clock", start != 0, "%s", "clock unavailable");
   int r = ccmd(ctx, &job, sizeof job, NULL, 0);
+  uint64_t submitted = mono_ns();
   STEP("GEM_SUBMIT (32 CP_NOPs)", r == 0 && shmem->async_error == 0, "%d, async errors %u: KGSL refused the command", r, shmem->async_error);
-  r = gpu->submit_fence(gpu, ctx, 1, fence);         // the queue's ring: priority 0 is ring 1
+  // Include the registration call itself, not the preceding validation.
+  uint64_t registering = mono_ns();
+  r = gpu->submit_fence(gpu, ctx, 1, fence);
+  uint64_t registered = mono_ns();
   STEP("the fence", r == 0, "%s", strerror(-r));
   struct timespec until;
-  clock_gettime(CLOCK_REALTIME, &until);
+  STEP("the realtime wait clock", clock_gettime(CLOCK_REALTIME, &until) == 0, "%s", strerror(errno));
   until.tv_sec += 5;
   pthread_mutex_lock(&lock);
   while (retired_fence < fence && r == 0) r = pthread_cond_timedwait(&retired_cond, &lock, &until);
+  uint64_t callback = retired_fence == fence ? retired_ns : 0;
   pthread_mutex_unlock(&lock);
-  clock_gettime(CLOCK_MONOTONIC, &end);
-  STEP("the fence retiring", r == 0, "not within 5 s: the GPU did not run the command, or KGSL did not report it");
-  r = get_param(ctx, 0x09 /* FAULTS */, &value);
+  uint64_t end = mono_ns();
+  STEP("the fence retiring", r == 0 && callback && shmem->async_error == 0,
+       "not within 5 s, wrong fence, or async error %u", shmem->async_error);
+  STEP("timing order", submitted >= start && registering >= submitted && registered >= registering &&
+       callback >= registering && end >= registered && end >= callback, "%s", "invalid monotonic sample");
+  // register_ns includes the tiny intervening validation/clock overhead so
+  // submit_ns + register_ns represents elapsed start->registration return.
+  *sample = (struct nop_sample){ start, submitted - start, registered - submitted,
+                                 callback - start, end - start };
+  return 0;
+}
+
+static int run_nops(uint32_t ctx, uint32_t queue, uint32_t res, uint64_t iova, uint32_t offset, uint32_t *words, uint32_t fence)
+{
+  uint64_t value = 0, before = 0;
+  bool counted = get_param(ctx, 0x09 /* FAULTS */, &before) == 0;
+  struct nop_sample sample;
+  if (timed_nops(ctx, queue, res, iova, offset, words, fence, &sample)) return 1;
+  int r = get_param(ctx, 0x09 /* FAULTS */, &value);
   printf("submit: queue %u, 256 bytes of commands at 0x%llx run by the GPU, fence retired after %.2f ms; GPU faults %llu, async errors %u\n", queue,
-         (unsigned long long)(iova + offset), (double)(end.tv_sec - start.tv_sec) * 1e3 + (double)(end.tv_nsec - start.tv_nsec) / 1e6,
+         (unsigned long long)(iova + offset), (double)sample.total_ns / 1e6,
          r ? 0ull : (unsigned long long)value, shmem->async_error);
   STEP("no fault", shmem->async_error == 0 && (r || !counted || value == before), "async errors %u, GPU faults %llu (%llu before): the GPU did not find the commands at that address",
        shmem->async_error, (unsigned long long)value, (unsigned long long)before);
@@ -441,6 +483,67 @@ static int submit(void)
   if (guest_buffer(ctx, bo_res, 1, iova, bo_bytes, &pages, 1)) return 1;
   printf("buffer: 16 KiB of guest pages imported through /dev/udmabuf, bound at GPU address 0x%llx\n", (unsigned long long)iova);
   if (run_nops(ctx, queue, bo_res, iova, 0, (uint32_t *)(ram + (1u << 20)), 1)) return 1;
+  gpu->unref(gpu, bo_res);
+  gpu->unref(gpu, shmem_res);
+  gpu->ctx_destroy(gpu, ctx);
+  return 0;
+}
+
+// Fixed-size bounded host-only workload. Same context, queue and command
+// BO for every sample, at most one in flight. Offered pacing is a minimum
+// start-to-start interval, never a burst of catch-up work after a slow fence.
+static int bench(void)
+{
+  enum { COUNT = 69 };
+  static const struct { const char *name; unsigned count; uint64_t period; } phases[] = {
+    { "first", 1, 0 }, { "warmup", 4, 0 }, { "hot", 32, 0 },
+    { "pace60", 16, UINT64_C(16666667) }, { "pace120", 16, UINT64_C(8333334) }
+  };
+  struct nop_sample samples[COUNT];
+  const char *labels[COUNT];
+  const uint32_t ctx = 1, shmem_res = 1, bo_res = 2, bo_bytes = 0x4000;
+  uint64_t va_start = 0, before = 0, after = 0;
+  uint32_t queue = 0;
+  if (context_open(ctx, shmem_res, &va_start, &queue)) return 1;
+  const uint64_t iova = va_start + (16u << 20);
+  xh_gpu_entry pages = { .addr = RAM_PHYS + (1u << 20), .length = bo_bytes };
+  if (guest_buffer(ctx, bo_res, 1, iova, bo_bytes, &pages, 1)) return 1;
+  bool before_known = get_param(ctx, 0x09 /* FAULTS */, &before) == 0;
+  unsigned n = 0;
+  int result = 0;
+  for (unsigned phase = 0; phase < sizeof phases / sizeof phases[0] && !result; phase++) {
+    for (unsigned i = 0; i < phases[phase].count; i++) {
+      if (n && phases[phase].period) {
+        uint64_t at = samples[n - 1].start_ns + phases[phase].period;
+        struct timespec target = { .tv_sec = (time_t)(at / UINT64_C(1000000000)),
+                                  .tv_nsec = (long)(at % UINT64_C(1000000000)) };
+        int rc;
+        do rc = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &target, NULL); while (rc == EINTR);
+        if (rc) { printf("FAILED at: pacing: %s\n", strerror(rc)); result = 1; break; }
+      }
+      if (n >= COUNT || timed_nops(ctx, queue, bo_res, iova, 0, (uint32_t *)(ram + (1u << 20)), n + 1, &samples[n])) {
+        result = 1; break;
+      }
+      labels[n++] = phases[phase].name;
+    }
+  }
+  // No per-sample printing or GET_PARAM in the measured loop.
+  bool after_known = get_param(ctx, 0x09 /* FAULTS */, &after) == 0;
+  for (unsigned i = 0; i < n; i++) {
+    const struct nop_sample *s = &samples[i];
+    printf("gpu-timing: n=%u phase=%s start_ns=%llu submit_ns=%llu register_ns=%llu callback_ns=%llu total_ns=%llu\n",
+           i + 1, labels[i], (unsigned long long)s->start_ns, (unsigned long long)s->submit_ns,
+           (unsigned long long)s->register_ns, (unsigned long long)s->callback_ns, (unsigned long long)s->total_ns);
+  }
+  printf("gpu-timing-result: completed=%u before_known=%u after_known=%u faults_before=%llu faults_after=%llu async_errors=%u\n",
+         n, (unsigned)before_known, (unsigned)after_known, (unsigned long long)before,
+         (unsigned long long)after, shmem->async_error);
+  if (result || n != COUNT || shmem->async_error || (before_known && after_known && before != after)) {
+    printf("FAILED at: incomplete or faulted GPU timing workload\n");
+    // On a failed/timed-out fence do not explicitly unref in-flight BOs.
+    // Process exit closes the owning context/fds, as with the legacy probe.
+    return 1;
+  }
   gpu->unref(gpu, bo_res);
   gpu->unref(gpu, shmem_res);
   gpu->ctx_destroy(gpu, ctx);
@@ -492,8 +595,8 @@ int main(int argc, char **argv)
   verbose = argc > 2 && !strcmp(argv[2], "-v");
   if (!strcmp(what, "-v")) { verbose = 1; what = "all"; }
   bool all = !strcmp(what, "all");
-  if (!all && strcmp(what, "nodes") && strcmp(what, "routes") && strcmp(what, "probe") && strcmp(what, "submit") && strcmp(what, "large")) {
-    fprintf(stderr, "usage: gpuctl [nodes|routes|probe|submit|large] [-v]\n");
+  if (!all && strcmp(what, "nodes") && strcmp(what, "routes") && strcmp(what, "probe") && strcmp(what, "submit") && strcmp(what, "bench") && strcmp(what, "large")) {
+    fprintf(stderr, "usage: gpuctl [nodes|routes|probe|submit|bench|large] [-v]\n");
     return 2;
   }
   if (all || !strcmp(what, "nodes")) { int bad = nodes(); if (!all) { printf(bad ? "FAILED at: the device nodes\n" : "ok\n"); return bad; } }
@@ -502,6 +605,7 @@ int main(int argc, char **argv)
   if (all || !strcmp(what, "routes")) { int bad = routes(!all); if (!all) { if (!bad) printf("ok\n"); return bad; } }
   if (open_renderer()) return 1;
   if ((all || !strcmp(what, "submit")) && submit()) return 1;
+  if (!strcmp(what, "bench") && bench()) return 1;
   if ((all || !strcmp(what, "large")) && large()) return 1;
   printf("ok\n");
   return 0;

@@ -144,3 +144,6 @@ OneOS now requires an explicit no-guard token for live `--framework-session run`
 ### Active GPU/display performance batch
 
 Source batch: command allocation reduction, same-ring refusal isolation, batched used-ring notification, backend fence bookkeeping and class transition, import FD reduction, packed scanout, damage repair, queue/service telemetry, active post budgets and touch candidate arming. Local CI PASS at `9034d35` (14372 XNUHost, 24 fence profiler, 50 frame profiler checks; ARM64 package SHA256 `348fc09c7c9e507b8d23ebf3c917a585d4f7e32fbc65d09fac3f30c6432d936d`); physical GPU/presentation/Metal ABI acceptance still open. Next use packaged gpuctl under existing host-submit gate, followed by representative guest measurements. See SM8850_60FPS_XNUHOST_PERFORMANCE_TRACKER.md. No OneOS, CPU production placement or thermal/recovery policy change.
+
+
+Native GPU host probe PASS 6/6 at `a2f1316`; fresh-context submit-to-retire median 44.20 ms, max 79.35 ms. Next measure first/hot/paced same-context stages with targeted gpuctl build and host-timing parser; no runtime/power/fence mechanism change or full CI repetition. Real iOS FPS unverified.
