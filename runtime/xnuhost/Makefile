@@ -202,6 +202,28 @@ check-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	     --display none --no-input --width 64 --height 64 --boot-args testkernel-restart > $(A)/restart.log 2>&1; code=$$?; \
 	    [ $$code = 3 ] && [ "$$(grep -c 'TESTKERNEL: restart' $(A)/restart.log)" = 9 ] || { tail -5 $(A)/restart.log; echo "check-arm64: restart: exit $$code"; false; }; }; fi
 
+# Exercise real task.c profiling in the project's freestanding ARM64 test kernel.
+# Uses its own temporary Data store; no Apple image, ADB or physical device.
+check-task-profiler-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
+	@if [ -z "$(ARM64_NATIVE)$(QEMU)" ]; then echo "check-task-profiler-arm64: qemu-aarch64 not installed: skipped"; else \
+	  set -e; \
+	  d=$(mktemp -d "$(A)/profile-data.XXXXXX"); \
+	  trap 'rm -rf "$d"' EXIT HUP INT TERM; \
+	  for enabled in 0 1; do \
+	    mkdir "$d/$enabled"; log="$(A)/task-profiler-$enabled.log"; \
+	    if ! timeout 30 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data "$d/$enabled" \
+	       --cpus 3 --ram 256M --set ram-giveback=1 --set perf-task=$enabled --set perf-log=0 \
+	       --display none --no-input --width 64 --height 64 > "$log" 2>&1; then tail -60 "$log"; exit 1; fi; \
+	    grep -q 'TESTKERNEL: all passed' "$log" || { tail -60 "$log"; exit 1; }; \
+	  done; \
+	  if grep -q 'perf-task-wait:' "$(A)/task-profiler-0.log"; then echo "profiler unexpectedly active by default"; exit 1; fi; \
+	  for stage in order_locks order_direct_ack release_locks release_ack; do \
+	    grep -Eq "perf-task-wait: scope=process_total host_pid=0 stage=$stage n=[1-9][0-9]* " "$(A)/task-profiler-1.log" \
+	      || { echo "missing completed timing stage: $stage"; tail -60 "$(A)/task-profiler-1.log"; exit 1; }; \
+	  done; \
+	  grep 'perf-task-wait: scope=process_total' "$(A)/task-profiler-1.log"; \
+	  echo "check-task-profiler-arm64: PASS (OFF/ON test kernel; process totals retained)"; fi
+
 # The trap path's costs (docs/booter.md 2.6a): the test kernel's benchmarks, then xnuhost's "perf:" report at the stop.
 # BENCH_SET="--set spin-host=5 ..." tries other settings. Native on an arm64 Linux host; on an x86_64 PC under
 # qemu-aarch64, where the times are qemu's (about 10x, no seccomp: `svc #0x80` rewritten by text_fixup): compare
@@ -222,7 +244,7 @@ parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
 
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64
+test: $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64
 	$(H)/test_sm8850_stage_admission
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_task_order_diag
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_task_profile
@@ -236,4 +258,4 @@ test: $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_
 
 clean:
 	rm -rf build
-.PHONY: all test check-arm64 bench-arm64 parallel-arm64 clean
+.PHONY: all test check-arm64 check-task-profiler-arm64 bench-arm64 parallel-arm64 clean
