@@ -183,3 +183,42 @@ Operator console receipt: checkout `e0389854b6209bfff036e486f6bc262c114e42b0`, u
 | 8 vCPU shared 0-7, rounds/s | 93023 | 125000 | +34.4% |
 
 This is **one** matched block, not medians over three measured blocks. The ON arm was forced Deep Doze, then idle force released before Framework stop; OFF idle state, CPU frequency, residency, thermal readings and task-thread placement were not independently matched. Thus no isolated causal estimate of Framework overhead, or statistical significance, is claimed. The raw native logs remain on the operator host. The near-unchanged 0-2 syscall latency suggests that stopping Framework alone is not sufficient to eliminate handoff cost. The two parallel candidates reverse their throughput ranking after Framework stop; do not select a production affinity based solely on the earlier Deep Doze ranking. Retain 8-vCPU shared and 6-vCPU pinned as workload-dependent candidates. The prior seven parallel conditions have only two matched Framework OFF observations: 2-regular, 2-prime, 6-group, 6-wide and 8-pinned remain unmeasured OFF, as does 3-vCPU latency mask 0-7. Do not label the full matrix completed or require another live run simply to repeat the four observations. GPU/display development can proceed independently.
+
+
+## Full Framework ON/OFF matrix — 30-second window, 10/10 matched PASS
+
+Operator receipt: OneiOS `c2934ae556a245271c39dc93d7e1b3c11e3df43a`, OneOS `51a05e95c2a14ecc1d0ca981229d8481ec882c29`, unchanged runtime source `72a54f6b13f725756500c23e0c4c370813647b31`. Local CI receipt `/tmp/oneios-vm-display-ci.9UPjHk.log`; full console log `/tmp/oneios-framework-30s.K45P2F.log`; evidence directory `/tmp/oneios-framework-cpu.ctnn_ija`. Bash syntax and all 29 host-only takeover tests passed; parser/plan self-tests passed. Existing root stage upgraded with backup preserved. Requested 30-second smoke confirmed at preflight and live state; all 10 ON and 10 OFF workloads passed with expected vCPU masks; a new healthy Android boot was subsequently observed. No full guest, GPU3D, APFS rearm or thermal-policy change. This is a bounded synthetic CPU observation, not production iOS performance or recovery acceptance.
+
+### Latency (3 vCPUs, per-run means in us)
+
+| Host mask | Metric | ON | OFF | OFF vs ON |
+|---|---|---:|---:|---:|
+| 0-2 | syscall_round | 8.076 | 7.239 | -10.4% |
+| 0-2 | fault_resolve | 19.305 | 16.109 | -16.6% |
+| 0-2 | timer_kick | 19.231 | 15.568 | -19.0% |
+| 0-5 | syscall_round | 11.815 | 11.428 | -3.3% |
+| 0-5 | fault_resolve | 15.492 | 15.361 | -0.8% |
+| 0-5 | timer_kick | 14.927 | 14.959 | +0.2% |
+| 0-7 | syscall_round | 11.859 | 11.218 | -5.4% |
+| 0-7 | fault_resolve | 15.243 | 14.905 | -2.2% |
+| 0-7 | timer_kick | 15.560 | 16.341 | +5.0% |
+
+### Parallel (all configured vCPUs active)
+
+| Placement | ON wall ms | OFF wall ms | ON rounds/s | OFF rounds/s | OFF throughput vs ON |
+|---|---:|---:|---:|---:|---:|
+| 2 regular, shared 0-1 | 19 | 20 | 52632 | 50000 | -5.0% |
+| 2 Prime, shared 6-7 | 16 | 14 | 62500 | 71429 | +14.3% |
+| 6 shared 0-5 | 24 | 25 | 125000 | 120000 | -4.0% |
+| 6 individually pinned 0-5 | 23 | 17 | 130435 | 176471 | +35.3% |
+| 6 shared 0-7 | 35 | 32 | 85714 | 93750 | +9.4% |
+| 8 shared 0-7 | 44 | 66 | 90909 | 60606 | -33.3% |
+| 8 individually pinned 0-7 | 48 | 23 | 83333 | 173913 | +108.7% |
+
+Throughput is the fixed number of rounds (500 per active vCPU) divided by reported integer-millisecond wall time. Percentages here are single-pair changes, not median paired deltas across repeated blocks. The 8-vCPU pinned result is 66/23 = 2.87x the throughput of 8-vCPU shared in the OFF arm of this run. Six pinned is 176471 rounds/s and eight pinned is 173913 rounds/s (six about 1.5% higher); the difference is too small and the timing too coarse to rank them confidently or trade away two guest vCPUs. In the OFF arm, Prime vs regular equal-count throughput is 20/14 = 1.43x.
+
+### Reconcile the two Framework-state sessions
+
+The earlier 20-second run had six pinned throughput 166667 -> 96774 and eight shared 93023 -> 125000. This 30-second run has the opposite directions: six pinned 130435 -> 176471 and eight shared 90909 -> 60606. Both receipts are valid synthetic workload completions. Neither proves a stable causal Framework effect. The 30-second matrix completes all previously missing conditions but has one ON/OFF block; OFF CPU frequency, residency, task-thread masks, thermal and idle state were not independently matched. Do not pool these unlike sessions as a controlled multi-block A/B or infer panel FPS from parallel throughput.
+
+**Decision:** Framework removal does not eliminate handoff cost; the 0-2 shared mask remains the best measured syscall latency among the three masks in both arms. Per-core pinning can be strongly beneficial in all-active parallel workloads when Framework is absent. Keep the existing production eight-vCPU placement unchanged (the synthetic cpu-pin=2 identity mapping is not the full-bridge topology plan). Prioritize six/eight pinned as candidates, with eight shared retained as comparison. The distinct 6+2 mixed assignment and representative iOS workloads remain unmeasured. Close the operator-requested full synthetic matrix; no additional CPU run needed before GPU submission/fence/scanout source work. No assertion of a production performance win or safety/recovery qualification.
