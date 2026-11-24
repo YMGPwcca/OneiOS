@@ -134,6 +134,7 @@ static struct {
   pthread_mutex_t lock;
   stat_ctx ctx[STAT_CTX];
   uint64_t since, render_n, render_sum, render_max, other_n, other_sum, submit_n, submit_sum, submit_max, blob_n, blob_sum, blob_max, holds, keepalives, udma_sum;
+  uint64_t fence_refused, fence_untracked;    // reporting windows, not completed GPU work
   uint64_t dropped, plain, unreadable;       // the import line's last figures (0007)
   bool imports_said;
   // The level (oneios_gpu_policy.h) and the 10 s line's last figures of it.
@@ -173,6 +174,10 @@ static void stat_report(uint64_t now)         // with st.lock held
         (unsigned long long)st.other_n, (unsigned long long)(st.other_n ? st.other_sum / st.other_n : 0),
         (unsigned long long)st.blob_n, (unsigned long long)(st.blob_n ? st.blob_sum / st.blob_n : 0), (unsigned long long)st.blob_max,
         (unsigned long long)(st.blob_n ? st.udma_sum / st.blob_n : 0), (unsigned long long)(holds - st.holds), (unsigned long long)(keepalives - st.keepalives));
+  if (st.fence_refused || st.fence_untracked)
+    say(1, "gpu: fence-bookkeeping: refused=%llu untracked_capacity_or_ring=%llu foreground_pending=%u",
+        (unsigned long long)st.fence_refused, (unsigned long long)st.fence_untracked, st.fg_pending);
+  st.fence_refused = st.fence_untracked = 0;
   st.holds = holds;
   st.keepalives = keepalives;
   // The level (drm2kgsl/oneios_gpu_policy.h, docs/gpu.md 2.2b): how many counted frames ran at the top, how often it went
@@ -313,6 +318,7 @@ static void hint(xh_gpu3d *b, uint32_t id, const uint8_t h[3])
   if (changed) {
     c->hint[0] = h[0]; c->hint[1] = h[1];
     c->cls = og_class_of(c->name, c->name_len, h[0], h[1], c->shown, st.background, st.front);
+    if (c->cls != OG_CLASS_BACKGROUND) c->lowest = false;
   }
   c->said = true;
   enum og_class cls = c->cls;
@@ -412,16 +418,39 @@ static int submit_fence(xh_gpu3d *b, uint32_t id, uint32_t ring, uint64_t fence)
   if (!ctx) return -EINVAL;
   pthread_mutex_lock(&st.lock);
   stat_ctx *c = stat_find(id);
-  if (c && ring < STAT_RINGS && c->count[ring] < STAT_PENDING) {
+  bool tracked = c && ring < STAT_RINGS && c->count[ring] < STAT_PENDING;
+  if (tracked) {
     c->pending[ring][(c->head[ring] + c->count[ring]) % STAT_PENDING] =
       (stat_pending){ .fence = fence, .at = now_us(), .frame = c->has_next ? c->next : (struct og_frame){ 0 }, .bg = c->cls == OG_CLASS_BACKGROUND };
     c->count[ring]++;
     if (c->cls != OG_CLASS_BACKGROUND) st.fg_pending++;
-  }
+  } else st.fence_untracked++;
   if (c) c->has_next = false;
   pthread_mutex_unlock(&st.lock);
   // Mergeable, as crosvm asks: a ring may retire only its latest fence, and the device returns every earlier one.
-  return ctx->submit_fence(ctx, 1 /* VIRGL_RENDERER_FENCE_FLAG_MERGEABLE */, ring, fence);
+  int result = ctx->submit_fence(ctx, 1 /* VIRGL_RENDERER_FENCE_FLAG_MERGEABLE */, ring, fence);
+  if (result) {
+    // Refusal must not leave a phantom foreground fence that can keep the
+    // background policy suppressed or later be counted as completed.
+    pthread_mutex_lock(&st.lock);
+    st.fence_refused++;
+    c = stat_find(id);
+    if (tracked && c) {
+      unsigned count = c->count[ring], head = c->head[ring];
+      for (unsigned i = count; i > 0; i--) {
+        unsigned at = i - 1;
+        stat_pending *p = &c->pending[ring][(head + at) % STAT_PENDING];
+        if (p->fence != fence) continue;
+        if (!p->bg && st.fg_pending) st.fg_pending--;
+        for (unsigned j = at + 1; j < count; j++)
+          c->pending[ring][(head + j - 1) % STAT_PENDING] = c->pending[ring][(head + j) % STAT_PENDING];
+        c->count[ring]--;
+        break;
+      }
+    }
+    pthread_mutex_unlock(&st.lock);
+  }
+  return result;
 }
 
 // ---- blobs of more than one udmabuf ---------------------------------------------------------------------------------
@@ -481,9 +510,11 @@ static int create_blob_now(xh_gpu3d *b, uint32_t id, uint32_t res, uint32_t blob
     if (nchunks > 1) say(2, "gpu: resource %u: %llu bytes in %u segments as %d udmabufs", res, (unsigned long long)size, nentries, nchunks);
   }
   unsigned n = (unsigned)nchunks;
-  int first = n ? fcntl(chunks[0].fd, F_DUPFD_CLOEXEC, 0) : -1;       // the resource's own fd
-  if (n && first < 0) { xh_gpu3d_chunks_free(chunks, n); return -EMFILE; }
   if (blob_mem == XH_GPU_BLOB_GUEST) {
+    // Only a display GUEST resource needs this duplicate. HOST3D_GUEST
+    // uses get_blob below; do not dup and immediately close a throwaway fd.
+    int first = n ? fcntl(chunks[0].fd, F_DUPFD_CLOEXEC, 0) : -1;
+    if (n && first < 0) { xh_gpu3d_chunks_free(chunks, n); return -EMFILE; }
     // The display's surface: known as a dma-buf (its first, when it is chunked), for a context that attaches it.
     struct virgl_resource *r = n ? virgl_resource_create_from_fd(res, VIRGL_RESOURCE_FD_DMABUF, first, NULL, 0, NULL) : NULL;
     if (!r || (n > 1 && !chunked_add(res, chunks, n))) {
@@ -496,7 +527,7 @@ static int create_blob_now(xh_gpu3d *b, uint32_t id, uint32_t res, uint32_t blob
     r->map_size = size;
     return 0;
   }
-  if (first >= 0) close(first);          // a context's blob: get_blob gives the resource its fd
+  // A context's blob: get_blob gives the resource its fd.
   struct virgl_context *ctx = virgl_context_lookup(id);
   if (!ctx) { xh_gpu3d_chunks_free(chunks, n); return -EINVAL; }
   // The pages of a guest-allocated BO are parked in the context for the get_blob that follows. It takes the fds it

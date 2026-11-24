@@ -97,6 +97,9 @@ typedef struct {
   uint64_t resource_serial;
   struct xh_fence_perf fence_perf;     // guarded by pl, separate from actual scanout/post timings
   uint64_t fence_report_since_ns;      // guarded by pl; 5-second monotonic windows
+  // All command-stage metrics are owned by cmd (the two control lanes).
+  struct xh_fence_hist queue_wait[2], queue_service[2], submit_service, blob_service, flush_service, dependency_wait;
+  uint64_t queue_report_since_ns, queue_invalid;
   // 3D. Both lanes change the resource tables under cmd. pl guards pending fences and worker bookkeeping.
   // gen changes under the device lock; state_gen is the generation of the tables under cmd.
   xh_gpu3d *b;
@@ -129,7 +132,7 @@ typedef struct slow_job {
   struct slow_job *next;
   uint16_t head;
   unsigned n;
-  uint64_t gen;
+  uint64_t gen, queued_ns;
   xh_viov iov[];
 } slow_job;
 
@@ -314,8 +317,16 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
   uint64_t t0 = flush_now_us();
   unsigned seg = 0, gbpp = format_bpp(g->scan.format), dformat = display_format(), dbpp = xh_pixels_bpp(dformat);
   uint64_t seg_start = 0;                            // the blob offset at which entries[seg] begins
-  for (uint32_t y = 0; y < hgt && w && status == RESP_OK_NODATA; y++) {
-    uint64_t at = g->scan.offset + (uint64_t)(rect->y + y) * g->scan.stride + (uint64_t)rect->x * gbpp, left = (uint64_t)w * gbpp;
+  // A same-layout, full-width unpadded rectangle is one logical span,
+  // even when its backing consists of many noncontiguous guest pages.
+  // Keep the segment walker and pixel-carry path for all other layouts.
+  bool raw = (g->scan.format == FMT_RGBA16F && dformat == XH_PIXELS_RGBA16F) ||
+             ((g->scan.format == FMT_BGRX || g->scan.format == FMT_BGRA) && dformat == XH_PIXELS_BGRX8);
+  bool linear = raw && rect->x == 0 && w == g->scan.width &&
+                g->scan.stride == (uint64_t)w * gbpp && d->stride == (uint64_t)w * dbpp;
+  for (uint32_t y = 0; y < (linear ? (hgt != 0) : hgt) && w && status == RESP_OK_NODATA; y++) {
+    uint64_t at = g->scan.offset + (uint64_t)(rect->y + y) * g->scan.stride + (uint64_t)rect->x * gbpp;
+    uint64_t left = (uint64_t)w * gbpp * (linear ? hgt : 1u);
     uint8_t *to = d->pixels + (size_t)(rect->y + y) * d->stride + (size_t)rect->x * dbpp;
     uint8_t carry[8];                                // a pixel split between two segments
     unsigned have = 0;
@@ -326,6 +337,11 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
       uint64_t in = at - seg_start, n = b->entries[seg].length - in < left ? b->entries[seg].length - in : left;
       const uint8_t *from = xh_virtio_translate(b->entries[seg].addr + in, n);
       if (!from || (n & 3)) { status = RESP_ERR_INVALID_PARAMETER; break; }
+      if (linear) {
+        memcpy(to, from, (size_t)n);
+        to += n; at += n; left -= n;
+        continue;
+      }
       uint64_t off = 0;
       if (have) {
         off = gbpp - have < n ? gbpp - have : n;
@@ -355,17 +371,29 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
   return status;
 }
 
-static void push_pending(gpu_state *g, pending *p)
+// Publish mergeable completions in their existing list order. Holding the
+// device lock covers the generation check and all publications, not a GPU wait.
+// Individual (unfenced) replies use a stack record and do not allocate.
+static void push_pending(gpu_state *g, const pending *list)
 {
   xh_virtio_lock(g->dev);
-  bool current = p->gen == g->gen;
-  if (g->trace)
-    LOGI("gpu trace: %s queue_gen=%llu head=%u context=%u ring=%u fence=%llu bytes=%u",
-         current ? "complete" : "discard", (unsigned long long)p->gen, p->head, p->ctx, p->ring,
-         (unsigned long long)p->fence, p->written);
-  if (current) xh_virtio_push(g->dev, 0, p->head, p->written);       // a chain from before a reset is the old queue's
+  xh_virtio_used items[16];
+  unsigned n = 0;
+  for (const pending *p = list; p; p = p->next) {
+    bool current = p->gen == g->gen;
+    if (g->trace)
+      LOGI("gpu trace: %s queue_gen=%llu head=%u context=%u ring=%u fence=%llu bytes=%u",
+           current ? "complete" : "discard", (unsigned long long)p->gen, p->head, p->ctx, p->ring,
+           (unsigned long long)p->fence, p->written);
+    if (!current) continue;
+    items[n++] = (xh_virtio_used){ .head = p->head, .written = p->written };
+    if (n == sizeof items / sizeof items[0]) {
+      xh_virtio_push_batch(g->dev, 0, items, n);
+      n = 0;
+    }
+  }
+  if (n) xh_virtio_push_batch(g->dev, 0, items, n);
   xh_virtio_unlock(g->dev);
-  free(p);
 }
 
 // A callback can retire many mergeable fences on a (context, ring).
@@ -398,8 +426,8 @@ static void gpu_fence_perf_report(const struct xh_fence_perf *p, uint64_t now_ns
 // Takes only matching pending commands off the list: a retirement of another
 // (context, ring) cannot be attributed here. Context teardown and a refused
 // fence release commands but are NOT actual GPU backend completions.
-static void retire(gpu_state *g, uint32_t ctx, int ring, uint64_t fence,
-                   enum xh_fence_outcome outcome)
+static void retire(gpu_state *g, uint32_t ctx, int64_t ring, uint64_t fence,
+                   enum xh_fence_outcome outcome, uint64_t rejected_gen, uint16_t rejected_head)
 {
   pending *done = NULL, **tail = &done;
   struct xh_fence_perf report;        // assigned only at the reporting boundary; no default-path zeroing
@@ -408,7 +436,11 @@ static void retire(gpu_state *g, uint32_t ctx, int ring, uint64_t fence,
   pthread_mutex_lock(&g->pl);
   for (pending **link = &g->fences; *link;) {
     pending *p = *link;
-    if (p->ctx == ctx && (ring < 0 || (p->ring == (uint32_t)ring && p->fence <= fence))) {
+    // A refused fence is NOT a retirement of every preceding fence.
+    bool match = p->ctx == ctx && (ring < 0 || (p->ring == (uint32_t)ring && p->fence <= fence));
+    if (outcome == XH_FENCE_REJECTED)
+      match = match && p->gen == rejected_gen && p->head == rejected_head && p->fence == fence;
+    if (match) {
       *link = p->next; p->next = NULL; *tail = p; tail = &p->next;
     } else link = &p->next;
   }
@@ -426,13 +458,16 @@ static void retire(gpu_state *g, uint32_t ctx, int ring, uint64_t fence,
     }
   }
   pthread_mutex_unlock(&g->pl);
+  // Guest completion precedes optional reporting; do not extend its wait
+  // with formatting/log output. Retired records are freed outside device lock.
+  if (done) push_pending(g, done);
+  while (done) { pending *p = done; done = p->next; free(p); }
   if (report_ready) gpu_fence_perf_report(&report, scanout_now_ns(), window_ns);
-  while (done) { pending *p = done; done = p->next; push_pending(g, p); }
 }
 
 static void gpu_retire(xh_virtio *dev, uint32_t ctx, uint32_t ring, uint64_t fence)
 {
-  retire(xh_virtio_opaque(dev), ctx, (int)ring, fence, XH_FENCE_COMPLETED);
+  retire(xh_virtio_opaque(dev), ctx, ring, fence, XH_FENCE_COMPLETED, 0, 0);
 }
 
 // The 3D commands and the blob ones. 0: not one of them (command() goes on to the 2D ones).
@@ -483,7 +518,7 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     if (!slot) return RESP_ERR_INVALID_CONTEXT_ID;
     b->ctx_destroy(b, h->ctx);
     *slot = 0;
-    retire(g, h->ctx, -1, 0, XH_FENCE_CANCELED);  // ctx destroy is not a GPU completion
+    retire(g, h->ctx, -1, 0, XH_FENCE_CANCELED, 0, 0);  // ctx destroy is not a GPU completion
     return RESP_OK_NODATA;
   }
   case CMD_SUBMIT_3D: {
@@ -724,7 +759,8 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
     if (left < 20) return RESP_ERR_INVALID_PARAMETER;
     memcpy(&rect, body, 16);
     memcpy(&id, body + 16, 4);
-    if (g->blobs && blob_find(g, id)) return flush_blob(g, blob_find(g, id), &rect);
+    blob *bl = g->blobs ? blob_find(g, id) : NULL;
+    if (bl) return flush_blob(g, bl, &rect);
     resource *r = find(g, id);
     if (!r) return RESP_ERR_INVALID_RESOURCE_ID;
     if (!rect_ok(&rect, r->width, r->height)) return RESP_ERR_INVALID_PARAMETER;
@@ -734,7 +770,10 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
       uint32_t hgt = rect.y < d->height ? (rect.h < d->height - rect.y ? rect.h : d->height - rect.y) : 0;
       const bool trace_scanout = xh_display_trace_enabled() && w && hgt;
       const uint64_t scanout_start_ns = trace_scanout ? scanout_now_ns() : 0;
-      for (uint32_t y = 0; y < hgt && w; y++)
+      if (w && hgt && rect.x == 0 && w == r->width && d->stride == (size_t)w * r->dbpp)
+        memcpy(d->pixels + (size_t)rect.y * d->stride,
+               r->pixels + (size_t)rect.y * d->stride, (size_t)hgt * d->stride);
+      else for (uint32_t y = 0; y < hgt && w; y++)
         memcpy(d->pixels + (size_t)(rect.y + y) * d->stride + (size_t)rect.x * r->dbpp,
                r->pixels + ((size_t)(rect.y + y) * r->width + rect.x) * r->dbpp, (size_t)w * r->dbpp);
       const uint64_t scanout_copied_ns = trace_scanout ? scanout_now_ns() : 0;
@@ -786,19 +825,37 @@ static uint64_t trace_serial(gpu_state *g, uint32_t id, uint32_t *owner)
 
 // Runs the command of a chain and writes its response. Returns the response's length (0: a chain that is no command)
 // and the command's header in `in`.
-static int64_t serve(gpu_state *g, unsigned queue, uint16_t head, xh_viov *iov, unsigned n, gpu_hdr *in, uint32_t *status)
+static int64_t serve(gpu_state *g, unsigned queue, uint16_t head, xh_viov *iov, unsigned n, gpu_hdr *in, uint32_t *status,
+                     pending **reserved)
 {
   // Gather the readable parts (the command), find the writable ones (the response).
   size_t req_size = 0, resp_max = 0;
   for (unsigned i = 0; i < n; i++) { if (iov[i].writable) resp_max += iov[i].length; else req_size += iov[i].length; }
   if (req_size < sizeof(gpu_hdr) || req_size > (1u << 20) || resp_max < sizeof(gpu_hdr)) return 0;
-  uint8_t *req = malloc(req_size), *resp = calloc(1, resp_max < 4096 ? 4096 : resp_max);
-  if (!req || !resp) { free(req); free(resp); return 0; }
+  // Small control commands and all fixed-format replies (max 408 bytes)
+  // stay on the stack. Keep a private, naturally aligned copy of guest
+  // input; the backend may read 32-bit words in place. Only a large capset
+  // response needs heap storage; never allocate an unbounded writable iov.
+  _Alignas(gpu_hdr) uint8_t req_small[1024];
+  uint8_t resp_small[512];
+  uint8_t *req = req_size <= sizeof req_small ? req_small : malloc(req_size);
+  if (!req) return 0;
   size_t at = 0;
-  for (unsigned i = 0; i < n; i++) if (!iov[i].writable) { memcpy(req + at, iov[i].data, iov[i].length); at += iov[i].length; }
+  for (unsigned i = 0; i < n; i++) if (!iov[i].writable && iov[i].length) {
+    memcpy(req + at, iov[i].data, iov[i].length); at += iov[i].length;
+  }
   size_t resp_size = sizeof(gpu_hdr);
   gpu_hdr out = { 0 };
   memcpy(in, req, sizeof *in);
+  size_t limit = in->type == CMD_GET_CAPSET && queue == 0 ? (1u << 20) : sizeof resp_small;
+  if (resp_max > limit) resp_max = limit;
+  uint8_t *resp = resp_max <= sizeof resp_small ? resp_small : malloc(resp_max);
+  if (!resp) { if (req != req_small) free(req); return 0; }
+  memset(resp, 0, resp_max);
+  // Reserve before executing a potentially fenced command. An allocation
+  // failure must not execute a command then silently lose its chain.
+  bool need = reserved && in->ctx && (in->flags & (FLAG_FENCE | FLAG_RING_IDX)) == (FLAG_FENCE | FLAG_RING_IDX);
+  if (need) *reserved = malloc(sizeof **reserved);
   size_t offset;
   const char *event = g->trace && queue == 0 ? trace_operation(in->type, &offset) : NULL;
   uint32_t id = 0, owner = 0;
@@ -807,7 +864,8 @@ static int64_t serve(gpu_state *g, unsigned queue, uint16_t head, xh_viov *iov, 
     memcpy(&id, req + sizeof *in + offset, sizeof id);
     serial = trace_serial(g, id, &owner);
   }
-  out.type = queue == 0 ? command(g, req, req_size, resp, resp_max, &resp_size) : RESP_OK_NODATA;     // cursor queue: accepted, not drawn
+  out.type = need && !*reserved ? RESP_ERR_OUT_OF_MEMORY :
+             queue == 0 ? command(g, req, req_size, resp, resp_max, &resp_size) : RESP_OK_NODATA;
   if (event) {
     if (!serial) serial = trace_serial(g, id, &owner);
     LOGI("gpu trace: %s queue_gen=%llu head=%u context=%u resource=%u resource_gen=%llu owner=%u ring=%u fence=%llu status=%#x",
@@ -821,11 +879,11 @@ static int64_t serve(gpu_state *g, unsigned queue, uint16_t head, xh_viov *iov, 
   for (unsigned i = 0; i < n && at < resp_size; i++) {
     if (!iov[i].writable) continue;
     size_t len = resp_size - at < iov[i].length ? resp_size - at : iov[i].length;
-    memcpy(iov[i].data, resp + at, len);
+    if (len) memcpy(iov[i].data, resp + at, len);
     at += len;
   }
-  free(req);
-  free(resp);
+  if (req != req_small) free(req);
+  if (resp != resp_small) free(resp);
   *status = out.type;
   return (int64_t)resp_size;
 }
@@ -835,7 +893,7 @@ static int64_t gpu_handle(xh_virtio *dev, unsigned queue, uint16_t head, xh_viov
   gpu_state *g = xh_virtio_opaque(dev);
   gpu_hdr in = { 0 };
   uint32_t status;
-  int64_t written = serve(g, queue, head, iov, n, &in, &status);
+  int64_t written = serve(g, queue, head, iov, n, &in, &status, NULL);
   if (g->trace && !g->b && queue == 0)
     LOGI("gpu trace: complete queue_gen=%llu head=%u context=%u ring=%u fence=%llu bytes=%lld",
          (unsigned long long)g->state_gen, head, in.ctx, in.ring,
@@ -935,22 +993,67 @@ static bool slow_pending(gpu_state *g)
   return pending;
 }
 
+// Host stages use a common CLOCK_MONOTONIC domain, but are not GPU
+// execution or proof of the critical path of a particular displayed frame.
+static void queue_sample(gpu_state *g, struct xh_fence_hist *h, uint64_t start, uint64_t end)
+{
+  if (!xh_fence_hist_span(h, start, end)) g->queue_invalid++;
+}
+
+static void queue_report(gpu_state *g, uint64_t now)
+{
+  if (!g->queue_report_since_ns) { g->queue_report_since_ns = now; return; }
+  if (now < g->queue_report_since_ns || now - g->queue_report_since_ns < UINT64_C(5000000000)) return;
+  struct xh_fence_hist *h[] = { &g->queue_wait[0], &g->queue_wait[1],
+    &g->queue_service[0], &g->queue_service[1], &g->submit_service,
+    &g->blob_service, &g->flush_service, &g->dependency_wait };
+  static const char *const names[] = { "fast_wait", "slow_wait", "fast_service", "slow_service",
+    "submit_service", "blob_service", "flush_service", "dependency_wait" };
+  for (unsigned i = 0; i < sizeof h / sizeof h[0]; i++) {
+    if (h[i]->count)
+      LOGI("gpu-queue-trace: mono_ms=%llu window_ms=%llu stage=%s n=%llu mean_us=%llu p95_le_us=%llu p99_le_us=%llu max_us=%llu invalid_clocks=%llu",
+           (unsigned long long)(now / 1000000u),
+           (unsigned long long)((now - g->queue_report_since_ns) / 1000000u),
+           names[i], (unsigned long long)h[i]->count,
+           (unsigned long long)(h[i]->sum_us / h[i]->count),
+           (unsigned long long)xh_fence_perf_quantile_le_us(h[i], 95),
+           (unsigned long long)xh_fence_perf_quantile_le_us(h[i], 99),
+           (unsigned long long)h[i]->max_us, (unsigned long long)g->queue_invalid);
+    *h[i] = (struct xh_fence_hist){ 0 };
+  }
+  g->queue_invalid = 0;
+  g->queue_report_since_ns = now;
+}
+
 // Serves a chain and answers it (now, or when its fence retires). With `may_wait`, a command that names a resource
 // the slow lane may still be making is not answered: RESP_PENDING_RETRY, and the caller runs it again later.
-static uint32_t work(gpu_state *g, uint16_t head, xh_viov *iov, unsigned n, uint64_t gen, bool may_wait)
+static uint32_t work(gpu_state *g, uint16_t head, xh_viov *iov, unsigned n, uint64_t gen, bool may_wait,
+                     uint64_t queued_ns, bool slow_path)
 {
   if (sync_generation(g) != gen) return 0;           // the old queue's chain was invalidated by reset
   gpu_hdr in = { 0 };
   uint32_t status = 0;
-  int64_t written = serve(g, 0, head, iov, n, &in, &status);
-  if (may_wait && missing_resource(status) && slow_pending(g)) return RESP_PENDING_RETRY;
+  pending *reserved = NULL;
+  uint64_t began = g->fence_trace ? scanout_now_ns() : 0;
+  int64_t written = serve(g, 0, head, iov, n, &in, &status, &reserved);
+  if (g->fence_trace) {
+    uint64_t end = scanout_now_ns();
+    if (queued_ns) queue_sample(g, &g->queue_wait[slow_path], queued_ns, began);
+    queue_sample(g, &g->queue_service[slow_path], began, end);
+    if (in.type == CMD_SUBMIT_3D) queue_sample(g, &g->submit_service, began, end);
+    else if (in.type == CMD_RESOURCE_CREATE_BLOB) queue_sample(g, &g->blob_service, began, end);
+    else if (in.type == CMD_RESOURCE_FLUSH) queue_sample(g, &g->flush_service, began, end);
+    queue_report(g, end);
+  }
+  if (may_wait && missing_resource(status) && slow_pending(g)) { free(reserved); return RESP_PENDING_RETRY; }
   // A command fenced on a context's ring is returned when the ring passes the fence; any other at once (a fence on
   // the device's own ring has nothing to wait for: the 2D commands are done when they return).
   bool hold = written > 0 && status < RESP_ERR_UNSPEC && (in.flags & FLAG_FENCE) && (in.flags & FLAG_RING_IDX) && ctx_find(g, in.ctx);
-  pending *p = calloc(1, sizeof *p);
-  if (!p) return status;                             // the chain is lost; so is the guest's command
-  *p = (pending){ .head = head, .written = (uint32_t)written, .ctx = in.ctx, .ring = in.ring, .fence = in.fence, .gen = gen };
-  if (!hold) { push_pending(g, p); return status; }
+  pending immediate = { .head = head, .written = (uint32_t)written, .ctx = in.ctx, .ring = in.ring, .fence = in.fence, .gen = gen };
+  if (!hold) { free(reserved); push_pending(g, &immediate); return status; }
+  // serve() reserved this record before executing the fenced command.
+  pending *p = reserved;
+  *p = immediate;
   if (g->fence_trace) {
     uint32_t *slot = ctx_find(g, in.ctx);
     p->fence_fast = slot && g->ctx_fast[slot - g->ctx];
@@ -962,7 +1065,7 @@ static uint32_t work(gpu_state *g, uint16_t head, xh_viov *iov, unsigned n, uint
   pthread_mutex_unlock(&g->pl);
   // May retire it before it returns. A refused fence is retired here.
   if (g->b->submit_fence(g->b, in.ctx, in.ring, in.fence))
-    retire(g, in.ctx, (int)in.ring, in.fence, XH_FENCE_REJECTED);
+    retire(g, in.ctx, in.ring, in.fence, XH_FENCE_REJECTED, gen, head);
   return status;
 }
 
@@ -999,7 +1102,7 @@ static void *slow_worker(void *arg)
     if (!g->slow_head) g->slow_tail = &g->slow_head;
     pthread_mutex_unlock(&g->pl);
     pthread_mutex_lock(&g->cmd);
-    work(g, j->head, j->iov, j->n, j->gen, false);
+    work(g, j->head, j->iov, j->n, j->gen, false, j->queued_ns, true);
     pthread_mutex_unlock(&g->cmd);
     free(j);
     pthread_mutex_lock(&g->pl);
@@ -1030,6 +1133,7 @@ static void *worker(void *arg)
       unsigned n = xh_virtio_pop(g->dev, 0, &head, iov, WORKER_IOV);
       xh_virtio_unlock(g->dev);
       if (!n) break;
+      uint64_t queued_ns = g->fence_trace ? scanout_now_ns() : 0;
       gpu_hdr h;
       pthread_mutex_lock(&g->cmd);
       bool current = sync_generation(g) == gen;
@@ -1038,8 +1142,19 @@ static void *worker(void *arg)
       if (!current) continue;
       if (slow) {
         slow_job *j = malloc(sizeof *j + n * sizeof *iov);
-        if (!j) continue;                            // the chain is lost; so is the guest's command
-        *j = (slow_job){ .head = head, .n = n, .gen = gen };
+        if (!j) {
+          // Preserve FIFO within the slow lane even on allocation failure.
+          // Wait without cmd held, then serve this chain synchronously.
+          pthread_mutex_lock(&g->pl);
+          uint64_t before = g->slow_queued;
+          while (g->slow_done < before) pthread_cond_wait(&g->slow_cv, &g->pl);
+          pthread_mutex_unlock(&g->pl);
+          pthread_mutex_lock(&g->cmd);
+          work(g, head, iov, n, gen, false, queued_ns, true);
+          pthread_mutex_unlock(&g->cmd);
+          continue;
+        }
+        *j = (slow_job){ .head = head, .n = n, .gen = gen, .queued_ns = queued_ns };
         memcpy(j->iov, iov, n * sizeof *iov);
         pthread_mutex_lock(&g->pl);
         *g->slow_tail = j;
@@ -1053,14 +1168,16 @@ static void *worker(void *arg)
       uint64_t before = g->slow_queued;              // the slow lane's commands that came before this one
       pthread_mutex_unlock(&g->pl);
       pthread_mutex_lock(&g->cmd);
-      uint32_t status = work(g, head, iov, n, gen, true);
+      uint32_t status = work(g, head, iov, n, gen, true, queued_ns, false);
       pthread_mutex_unlock(&g->cmd);
       if (status == RESP_PENDING_RETRY) {
+        uint64_t retry_ns = g->fence_trace ? scanout_now_ns() : 0;
         pthread_mutex_lock(&g->pl);
         while (g->slow_done < before) pthread_cond_wait(&g->slow_cv, &g->pl);
         pthread_mutex_unlock(&g->pl);
         pthread_mutex_lock(&g->cmd);
-        work(g, head, iov, n, gen, false);
+        if (g->fence_trace) queue_sample(g, &g->dependency_wait, retry_ns, scanout_now_ns());
+        work(g, head, iov, n, gen, false, 0, false);
         pthread_mutex_unlock(&g->cmd);
       }
     }

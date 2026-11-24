@@ -138,6 +138,8 @@ static void log_frame_perf(const struct xhd_frame_perf *p, uint64_t now_ns)
   fprintf(stderr,
           "oneios-display: perf: mono_ms=%llu window_ms=%llu posts=%llu posted_rate=%.2f "
           "active_cadence=%.2f active_gaps=%llu gap_p95_us=%llu "
+          "active_gap_p95_us=%llu active_gap_p99_us=%llu active_gap_max_us=%llu "
+          "idle_gaps=%llu active_over_60=%llu active_over_120=%llu "
           "lock_p95_us=%llu lock_max_us=%llu copy_p95_us=%llu copy_max_us=%llu "
           "post_p95_us=%llu post_max_us=%llu full_copies=%llu copied_pixels=%llu "
           "post_attempts=%llu post_errors=%llu copy_errors=%llu\n",
@@ -148,6 +150,12 @@ static void log_frame_perf(const struct xhd_frame_perf *p, uint64_t now_ns)
           xhd_perf_active_cadence(p),
           (unsigned long long)p->active_gap_count,
           (unsigned long long)xhd_perf_quantile_bound_us(&p->gap, 95),
+          (unsigned long long)xhd_perf_quantile_bound_us(&p->active_gap, 95),
+          (unsigned long long)xhd_perf_quantile_bound_us(&p->active_gap, 99),
+          (unsigned long long)p->active_gap.max_us,
+          (unsigned long long)p->idle_gaps,
+          (unsigned long long)p->active_over_60,
+          (unsigned long long)p->active_over_120,
           (unsigned long long)xhd_perf_quantile_bound_us(&p->lock, 95),
           (unsigned long long)p->lock.max_us,
           (unsigned long long)xhd_perf_quantile_bound_us(&p->copy, 95),

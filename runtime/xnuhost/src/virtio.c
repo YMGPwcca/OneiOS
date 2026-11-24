@@ -129,6 +129,31 @@ void xh_virtio_push(xh_virtio *d, unsigned qi, uint16_t head, uint32_t written)
   pthread_mutex_unlock(&d->lock);
 }
 
+void xh_virtio_push_batch(xh_virtio *d, unsigned qi, const xh_virtio_used *items, unsigned count)
+{
+  if (!items || !count || qi >= XH_VIRTIO_QUEUES) return;
+  pthread_mutex_lock(&d->lock);
+  vqueue *q = &d->q[qi];
+  if (q->ready && q->num) {
+    uint16_t *used = xh_virtio_translate(q->used, 4 + 8ull * q->num);
+    if (used) {
+      uint32_t *ring = (uint32_t *)(used + 2);
+      uint16_t idx = used[1];
+      // A conforming guest has no more outstanding chains than slots.
+      // Refuse an oversized group instead of overwriting unconsumed slots.
+      if (count <= q->num) {
+        for (unsigned i = 0; i < count; i++, idx++) {
+          ring[2 * (idx % q->num)] = items[i].head;
+          ring[2 * (idx % q->num) + 1] = items[i].written;
+        }
+        __atomic_store_n(&used[1], idx, __ATOMIC_RELEASE);
+        raise_irq(d, 1);
+      }
+    }
+  }
+  pthread_mutex_unlock(&d->lock);
+}
+
 bool xh_virtio_ready(xh_virtio *d)
 {
   pthread_mutex_lock(&d->lock);

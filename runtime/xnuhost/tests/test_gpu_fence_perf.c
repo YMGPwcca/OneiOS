@@ -48,6 +48,13 @@ int main(void)
   CHECK(xh_fence_perf_quantile_le_us(&p.other, 100) == 1300000);
   CHECK(p.other.bins[XH_FENCE_BUCKETS - 1] == 1);
   xh_fence_perf_record(NULL, XH_FENCE_COMPLETED, true, 1, 2);
+  struct xh_fence_hist stage = { 0 };
+  CHECK(!xh_fence_hist_span(&stage, 0, 1));
+  CHECK(!xh_fence_hist_span(&stage, 9, 8));
+  CHECK(xh_fence_hist_span(&stage, 1000, 1000));
+  CHECK(xh_fence_hist_span(&stage, 1000, 17001000));
+  CHECK(stage.count == 2 && stage.sum_us == 17000 && stage.max_us == 17000);
+  CHECK(xh_fence_perf_quantile_le_us(&stage, 95) == 33000);
   printf("gpu fence perf: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

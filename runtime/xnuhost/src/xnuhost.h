@@ -622,6 +622,10 @@ void       xh_virtio_unlock(xh_virtio *dev);
 // input events). Returns the count of parts, 0 if the guest has posted none.
 unsigned   xh_virtio_pop(xh_virtio *dev, unsigned queue, uint16_t *head, xh_viov *iov, unsigned max);
 void       xh_virtio_push(xh_virtio *dev, unsigned queue, uint16_t head, uint32_t written);
+// Complete an ordered group of chains with one used-index publication and
+// one interrupt. The device caller still owns generation/chain validity.
+typedef struct { uint16_t head; uint32_t written; } xh_virtio_used;
+void       xh_virtio_push_batch(xh_virtio *dev, unsigned queue, const xh_virtio_used *items, unsigned count);
 void       xh_virtio_config_changed(xh_virtio *dev);
 // Whether the guest's driver has set DRIVER_OK: the device's queues are in use.
 bool       xh_virtio_ready(xh_virtio *dev);

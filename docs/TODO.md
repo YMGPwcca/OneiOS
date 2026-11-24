@@ -139,3 +139,8 @@ New DRM2KGSL patch 0009 preserves errno and collects a single KGSL reset status 
 Physical launch `a0e6b35a369b4f3b95e79ab62429f0f0` was refused **before Android Framework stop**: requested software thermal OFF at the host, but OneOS launched its root guard in the detached session and rejected Samsung's KEYCODE_WAKEUP floor (CPU0 minimum 3628800 kHz, CPU6 minimum 4185600 kHz, CPU temperature 61.5°C after 20 s). Same boot `da117511-8c60-45ae-b81e-7421c268beaa`, One UI running, no XNUHost/KGSL; the Data clone was still consumed and must be rearmed before another run. This is a **cross-process mode-selection failure**, not a GPU 3D crash. Full details: [SM8850 mode handoff report](SM8850_MODE_HANDOFF_2026_11_23.md).
 
 OneOS now requires an explicit no-guard token for live `--framework-session run` argument 7, and supports matching read-only `--framework-check run` argument 4. OneiOS sends these tokens, verifies the preflight acknowledgment and adds offline regression tests. The kernel thermal and legacy watchdog mechanisms are unchanged and not independently qualified. Do not rerun live until local CI PASS, the matching OneOS commit is staged, and a **new** APFS clone is rearmed.
+
+
+### Active GPU/display performance batch
+
+Source batch: command allocation reduction, same-ring refusal isolation, batched used-ring notification, backend fence bookkeeping and class transition, import FD reduction, packed scanout, damage repair, queue/service telemetry, active post budgets and touch candidate arming. Local CI pending; physical GPU/presentation/Metal ABI acceptance still open. See SM8850_60FPS_XNUHOST_PERFORMANCE_TRACKER.md. No OneOS, CPU production placement or thermal/recovery policy change.

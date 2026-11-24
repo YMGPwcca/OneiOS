@@ -672,7 +672,7 @@ static int fake_submit(xh_gpu3d *b, uint32_t ctx, const void *commands, size_t s
 static int fake_submit_fence(xh_gpu3d *b, uint32_t ctx, uint32_t ring, uint64_t fence)
 {
   fake.fences++;
-  if (ring == 9) return -EINVAL;
+  if (ring == 9 || (ring == 1 && fence == 0xf001)) return -EINVAL;
   if (ring == 0) b->retire(b->dev, ctx, ring, fence);
   return 0;
 }
@@ -800,6 +800,10 @@ static void test_virtio_gpu3d(void)
   CHECK(G(8, 40) == 1 && resp[0] == 0x1102 && resp[6] == 0 && resp[8] == 0);                              // past the last: zeros
   CLEAR(); cmd[0] = 0x109; cmd[6] = 6;
   CHECK(G(8, 24 + 64) == 1 && resp[0] == 0x1103 && ((uint8_t *)resp)[24] == 0xc0 && ((uint8_t *)resp)[87] == 0xff);
+  // Overprovisioned writable descriptor must not change the fixed reply or
+  // touch bytes after the response. GET_CAPSET may use the bounded heap path.
+  memset(resp, 0xee, 4096);
+  CHECK(G(8, 4096) == 1 && resp[0] == 0x1103 && ((uint8_t *)resp)[87] == 0xff && ((uint8_t *)resp)[88] == 0xee);
   cmd[6] = 2;
   CHECK(G(8, 24 + 64) == 1 && resp[0] == 0x1205);                                                         // no such capset
   // contexts
@@ -902,6 +906,18 @@ static void test_virtio_gpu3d(void)
   CHECK(fence_sample.rejected >= 1 && fence_sample.other.count >= 4);  // ring 0 retired synchronously
   cmd[1] = 1; cmd[2] = 0x77; cmd[5] = 0;
   CHECK(G(9, 24) == 1 && resp[1] == 1 && resp[2] == 0x77 && fake.fences == 5);                            // the device's own ring: at once, the renderer not asked
+  // A later refusal on the SAME ring cannot retire earlier accepted work.
+  cmd[1] = 3; cmd[2] = 0xf000; cmd[5] = 1;
+  CHECK(G(9, 24) == 0);
+  cmd[2] = 0xf001;
+  CHECK(G(9, 24) == 1); // only the refused chain
+  CHECK(xh_virtio_gpu_fence_perf_snapshot(dev, &fence_sample));
+  CHECK(fence_sample.rejected >= 2 && fence_sample.other.count == 4);
+  b.retire(dev, 5, 1, 0xf000);
+  CHECK((uint16_t)(used[1] - d.used_seen[0]) == 1);
+  d.used_seen[0] = used[1];
+  CHECK(xh_virtio_gpu_fence_perf_snapshot(dev, &fence_sample));
+  CHECK(fence_sample.other.count == 5);
   // a fenced command of a context that is destroyed comes back
   cmd[1] = 3; cmd[2] = 4; cmd[5] = 1;
   CHECK(G(9, 24) == 0);
@@ -933,6 +949,15 @@ static void test_virtio_gpu3d(void)
   CHECK(flush_rect[0] == 1 && flush_rect[1] == 2 && flush_rect[2] == 3 && flush_rect[3] == 2);
   const uint8_t *px = fake_display.pixels + 2 * 32 + 1 * 4;
   CHECK(px[0] == 21 && px[1] == 0x20 && px[2] == 0x10 && fake_display.pixels[3 * 32 + 3 * 4] == 33 && fake_display.pixels[0] == 0 && fake_display.pixels[2 * 32 + 4 * 4] == 0);
+  // Tight same-layout full-width subrectangle, nonzero y: only its bytes.
+  CLEAR(); cmd[0] = 0x10d; cmd[8] = 8; cmd[9] = 4; cmd[11] = 20; cmd[12] = 8; cmd[13] = 4; cmd[14] = 2; cmd[16] = 32;
+  CHECK(G(24, 24) == 1 && resp[0] == 0x1100);
+  memset(fake_display.pixels, 0xa5, 4 * 32);
+  CLEAR(); cmd[0] = 0x104; cmd[7] = 1; cmd[8] = 8; cmd[9] = 2; cmd[10] = 20;
+  CHECK(G(12, 24) == 1 && resp[0] == 0x1100);
+  CHECK(!memcmp(fake_display.pixels + 32, (uint8_t *)pixels + 32, 64));
+  CHECK(fake_display.pixels[0] == 0xa5 && fake_display.pixels[96] == 0xa5);
+  memset(fake_display.pixels, 0, 4 * 32);
   {
     // Half floats (display-format=rgba16f, oneios-display-wide=1): a 'RGhA' scanout's rows go to a half-float display as
     // they are, and a B,G,R,X one is decoded to linear light; onto the 8-bit display half floats are encoded and clamped.

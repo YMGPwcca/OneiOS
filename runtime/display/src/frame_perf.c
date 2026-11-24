@@ -37,12 +37,17 @@ void xhd_perf_record(struct xhd_frame_perf *p, uint64_t post_time_ns,
                      uint64_t copied_pixels, bool full_copy)
 {
   if (p->last_post_ns && post_time_ns > p->last_post_ns) {
-    uint64_t gap_us = (post_time_ns - p->last_post_ns) / 1000;
+    uint64_t gap_ns = post_time_ns - p->last_post_ns;
+    uint64_t gap_us = gap_ns / 1000;
     observe(&p->gap, gap_us);
-    if (gap_us > 0 && gap_us <= XHD_PERF_ACTIVE_GAP_US) {
+    if (gap_ns <= XHD_PERF_ACTIVE_GAP_US * 1000u) {
       p->active_gap_count++;
       p->active_gap_sum_us += gap_us;
-    }
+      observe(&p->active_gap, gap_us);
+      // Rounded-up nominal budgets; not display present or actual jank.
+      if (gap_ns > UINT64_C(16666667)) p->active_over_60++;
+      if (gap_ns > UINT64_C(8333334)) p->active_over_120++;
+    } else p->idle_gaps++;
   }
   p->last_post_ns = post_time_ns;
   p->posts++;

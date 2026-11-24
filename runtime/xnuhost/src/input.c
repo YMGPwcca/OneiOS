@@ -122,6 +122,19 @@ static void log_gesture(xh_input_source *s)
   memset(t, 0, sizeof *t);
 }
 
+// Arm before sending SYN_REPORT, rather than after the guest can already
+// respond with a flush. This is still a candidate next host flush, not
+// guest consumption, causal rendering or physical presentation.
+static void arm_touch_frame(xh_input_source *s, int64_t scan_ns)
+{
+  xh_input_timing *t = &s->timing;
+  if (t->frames || !contacts(s)) return;
+  int64_t shown = __atomic_load_n(&last_shown_ns, __ATOMIC_ACQUIRE);
+  t->still = shown && scan_ns - shown >= STILL_NS;
+  __atomic_store_n(&down_frame_ns, -1, __ATOMIC_RELEASE);
+  __atomic_store_n(&down_ns, t->still ? scan_ns : 0, __ATOMIC_RELEASE);
+}
+
 // One touch frame was sent: its timing.
 static void count_frame(xh_input_source *s, int64_t scan_ns, int64_t now_ns)
 {
@@ -132,11 +145,7 @@ static void count_frame(xh_input_source *s, int64_t scan_ns, int64_t now_ns)
     t->first_scan_ns = scan_ns;
     t->read_min_ns = read;
     t->gap_min_ns = 0;
-    // A touch-down on a still screen: the display's next frame is the guest's answer to it.
-    int64_t shown = __atomic_load_n(&last_shown_ns, __ATOMIC_ACQUIRE);
-    t->still = shown && scan_ns - shown >= STILL_NS;
-    __atomic_store_n(&down_frame_ns, -1, __ATOMIC_RELEASE);
-    __atomic_store_n(&down_ns, t->still ? scan_ns : 0, __ATOMIC_RELEASE);
+    // The candidate was armed immediately before SYN_REPORT.
   } else {
     int64_t gap = scan_ns - t->last_scan_ns;
     if (t->frames == 1 || gap < t->gap_min_ns) t->gap_min_ns = gap;
@@ -174,6 +183,7 @@ static void resync(xh_input_source *s, int64_t now_ns, uint64_t now_counter, uin
     if (lifted) {
       send_event(s, EV_KEY_, BTN_TOUCH_, contacts(s) > 0);
       send_event(s, EV_MSC_, MSC_TIMESTAMP_, (int32_t)scan_ticks(now_ns, now_ns, now_counter, hz));
+      arm_touch_frame(s, now_ns);
       send_event(s, EV_SYN_, SYN_REPORT_, 0);
       count_frame(s, now_ns, now_ns);
     }
@@ -193,6 +203,7 @@ static void resync(xh_input_source *s, int64_t now_ns, uint64_t now_counter, uin
         ((st.keys ^ s->sent_keys) & 1u << k))
       send_event(s, EV_KEY_, side_keys[k], (st.keys >> k) & 1);
   if (s->touch) send_event(s, EV_MSC_, MSC_TIMESTAMP_, (int32_t)scan_ticks(now_ns, now_ns, now_counter, hz));
+  if (s->touch) arm_touch_frame(s, now_ns);
   send_event(s, EV_SYN_, SYN_REPORT_, 0);
   if (s->touch) count_frame(s, now_ns, now_ns);
   LOGI("input: %s: events dropped by the kernel (the reader was too slow, %u time%s); the state was read again: %u contact%s down", s->name,
@@ -211,6 +222,7 @@ void xh_input_feed(xh_input_source *s, const xh_input_ev *ev, unsigned n, int64_
       if (v->code == SYN_DROPPED_) { s->dropping = true; continue; }
       if (v->code != SYN_REPORT_) continue;
       if (s->touch) send_event(s, EV_MSC_, MSC_TIMESTAMP_, (int32_t)scan_ticks(v->time_ns, now_ns, now_counter, hz));
+      if (s->touch) arm_touch_frame(s, v->time_ns);
       send_event(s, EV_SYN_, SYN_REPORT_, 0);
       if (s->touch) count_frame(s, v->time_ns, now_ns);
     } else if (v->type == EV_KEY_) {

@@ -23,6 +23,7 @@ int main(void)
                     1500000,2000000,1100000,1080*2340,i<4);
   CHECK(p.posts==5 && p.full_copies==4 && p.copied_pixels==5u*1080*2340);
   CHECK(p.active_gap_count==4 && p.active_gap_sum_us==64000);
+  CHECK(p.active_gap.count==4 && p.active_over_60==0 && p.active_over_120==4 && p.idle_gaps==0);
   CHECK(fabs(xhd_perf_active_cadence(&p)-62.5)<0.001);
   CHECK(xhd_perf_quantile_bound_us(&p.lock,95)==2000);
   CHECK(xhd_perf_quantile_bound_us(&p.copy,50)==2000);
@@ -32,6 +33,7 @@ int main(void)
   CHECK(p.posts==0 && p.last_post_ns==t0+UINT64_C(164000000));
   xhd_perf_record(&p,t0+UINT64_C(7000000000),50000000,100000,100000,2,false);
   CHECK(p.active_gap_count==0); // idle gap is deliberately excluded
+  CHECK(p.active_gap.count==0 && p.idle_gaps==1 && p.active_over_60==0 && p.active_over_120==0);
   CHECK(xhd_perf_active_cadence(&p)==0.0);
   CHECK(p.gap.count==1 && p.gap.max_us>1000000);
   CHECK(xhd_perf_quantile_bound_us(&p.lock,95)==50000);

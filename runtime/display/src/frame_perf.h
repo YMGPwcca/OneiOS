@@ -25,8 +25,9 @@ struct xhd_frame_perf {
   uint64_t window_start_ns, last_post_ns;
   uint64_t posts, full_copies, copied_pixels;
   uint64_t post_attempts, post_errors, copy_errors;
-  uint64_t active_gap_count, active_gap_sum_us;
-  struct xhd_perf_hist gap, lock, copy, post;
+  uint64_t active_gap_count, active_gap_sum_us, idle_gaps;
+  uint64_t active_over_60, active_over_120;
+  struct xhd_perf_hist gap, active_gap, lock, copy, post;
   uint64_t traced_posts, traced_flushes, traced_coalesced, traced_gaps, traced_bad, traced_legacy;
   uint64_t scanout_packets, scanout_blob, scanout_2d, scanout_copy_sum_ns, scanout_copy_max_ns;
   struct xhd_perf_hist flush_to_post_oldest, flush_to_post_latest, flush_to_helper;

@@ -30,6 +30,20 @@ static inline uint64_t xh_fence_bound_us(unsigned i)
   return ceilings[i < XH_FENCE_BUCKETS ? i : XH_FENCE_BUCKETS - 1];
 }
 
+// Also used for the distinct host queue/service stages. The caller owns
+// synchronization and the clock domain; invalid spans are never sampled.
+static inline bool xh_fence_hist_span(struct xh_fence_hist *h, uint64_t start, uint64_t end)
+{
+  if (!h || !start || !end || end < start) return false;
+  uint64_t us = (end - start) / 1000u;
+  h->count++;
+  h->sum_us += us;
+  if (us > h->max_us) h->max_us = us;
+  for (unsigned i = 0; i < XH_FENCE_BUCKETS; i++)
+    if (us <= xh_fence_bound_us(i)) { h->bins[i]++; break; }
+  return true;
+}
+
 static inline void xh_fence_perf_record(struct xh_fence_perf *p,
                                         enum xh_fence_outcome outcome, bool fast,
                                         uint64_t enqueued_ns, uint64_t retired_ns)
@@ -37,17 +51,8 @@ static inline void xh_fence_perf_record(struct xh_fence_perf *p,
   if (!p) return;
   if (outcome == XH_FENCE_CANCELED) { p->canceled++; return; }
   if (outcome == XH_FENCE_REJECTED) { p->rejected++; return; }
-  if (!enqueued_ns || !retired_ns || retired_ns < enqueued_ns) {
+  if (!xh_fence_hist_span(fast ? &p->fast : &p->other, enqueued_ns, retired_ns))
     p->invalid_time++;
-    return;
-  }
-  uint64_t us = (retired_ns - enqueued_ns) / 1000u;
-  struct xh_fence_hist *h = fast ? &p->fast : &p->other;
-  h->count++;
-  h->sum_us += us;
-  if (us > h->max_us) h->max_us = us;
-  for (unsigned i = 0; i < XH_FENCE_BUCKETS; i++)
-    if (us <= xh_fence_bound_us(i)) { h->bins[i]++; break; }
 }
 
 static inline uint64_t xh_fence_perf_quantile_le_us(const struct xh_fence_hist *h, unsigned percentile)

@@ -43,6 +43,12 @@ static pthread_mutex_t client_lock = PTHREAD_MUTEX_INITIALIZER;
 static char socket_path[600];
 static bool frame_trace_enabled;
 static uint64_t frame_seq;  // protected by client_lock
+// A nonblocking send can fail even though the shadow pixels have changed.
+// The next flush must repair all damage, not assume disjoint rectangles
+// will be repeated. Reset on a new connection (which gets a full frame).
+static bool need_full_damage;
+static void notify_flush(unsigned x, unsigned y, unsigned w, unsigned h,
+                         const struct xh_frame_scanout *scanout);
 
 static uint64_t display_mono_ns(void)
 {
@@ -67,9 +73,10 @@ static void helper_attach(int fd)
   pthread_mutex_lock(&client_lock);
   if (client_fd >= 0) close(client_fd);          // the newest helper wins
   client_fd = fd;
+  need_full_damage = true;
   pthread_mutex_unlock(&client_lock);
   LOGI("display: a helper connected");
-  xh_display_flush(0, 0, display.width, display.height);
+  notify_flush(0, 0, display.width, display.height, NULL); // not a new guest-rendered frame
 }
 
 static void *accept_main(void *arg)
@@ -288,14 +295,14 @@ bool xh_display_trace_enabled(void)
   return frame_trace_enabled;
 }
 
-void xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
-                              const struct xh_frame_scanout *scanout)
+static void notify_flush(unsigned x, unsigned y, unsigned w, unsigned h,
+                         const struct xh_frame_scanout *scanout)
 {
-  xh_input_frame_shown();                        // input.c's touch-to-frame measurement
-  if (backend == BACK_DRM) drm_flush(x, y, w, h);
   if (backend != BACK_SHM) return;
   pthread_mutex_lock(&client_lock);
   if (client_fd >= 0) {
+    bool repair = need_full_damage;
+    if (repair) { x = y = 0; w = display.width; h = display.height; scanout = NULL; }
     struct shm_message m = { { 'X', 'H', 'D', 'F' }, x, y, w, h };
     // No initialization or timestamp call on the default frame-trace=0 hot path.
     struct xh_frame_trace_packet traced;
@@ -339,20 +346,32 @@ void xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
         }
       }
     }
-    // Only a helper that is gone loses its socket. A full queue (EAGAIN) or a passing shortage (ENOBUFS, ENOMEM)
-    // drops this flush only: the next one names the damage again. On 2026-11-12 (15:35 session) the helper's socket
-    // was closed after 7 frames with no line saying why, and the panel stayed dark while iOS drew.
-    if (send(client_fd, record, record_bytes, MSG_NOSIGNAL | MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != EINTR) {
-      if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN) {
-        LOGI("display: the helper's socket is gone (%s): closed", strerror(errno));
+    // Retain damage on EAGAIN/EINTR/shortage. Never block the GPU worker
+    // on the socket. A repair has v1 timing only, not a single source ID.
+    ssize_t sent = send(client_fd, record, record_bytes, MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (sent == (ssize_t)record_bytes) need_full_damage = false;
+    else {
+      int error = sent < 0 ? errno : EIO;
+      need_full_damage = true;
+      if (error == EPIPE || error == ECONNRESET || error == ENOTCONN) {
+        LOGI("display: the helper's socket is gone (%s): closed", strerror(error));
         close(client_fd); client_fd = -1;
       } else {
         static unsigned dropped;
-        if (dropped++ % 1000 == 0) LOGI("display: a flush to the helper failed (%s): dropped, the socket kept (%u so far)", strerror(errno), dropped);
+        if (dropped++ % 1000 == 0)
+          LOGI("display: flush notification failed (%s); full damage retained for next flush (%u failures)", strerror(error), dropped);
       }
     }
   }
   pthread_mutex_unlock(&client_lock);
+}
+
+void xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
+                              const struct xh_frame_scanout *scanout)
+{
+  xh_input_frame_shown();  // host guest-flush candidate, not a panel-present event
+  if (backend == BACK_DRM) drm_flush(x, y, w, h);
+  notify_flush(x, y, w, h, scanout);
 }
 
 void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h)

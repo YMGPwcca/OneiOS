@@ -14,7 +14,8 @@
 #include <unistd.h>
 
 // display.c ends input.c's touch-to-frame measurement at each shown frame; input.c is not linked here.
-void xh_input_frame_shown(void) {}
+static unsigned guest_flushes;
+void xh_input_frame_shown(void) { __atomic_add_fetch(&guest_flushes, 1u, __ATOMIC_RELAXED); }
 
 struct message { char magic[4]; uint32_t a, b, c, d; };
 static struct { char path[300]; uint32_t w, h, stride, format; off_t memfd_size; int ok; } helper;
@@ -69,6 +70,9 @@ static int run(const char *dir, const char *mode, unsigned cw, unsigned ch, unsi
   if (helper.memfd_size != (off_t)((size_t)w * 4 * h)) _exit(6);       // what the guest's scanout has to fit: 17.97 MB at 1440x3120
   xh_display *d = xh_display_get();
   if (!d || d->width != w || d->height != h || d->stride != w * 4) _exit(7);
+  if (__atomic_load_n(&guest_flushes, __ATOMIC_RELAXED) != 0) _exit(8);
+  xh_display_flush(0, 0, 1, 1);
+  if (__atomic_load_n(&guest_flushes, __ATOMIC_RELAXED) != 1) _exit(9);
   _exit(0);
 }
 
