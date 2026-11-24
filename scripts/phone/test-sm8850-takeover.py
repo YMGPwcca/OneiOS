@@ -42,6 +42,51 @@ class TakeoverTest(unittest.TestCase):
         self.assertIn('--no-userspace-thermal-180', src)
         self.assertIn('I_ACCEPT_SOFT_GUARD_OFF_180S', src)
 
+    def test_30s_smoke_duration_is_explicit_and_preflight_checked(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(TAKEOVER, "audit", return_value=0), \
+             patch.object(TAKEOVER, "upload", return_value=0):
+            device = unittest.mock.Mock()
+            callback = unittest.mock.Mock()
+            for duration in (0, 31, 180, "30"):
+                with self.assertRaises(ValueError):
+                    TAKEOVER.launch(device, "smoke", Path(folder), reboot_only=True,
+                                    smoke_seconds=duration, on_reboot_smoke_ready=callback)
+            with self.assertRaises(ValueError):
+                TAKEOVER.launch(device, "smoke", Path(folder), reboot_only=True, smoke_seconds=30)
+            device.root.assert_not_called()
+            device.root.return_value = subprocess.CompletedProcess([], 0, b"PREFLIGHT OK\n")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = TAKEOVER.launch(device, "smoke", Path(folder), reboot_only=True,
+                                     smoke_seconds=30, on_reboot_smoke_ready=callback)
+            self.assertEqual(2, rc)
+            self.assertIn("--framework-check reboot-smoke 30", device.root.call_args.args[0])
+            self.assertEqual(1, device.root.call_count)
+            callback.assert_not_called()
+
+    def test_30s_smoke_detached_launch_carries_duration(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(TAKEOVER, "audit", return_value=0), \
+             patch.object(TAKEOVER, "upload", return_value=0), \
+             patch.object(TAKEOVER, "status", return_value="boot=mock-boot\n"), \
+             patch.object(TAKEOVER.time, "monotonic", side_effect=[0.0, 1100.0]):
+            device = unittest.mock.Mock()
+            device.root.side_effect = [
+                subprocess.CompletedProcess([], 0, b"SM8850_FRAMEWORK_SMOKE_SECONDS=30\nPREFLIGHT OK\n"),
+                subprocess.CompletedProcess([], 0, b""),
+            ]
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = TAKEOVER.launch(device, "smoke", Path(folder), reboot_only=True,
+                                     smoke_seconds=30, on_reboot_smoke_ready=unittest.mock.Mock())
+            self.assertEqual(4, rc)
+            cmds = [c.args[0] for c in device.root.call_args_list]
+            self.assertIn("--framework-check reboot-smoke 30", cmds[0])
+            self.assertRegex(cmds[1], r"--framework-session reboot-smoke I_ACCEPT_SM8850_FRAMEWORK_TAKEOVER [a-f0-9]{32} 30")
+            switch = (TAKEOVER.ASSETS / "oneios_switch.sh").read_text()
+            self.assertIn("FW_SMOKE_SECONDS=20", switch)
+            self.assertIn('case "$FW_SMOKE_SECONDS" in 20|30)', switch)
+            self.assertIn("fw_seconds=$FW_SMOKE_SECONDS", switch)
+
     def test_no_guard_preflight_marker_must_match_before_device_launch(self):
         with tempfile.TemporaryDirectory() as folder, \
              patch.object(TAKEOVER, "audit", return_value=0), \
@@ -249,7 +294,7 @@ class TakeoverTest(unittest.TestCase):
         self.assertNotIn("PHYSICAL_KEYS=PRESS_NOW", source)
         self.assertNotIn("Hold Volume Up + Volume Down", source)
         self.assertIn("PHYSICAL_KEYS=DO_NOT_PRESS_VOLUME_UP_PLUS_DOWN", source)
-        self.assertIn("AUTO_REBOOT=EXPECTED_AFTER_20_SECOND_FRAMEWORK_DEADLINE", source)
+        self.assertIn("AUTO_REBOOT=EXPECTED_AFTER_{smoke_seconds}_SECOND_FRAMEWORK_DEADLINE", source)
         self.assertNotIn("REBOOT_SMOKE=PASS_AUTOMATIC_DEADLINE_AND_ONEUI", source)
         self.assertIn("REBOOT_SMOKE=DEADLINE_REQUEST_CONFIRMED_ONEUI_OBSERVED", source)
         self.assertIn("UNASSISTED_RETURN_TO_ONEUI=NOT_VERIFIED", source)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Matched headless CPU study in the existing 20-second Framework-only smoke.
+"""Matched headless CPU study in a fixed 30-second Framework-only window.
 
 Prepare before stopping Framework, reuse exact CI artifacts, run as UID 2000.
-Never extend the existing device deadline or change a thermal/CPU/return gate.
+Select the duration before launch; never extend an armed device deadline or change a thermal/CPU/return gate.
 This is a one-block exploratory A/B; partial results are preserved.
 """
 import argparse
@@ -22,14 +22,17 @@ import time
 HERE = Path(__file__).resolve().parent
 cpu = runpy.run_path(str(HERE / "bench-sm8850-cpu-scaling.py"))
 takeover = runpy.run_path(str(HERE / "sm8850-takeover.py"))
-ROOT, BUILD, ONEOS, CI_SOURCE = (cpu[k] for k in ("ROOT", "BUILD", "ONEOS", "CI_SOURCE"))
+ROOT, BUILD, CI_SOURCE = (cpu[k] for k in ("ROOT", "BUILD", "CI_SOURCE"))
+# The previous CI runtime is unchanged. Only the OneOS switch script has a
+# new bounded smoke-duration option; verify the precise new submodule pin.
+ONEOS = "51a05e95c2a14ecc1d0ca981229d8481ec882c29"
+SMOKE_SECONDS = 30
 call, git, sha, require = (cpu[k] for k in ("call", "git", "sha", "require"))
 parse_log, parse_parallel, masks = (cpu[k] for k in ("parse_log", "parse_parallel", "masks"))
 battery_temp = cpu["battery_temp"]
-CASES = [c for c in cpu["CONFIGS"] if c[0] in (
-    "latency-3-mask02", "latency-3-mask05", "parallel-6-pinned", "parallel-8-wide")]
+CASES = list(cpu["CONFIGS"])  # same 3 latency + 7 parallel cases as original matrix
 LIMIT = 3
-# The existing smoke is only 20 s after verified stop. Reserve several
+# The selected smoke is 30 s after verified stop. Reserve several
 # seconds for return. An incomplete case is not timing evidence.
 RESERVE = 4
 SCALE = cpu["PAR_SCALE"]
@@ -63,7 +66,10 @@ def self_test():
             pass
         else:
             raise AssertionError("invalid deadline accepted")
-    assert len(CASES) == 4
+    assert len(CASES) == 10 and len({c[0] for c in CASES}) == 10
+    assert sum(c[-1] == "latency" for c in CASES) == 3
+    assert sum(c[-1] == "parallel" for c in CASES) == 7
+    assert SMOKE_SECONDS == 30
     for name, ncpu, mask, allowed, pin, kind in CASES:
         a = argv_for("/data/local/tmp/test", name, ncpu, mask, pin, kind, "on")
         b = argv_for("/data/local/tmp/test", name, ncpu, mask, pin, kind, "off")
@@ -77,11 +83,17 @@ def run(args):
     require(git("-C", str(ROOT / "app"), "rev-parse", "HEAD") == ONEOS, "OneOS mismatch")
     head = git("rev-parse", "HEAD")
     call(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", CI_SOURCE, head])
-    call(["git", "-C", str(ROOT), "diff", "--quiet", CI_SOURCE, head, "--", "runtime", "app"])
+    call(["git", "-C", str(ROOT), "diff", "--quiet", CI_SOURCE, head, "--", "runtime"])
+    require(git("rev-parse", "HEAD:app") == ONEOS, "OneOS gitlink mismatch")
+    require(git("-C", str(ROOT / "app"), "diff", "--name-only", cpu["ONEOS"], ONEOS) ==
+            "switcher/assets/oneios_switch.sh", "unexpected OneOS changes since CI")
     ci_log = cpu["ci_receipt"](args.ci_log)
     artifacts = ("xnuhost", "testimage/kernel.kc", "testimage/os.img")
     hashes = {name: sha(BUILD / name) for name in artifacts}
     phone = takeover["Phone"](Path(args.adb), args.serial)
+    probe = phone.root("id -u", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+    require(probe.returncode == 0 and probe.stdout.decode(errors="replace").strip() == "0",
+            "root is not available after the previous reboot; restore your existing root first")
     out = Path(tempfile.mkdtemp(prefix="oneios-framework-cpu."))
     print(f"CI_RECEIPT={ci_log}\nBENCH_DIR={out}", flush=True)
     remote = None
@@ -89,6 +101,7 @@ def run(args):
     results = {}
     manifest = {"checkout": head, "runtime_source": CI_SOURCE, "oneos": ONEOS,
                 "ci_log": str(ci_log), "sha256": hashes, "runs": results,
+                "window_seconds": SMOKE_SECONDS, "planned_cases": [c[0] for c in CASES],
                 "scope": "one matched block; no physical FPS or recovery certification"}
 
     def save():
@@ -189,11 +202,12 @@ def run(args):
             require(expected_boot == boot, "boot changed before OFF arm")
             require(takeover["reboot_smoke_ready"](state, boot, token), "invalid framework stop receipt")
             kv = dict(line.split("=", 1) for line in state.splitlines() if "=" in line)
+            require(kv.get("control/framework.duration") == str(SMOKE_SECONDS), "live duration mismatch")
             deadline = kv.get("control/framework.deadline", "")
             manifest["off_launch"] = token
             manifest["off_deadline"] = deadline
             save()
-            print("===== FRAMEWORK OFF: EXISTING 20S WINDOW =====", flush=True)
+            print(f"===== FRAMEWORK OFF: {SMOKE_SECONDS}S WINDOW, {len(CASES)} CASES =====", flush=True)
             # All files, hashes, data directories and baseline measurements are
             # prepared before this point; no root checks or framework Binder
             # calls inside the workload. Do not extend the recovery deadline.
@@ -219,7 +233,7 @@ def run(args):
         session = out / "existing-smoke"
         session.mkdir(mode=0o700)
         status = takeover["launch"](phone, "smoke", session, reboot_only=True,
-                                    on_reboot_smoke_ready=ready)
+                                    on_reboot_smoke_ready=ready, smoke_seconds=SMOKE_SECONDS)
         manifest["lifecycle_exit"] = status
         save()
         print("===== MATCHED FRAMEWORK STATE RESULTS =====")
@@ -240,7 +254,7 @@ def run(args):
         print(f"FRAMEWORK_CPU_BENCHMARK_MATCHED={matched}/{len(CASES)}")
         print("One matched block only; different idle/clock/thermal conditions may confound results.")
         print(f"BENCH_DIR={out}")
-        require(matched > 0, "no completed OFF workload")
+        require(matched == len(CASES), "incomplete matrix; preserve completed pairs, do not repeat automatically")
     finally:
         if own_force:
             try:
@@ -264,7 +278,7 @@ def main():
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--confirm", action="store_true")
     ap.add_argument("--accept-legacy-watchdog-risk", action="store_true",
-                    help="same explicit consent as existing 20-second reboot smoke")
+                    help="same explicit consent as existing reboot-smoke lifecycle")
     ap.add_argument("--ci-log", type=Path)
     ap.add_argument("--serial")
     ap.add_argument("--adb", default=os.environ.get("ADB", str(Path.home() / "Android/Sdk/platform-tools/adb")))

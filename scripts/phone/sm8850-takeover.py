@@ -513,12 +513,15 @@ def full_takeover_deadline_result(baseline, after, token):
 
 
 def launch(phone, mode, output, *, reboot_only=False, duration=600,
-           passive_soft_thermal=False, on_reboot_smoke_ready=None):
+           passive_soft_thermal=False, on_reboot_smoke_ready=None, smoke_seconds=20):
     # SM8850 full-run deliberately uses the same legacy OneOS V watchdog
     # feeder and mandatory reboot-return path as the observed smoke.
     # It is separately risk-acknowledged, NEVER an in-place handback.
     if on_reboot_smoke_ready is not None and (mode != "smoke" or not reboot_only):
         raise ValueError("CPU benchmark callback requires the existing reboot-only smoke lifecycle")
+    if type(smoke_seconds) is not int or smoke_seconds not in (20, 30) or (
+            smoke_seconds != 20 and (mode != "smoke" or not reboot_only or on_reboot_smoke_ready is None)):
+        raise ValueError("30-second window is restricted to the headless CPU reboot-smoke callback")
     legacy_reboot = reboot_only or mode == "run"
     if passive_soft_thermal and (mode != "run" or duration != 180):
         raise ValueError("passive software thermal experiment requires exactly 180s run")
@@ -534,8 +537,9 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
         return 2
     shell = f"/system/bin/sh {STAGE}/oneios_switch.sh"
     session_mode = "reboot-smoke" if reboot_only else mode
+    smoke_token = f" {smoke_seconds}" if reboot_only and smoke_seconds != 20 else ""
     check = phone.root(f"{experimental_prefix}{shell} --framework-check {session_mode}" +
-                       (f" {duration}" if mode == "run" else "") +
+                       (f" {duration}" if mode == "run" else smoke_token) +
                        (" I_ACCEPT_SOFT_GUARD_OFF_180S" if passive_soft_thermal else ""),
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
     check_output = check.stdout.decode("utf-8", "replace") if isinstance(check.stdout, bytes) else (check.stdout or "")
@@ -543,6 +547,9 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
         print(check_output, end="" if check_output.endswith("\n") else "\n", flush=True)
     if check.returncode:
         return check.returncode
+    if smoke_seconds != 20 and f"SM8850_FRAMEWORK_SMOKE_SECONDS={smoke_seconds}" not in check_output.splitlines():
+        print("BLOCKED: root preflight did not confirm the requested smoke duration", file=sys.stderr, flush=True)
+        return 2
     expected_off = "SM8850_SOFT_THERMAL_GUARD=OFF_NOT_SPAWNED" in check_output
     if passive_soft_thermal != expected_off:
         print("BLOCKED: root preflight thermal profile disagrees with the requested host profile; "
@@ -558,7 +565,7 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
     boot = re.search(r"^boot=(.+)$", baseline, re.M).group(1)
     token = uuid.uuid4().hex
     risk_token = " I_ACCEPT_LEGACY_WATCHDOG_FULL_600S_RISK" if mode == "run" else ""
-    duration_token = f" {duration}" if mode == "run" else ""
+    duration_token = f" {duration}" if mode == "run" else smoke_token
     # Explicit positional thermal profile survives detached su -> setsid -> sh -c.
     # A lost command-scoped env must NOT silently change the live profile.
     thermal_profile_token = " I_ACCEPT_SOFT_GUARD_OFF_180S" if passive_soft_thermal else ""
@@ -593,7 +600,7 @@ mkdir launches/{token}
             print(f"DEADLINE_RETURN={duration}_SECONDS_AFTER_FRAMEWORK_STOP", flush=True)
             print("RECOVERY=MANDATORY_REBOOT_NOT_INPLACE; WATCHDOG_LEGACY_UNQUALIFIED=YES", flush=True)
         else:
-            print("This smoke has a 20-second automatic reboot deadline AFTER Framework takeover.", flush=True)
+            print(f"This smoke has a {smoke_seconds}-second automatic reboot deadline AFTER Framework takeover.", flush=True)
         print("Do NOT press Volume Up + Down during this session.", flush=True)
     end = time.monotonic() + (max(duration, 60) + 400 if mode == "run" else 1000)
     reboot_seen = None
@@ -643,7 +650,7 @@ mkdir launches/{token}
                 if reboot_only and not confirmed_announced and reboot_smoke_ready(state, boot, token):
                     print("TAKEOVER_CONFIRMED=YES", flush=True)
                     print("PHYSICAL_KEYS=DO_NOT_PRESS_VOLUME_UP_PLUS_DOWN", flush=True)
-                    print("AUTO_REBOOT=EXPECTED_AFTER_20_SECOND_FRAMEWORK_DEADLINE", flush=True)
+                    print(f"AUTO_REBOOT=EXPECTED_AFTER_{smoke_seconds}_SECOND_FRAMEWORK_DEADLINE", flush=True)
                     print("This is Framework-only smoke, not iOS boot or physical-key PASS.", flush=True)
                     confirmed_announced = True
                     if on_reboot_smoke_ready is not None:
@@ -651,6 +658,10 @@ mkdir launches/{token}
                         # the existing device deadline. It never extends it,
                         # controls recovery, or changes thermal policy.
                         try:
+                            if smoke_seconds != 20:
+                                kv = dict(line.split("=", 1) for line in state.splitlines() if "=" in line)
+                                if kv.get("control/framework.duration") != str(smoke_seconds):
+                                    raise RuntimeError("live smoke duration differs from preflight")
                             on_reboot_smoke_ready(phone, state, boot, token)
                         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as error:
                             print(f"FRAMEWORK_CPU_BENCHMARK=INCOMPLETE {error}", flush=True)
