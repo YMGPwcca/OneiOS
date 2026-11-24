@@ -513,10 +513,12 @@ def full_takeover_deadline_result(baseline, after, token):
 
 
 def launch(phone, mode, output, *, reboot_only=False, duration=600,
-           passive_soft_thermal=False):
+           passive_soft_thermal=False, on_reboot_smoke_ready=None):
     # SM8850 full-run deliberately uses the same legacy OneOS V watchdog
     # feeder and mandatory reboot-return path as the observed smoke.
     # It is separately risk-acknowledged, NEVER an in-place handback.
+    if on_reboot_smoke_ready is not None and (mode != "smoke" or not reboot_only):
+        raise ValueError("CPU benchmark callback requires the existing reboot-only smoke lifecycle")
     legacy_reboot = reboot_only or mode == "run"
     if passive_soft_thermal and (mode != "run" or duration != 180):
         raise ValueError("passive software thermal experiment requires exactly 180s run")
@@ -644,6 +646,14 @@ mkdir launches/{token}
                     print("AUTO_REBOOT=EXPECTED_AFTER_20_SECOND_FRAMEWORK_DEADLINE", flush=True)
                     print("This is Framework-only smoke, not iOS boot or physical-key PASS.", flush=True)
                     confirmed_announced = True
+                    if on_reboot_smoke_ready is not None:
+                        # The callback has a much shorter time budget than
+                        # the existing device deadline. It never extends it,
+                        # controls recovery, or changes thermal policy.
+                        try:
+                            on_reboot_smoke_ready(phone, state, boot, token)
+                        except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as error:
+                            print(f"FRAMEWORK_CPU_BENCHMARK=INCOMPLETE {error}", flush=True)
                 if reboot_only and current_boot != boot:
                     # Do not fail early when the phone has rebooted but
                     # boot_completed/zygote_next/system_server are still starting.
@@ -708,7 +718,7 @@ mkdir launches/{token}
                     failure += f" exit={code}"
                 timeline.write(f"Root/ADB status unavailable: {failure}\n")
                 timeline.flush()
-                if mode == "run":
+                if mode == "run" or on_reboot_smoke_ready is not None:
                     # The device may have booted successfully but permanently
                     # lost its *ephemeral* DirtyFrag root. The normal status()
                     # uses su and would otherwise poll for 1000 seconds.
@@ -723,12 +733,15 @@ mkdir launches/{token}
                             (output / "post-reboot-no-root.txt").write_text(passive_text)
                             timeline.write("POST_REBOOT_UNPRIVILEGED\n" + passive_text + "\n")
                             timeline.flush()
-                            for line in full_run_rootless_receipt(
-                                passive, guest_ready=full_guest_seen,
-                                display_first_frame=full_display_seen,
-                                cpu_mask=full_cpu_seen,
-                            ):
-                                print(line, flush=True)
+                            if on_reboot_smoke_ready is not None:
+                                print("FRAMEWORK_CPU_BENCHMARK_NEW_ANDROID_BOOT=OBSERVED", flush=True)
+                            else:
+                                for line in full_run_rootless_receipt(
+                                    passive, guest_ready=full_guest_seen,
+                                    display_first_frame=full_display_seen,
+                                    cpu_mask=full_cpu_seen,
+                                ):
+                                    print(line, flush=True)
                             print("Root may have disappeared because DirtyFrag is ephemeral.", flush=True)
                             print("Device booted; preserving stage evidence without another takeover.", flush=True)
                             return 4
