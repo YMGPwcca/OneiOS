@@ -549,7 +549,10 @@ diff --git a/osfmk/vm/vm_map.c b/osfmk/vm/vm_map.c
 diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
 --- a/osfmk/vm/vm_shared_region.c
 +++ b/osfmk/vm/vm_shared_region.c
-@@ -926,1 +926,9 @@
+@@ -919,7 +919,15 @@
+ 		shared_region = NULL;
+ 	}
+ 
  done:
 +#if XNU_HOSTED
 +	{
@@ -559,6 +562,9 @@ diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
 +	}
 +#endif /* XNU_HOSTED */
 +
+ 	if (shared_region) {
+ 		SHARED_REGION_TRACE_INFO(
+ 			("shared_region: create(root=%p,cpu=<%d,%d>,64bit=%d,reslide=%d,driverkit=%d,"
 diff --git a/osfmk/vm/vm_map_lock.c b/osfmk/vm/vm_map_lock.c
 --- a/osfmk/vm/vm_map_lock.c
 +++ b/osfmk/vm/vm_map_lock.c
