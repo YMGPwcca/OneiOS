@@ -145,6 +145,7 @@ static struct {
   bool available, seccomp;
   bool map_defer;                            // map-defer (default on)
   bool profile_tasks;                        // perf-task=1: opt-in task-process telemetry, never enabled implicitly
+  xh_task_timing_profile timing_total;       // process-lifetime samples, including tasks that have exited
   uint64_t spin_host, spin_task;             // counter ticks: spin-host, spin-task
   uint64_t base;                             // of the stub region = the first address tasks may not use
   int trap_fd, sock;
@@ -381,6 +382,17 @@ static inline void profile_event(task *t, unsigned event)
   xh_task_profile_add(&t->profile, v ? v->cpu.index : XH_TP_HOST_BUCKET, event);
 }
 
+// Only called on opt-in paths. The total survives destroyed task slots.
+// It is wall-clock wait/acknowledgment latency, not isolated mmap CPU time.
+static inline void profile_timing(task *t, enum xh_tt_stage stage, bool ack,
+                                  uint64_t start, uint64_t end)
+{
+  const bool valid = ack && end >= start;
+  const uint64_t ns = valid ? xh_ticks_ns(end - start) : 0;
+  xh_tt_record(&t->profile.timing, stage, valid, ns);
+  xh_tt_record(&T.timing_total, stage, valid, ns);
+}
+
 // ---- orders to a task's service thread ----------------------------------------------------------
 static task *task_of(uint64_t handle)
 {
@@ -427,8 +439,10 @@ static int64_t order(task *t, const struct xs_op *ops, unsigned count)
   struct xs_service_page *sp = slot_page(t->service_slot);
   int64_t result = 0;
   if (count > XS_OPS_MAX - XS_PENDING_MAX) return -EINVAL;
+  uint64_t lock_start = T.profile_tasks ? xh_counter() : 0;
   pthread_mutex_lock(&t->lock);
   pthread_mutex_lock(&t->qlock);
+  uint64_t lock_acquired = T.profile_tasks ? xh_counter() : 0;
   if (t->dead) { t->npending = t->nunmaps = 0; pthread_mutex_unlock(&t->qlock); pthread_mutex_unlock(&t->lock); return -ESRCH; }
   // The deferred maps and unmaps first, in their order: an unmap or protect after them must find them done.
   unsigned first = t->npending;
@@ -456,6 +470,7 @@ static int64_t order(task *t, const struct xs_op *ops, unsigned count)
   clock_gettime(CLOCK_MONOTONIC, &began);
   int rc = wait_word(t, &sp->done, 10);
   clock_gettime(CLOCK_MONOTONIC, &ended);
+  uint64_t order_ack = T.profile_tasks ? xh_counter() : 0;
   // An order the task's service thread takes long over, or never answers, stalls the vCPU that gave it: say which.
   long took_ms = (long)((ended.tv_sec - began.tv_sec) * 1000 + (ended.tv_nsec - began.tv_nsec) / 1000000);
   if (rc || took_ms >= 1000) {
@@ -485,6 +500,11 @@ static int64_t order(task *t, const struct xs_op *ops, unsigned count)
     for (unsigned i = 0; i < count; i++) if (sp->ops[first + i].result < 0) { result = sp->ops[first + i].result; break; }
   }
   unmaps_done(t);
+  if (T.profile_tasks) {
+    profile_timing(t, XH_TT_ORDER_LOCK, true, lock_start, lock_acquired);
+    profile_timing(t, first ? XH_TT_ORDER_DEFERRED_ACK : XH_TT_ORDER_DIRECT_ACK,
+                   rc == 0, t0, order_ack);
+  }
   pthread_mutex_unlock(&t->lock);
   return result;
 }
@@ -1043,8 +1063,10 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   __atomic_add_fetch(&t->running, 1, __ATOMIC_SEQ_CST);        // counted first, then the queue is read (task.running)
   if (__atomic_load_n(&t->npending, __ATOMIC_SEQ_CST) || __atomic_load_n(&t->unmaps_out, __ATOMIC_SEQ_CST)) {
     // `lock`: also the wait for a taker that is carrying out unmaps (it holds `lock` until they are done).
+    uint64_t lock_start = T.profile_tasks ? xh_counter() : 0;
     pthread_mutex_lock(&t->lock);
     pthread_mutex_lock(&t->qlock);
+    uint64_t lock_acquired = T.profile_tasks ? xh_counter() : 0;
     nops = t->npending;
     if (nops && !t->dead) {
       if (T.profile_tasks) xh_tq_record_batch(&t->profile.queue, false, nops, t->nunmaps);
@@ -1057,6 +1079,8 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
       draining = true;
     }
     pthread_mutex_unlock(&t->qlock);
+    if (T.profile_tasks)
+      profile_timing(t, XH_TT_RELEASE_LOCK, true, lock_start, lock_acquired);
     if (!draining) pthread_mutex_unlock(&t->lock);
   }
   tp->state = *state;
@@ -1074,16 +1098,21 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   struct timespec step = { 0, 200 * 1000 * 1000 };
   for (;;) {
     if (draining && __atomic_load_n(&tp->ops_done, __ATOMIC_ACQUIRE)) {
+      uint64_t ack = T.profile_tasks ? xh_counter() : 0;
       struct xs_op *ops = (struct xs_op *)((uint8_t *)tp + XS_OPS_OFF);
       for (unsigned i = 0; i < nops; i++) log_map_failure(t, &ops[i], "in the released thread");
       unmaps_done(t);
       pthread_mutex_unlock(&t->lock);
       draining = false;
       xh_hist_add(&p->h[XP_DRAIN], xh_ticks_ns(xh_counter() - released));
+      if (T.profile_tasks) profile_timing(t, XH_TT_RELEASE_ACK, true, released, ack);
     }
     if (!draining && __atomic_load_n(&tp->to_host, __ATOMIC_ACQUIRE)) break;
     if (t->dead) {
-      if (draining) { unmaps_done(t); pthread_mutex_unlock(&t->lock); }
+      if (draining) {
+        if (T.profile_tasks) profile_timing(t, XH_TT_RELEASE_ACK, false, 0, 0);
+        unmaps_done(t); pthread_mutex_unlock(&t->lock);
+      }
       if (sleeping) __atomic_store_n(&tp->host_sleeping, 0, __ATOMIC_RELAXED);
       trap->kind = XH_TRAP_EXITED; trap->exit_status = t->exit_status;
       run_ended(t);
