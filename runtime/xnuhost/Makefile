@@ -234,6 +234,18 @@ bench-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   --display none --no-input --width 64 --height 64 --boot-args testkernel-bench$(BENCH_SCALE:%==%) $(BENCH_SET) 2>&1 | \
 	   grep -E 'BENCH|perf:|TESTKERNEL: (all|FAIL)|hand-off'
 
+# Paired synthetic profiler overhead measurement; deliberately not run during
+# CI because this is a benchmark, not a latency acceptance gate.
+PROFILER_PAIRS ?= 6
+PROFILER_SCALE ?= 2
+check-profiler-benchmark-parser:
+	python3 tests/bench_task_profiler.py --self-test
+
+bench-profiler-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc check-profiler-benchmark-parser
+	python3 tests/bench_task_profiler.py --runner "$(ARM64_RUN)" \
+	  --binary "$(A)/xnuhost" --image "$(A)/testimage" \
+	  --pairs "$(PROFILER_PAIRS)" --scale "$(PROFILER_SCALE)"
+
 # The parallel test (docs/booter.md 2.6b): N threads of one task, one per vCPU, the same busy work at once; the speed-up
 # for 1, 2, 4 and 8 threads. PAR_CPUS=8 vCPUs; PAR_SET="--set cpu-pin=2" pins vCPU i (and its thread) on host CPU i.
 PAR_CPUS ?= 8
@@ -244,7 +256,7 @@ parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
 
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64
+test: $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
 	$(H)/test_sm8850_stage_admission
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_task_order_diag
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_task_profile
@@ -258,4 +270,4 @@ test: $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_
 
 clean:
 	rm -rf build
-.PHONY: all test check-arm64 check-task-profiler-arm64 bench-arm64 parallel-arm64 clean
+.PHONY: all test check-arm64 check-task-profiler-arm64 bench-arm64 parallel-arm64 clean bench-profiler-arm64 check-profiler-benchmark-parser
