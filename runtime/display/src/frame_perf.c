@@ -63,10 +63,10 @@ void xhd_perf_record_trace(struct xhd_frame_perf *p, const struct xhd_trace_pend
   p->traced_posts++;
   p->traced_flushes += batch->traced;
   p->traced_coalesced += batch->traced - 1;
-  if (batch->provenance_mixed) {
-    p->source_mixed_posts++;
-  } else if (batch->provenance_packets != batch->traced || batch->legacy || batch->bad) {
+  if (batch->provenance_packets != batch->traced || batch->legacy || batch->bad || batch->seq_gaps) {
     p->source_unknown_posts++;
+  } else if (batch->provenance_mixed) {
+    p->source_mixed_posts++;
   } else {
     p->source_unique_posts++;
     // Group by (queue gen, resource gen, resource ID, owner) so ID reuse,
@@ -106,6 +106,20 @@ void xhd_perf_record_trace(struct xhd_frame_perf *p, const struct xhd_trace_pend
     observe(&p->flush_to_post_latest, (post_done_ns - batch->newest_flush_ns) / 1000);
   if (batch->newest_flush_ns && batch->newest_recv_ns >= batch->newest_flush_ns)
     observe(&p->flush_to_helper, (batch->newest_recv_ns - batch->newest_flush_ns) / 1000);
+}
+
+bool xhd_perf_finish_attempt(struct xhd_frame_perf *p, int post_rc, bool copy_ok,
+                             uint64_t post_done_ns, uint64_t lock_ns, uint64_t copy_ns,
+                             uint64_t post_ns, uint64_t copied_pixels, bool full_copy,
+                             const struct xhd_trace_pending *batch)
+{
+  p->post_attempts++;
+  if (post_rc) p->post_errors++;
+  if (!copy_ok || !copied_pixels) p->copy_errors++;
+  if (post_rc || !copy_ok || !copied_pixels) return false;
+  xhd_perf_record(p, post_done_ns, lock_ns, copy_ns, post_ns, copied_pixels, full_copy);
+  xhd_perf_record_trace(p, batch, post_done_ns);
+  return true;
 }
 
 bool xhd_perf_due(const struct xhd_frame_perf *p, uint64_t now_ns)

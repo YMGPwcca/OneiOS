@@ -242,7 +242,7 @@ int xh_display_init(const xh_config *c, unsigned *width, unsigned *height, unsig
   frame_trace_enabled = c->frame_trace && backend == BACK_SHM;
   frame_seq = 0;
   if (frame_trace_enabled)
-    LOGI("display: frame-trace=1: XHDF v1 flush sequence and CLOCK_MONOTONIC timestamps; helper can read legacy prefix; not panel-present timestamps");
+    LOGI("display: frame-trace=1: XHDF v1/v2/v3 flush sequence and CLOCK_MONOTONIC timestamps; legacy damage prefix preserved; not panel-present timestamps");
   if (backend == BACK_DRM && drm_init()) return -1;
   if (backend == BACK_SHM && shm_listen(c)) return -1;
   // The guest's frame: what is configured, else the mode the display helper reports (surfaceflinger's, after its

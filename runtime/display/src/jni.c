@@ -94,7 +94,7 @@ JNIEXPORT jintArray JNICALL Java_OneiOSDisplay_nFit(JNIEnv *env, jclass type, ji
 
 // Posts frames until the socket closes (0) or a signal asks to stop (1); negative on an error.
 // Pacing: the next buffer is only handed out when surfaceflinger has taken the last one, so
-// ANativeWindow_lock blocks to the panel's vsync, and every flush that came meanwhile is one post.
+// ANativeWindow_lock can block for buffer availability; neither lock nor post is panel-present evidence.
 // The buffer layout and dataspace a frame format gets (xhd_buffer_for): {buffer, dataspace}.
 JNIEXPORT jintArray JNICALL Java_OneiOSDisplay_nBuffer(JNIEnv *env, jclass type, jint format)
 {
@@ -139,7 +139,8 @@ static void log_frame_perf(const struct xhd_frame_perf *p, uint64_t now_ns)
           "oneios-display: perf: mono_ms=%llu window_ms=%llu posts=%llu posted_rate=%.2f "
           "active_cadence=%.2f active_gaps=%llu gap_p95_us=%llu "
           "lock_p95_us=%llu lock_max_us=%llu copy_p95_us=%llu copy_max_us=%llu "
-          "post_p95_us=%llu post_max_us=%llu full_copies=%llu copied_pixels=%llu\n",
+          "post_p95_us=%llu post_max_us=%llu full_copies=%llu copied_pixels=%llu "
+          "post_attempts=%llu post_errors=%llu copy_errors=%llu\n",
           (unsigned long long)(now_ns / 1000000u),
           (unsigned long long)window_ms,
           (unsigned long long)p->posts,
@@ -154,7 +155,10 @@ static void log_frame_perf(const struct xhd_frame_perf *p, uint64_t now_ns)
           (unsigned long long)xhd_perf_quantile_bound_us(&p->post, 95),
           (unsigned long long)p->post.max_us,
           (unsigned long long)p->full_copies,
-          (unsigned long long)p->copied_pixels);
+          (unsigned long long)p->copied_pixels,
+          (unsigned long long)p->post_attempts,
+          (unsigned long long)p->post_errors,
+          (unsigned long long)p->copy_errors);
 }
 
 // Optional transport->buffer-post report; actual panel presentation is NOT sampled.
@@ -305,9 +309,16 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
       uint32_t width = (uint32_t)buffer.width < f->width ? (uint32_t)buffer.width : f->width;
       uint32_t height = (uint32_t)buffer.height < f->height ? (uint32_t)buffer.height : f->height;
       // The buffer's own format decides the copy (RGBA_8888 and RGBX_8888 are both R,G,B bytes).
-      int layout = buffer.format == FORMAT_BGRA_8888 || buffer.format == FORMAT_RGBA_FP16 ? buffer.format : FORMAT_RGBX_8888;
+      int layout = buffer.format == FORMAT_BGRA_8888 || buffer.format == FORMAT_RGBA_FP16 ? buffer.format :
+                   buffer.format == 1 /* RGBA_8888 */ || buffer.format == FORMAT_RGBX_8888 ? FORMAT_RGBX_8888 : 0;
       size_t bytes = layout == FORMAT_RGBA_FP16 ? 8 : 4;
-      if (buffer.width > 0 && buffer.height > 0 && buffer.stride >= buffer.width && xhd_rect_clip(&r, width, height)) {
+      // Do not count a partially copied requested rectangle as a valid guest buffer.
+      if (layout && buffer.bits && buffer.width > 0 && buffer.height > 0 &&
+          buffer.stride >= buffer.width && xhd_rect_clip(&r, width, height) &&
+          r.x <= pending.x && r.y <= pending.y &&
+          (uint64_t)r.x + r.w >= (uint64_t)pending.x + pending.w &&
+          (uint64_t)r.y + r.h >= (uint64_t)pending.y + pending.h &&
+          (frames >= 4 || (r.w == f->width && r.h == f->height))) {
         if (xhd_copy(buffer.bits, (size_t)buffer.stride * bytes, layout, f->pixels, f->stride, f->format, r) == 0) {
           copied_pixels = (uint64_t)r.w * r.h;
           full_copy = r.w == f->width && r.h == f->height;
@@ -315,13 +326,20 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
       }
     }
     uint64_t copy_done_ns = xhd_perf_clock_ns();
-    ANativeWindow_unlockAndPost(window);
+    // The public API must release a successfully locked buffer even on a copy error.
+    // If it posts invalid contents, report failure rather than claiming a guest frame.
+    int post_error = ANativeWindow_unlockAndPost(window);
     uint64_t post_done_ns = xhd_perf_clock_ns();
-    xhd_perf_record(&perf, post_done_ns, lock_done_ns - lock_start_ns,
-                    copy_done_ns - copy_start_ns, post_done_ns - copy_done_ns,
-                    copied_pixels, full_copy);
-    if (trace.active) xhd_perf_record_trace(&perf, &trace.pending, post_done_ns);
-    trace.pending = (struct xhd_trace_pending){ 0 };  // only after a buffer was posted
+    if (!xhd_perf_finish_attempt(&perf, post_error, copied_pixels != 0, post_done_ns,
+                                 lock_done_ns - lock_start_ns, copy_done_ns - copy_start_ns,
+                                 post_done_ns - copy_done_ns, copied_pixels, full_copy,
+                                 trace.active ? &trace.pending : NULL)) {
+      fprintf(stderr, "oneios-display: buffer attempt failed (post_rc=%d copied_pixels=%llu); stopping helper\n",
+              post_error, (unsigned long long)copied_pixels);
+      result = -4;
+      break;
+    }
+    trace.pending = (struct xhd_trace_pending){ 0 };  // only after a successful valid-content post
     if (frames++ == 0) {
       char waited[96] = "";
       if (held) snprintf(waited, sizeof waited, "; held %.1f s for session/ready, %lu wakes for flushes not shown", seconds_since(&hold_start), held_flushes);
@@ -334,16 +352,19 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
   // Preserve the last partial window even when the guest disconnects or the
   // device-side timeout stops the preview while a UI animation is in flight.
   uint64_t finished_ns = xhd_perf_clock_ns();
-  if (perf.posts || xhd_perf_due(&perf, finished_ns)) {
+  if (perf.posts || perf.post_attempts || xhd_perf_due(&perf, finished_ns)) {
     log_frame_perf(&perf, finished_ns);
     if (trace.active) log_frame_trace(&perf, finished_ns);
     if (trace.active) log_scanout_perf(&perf, finished_ns);
   }
-  if (trace.active && trace.pending.traced)
-    fprintf(stderr, "oneios-display: frame-trace: unposted_on_stop=%llu first_seq=%llu last_seq=%llu; not counted as presented frames\n",
+  if (trace.active && (trace.pending.traced || trace.pending.bad || trace.pending.legacy || trace.pending.seq_gaps))
+    fprintf(stderr, "oneios-display: frame-trace: unposted_on_stop=%llu first_seq=%llu last_seq=%llu invalid=%llu legacy=%llu seq_gaps=%llu; not counted as valid posts\n",
             (unsigned long long)trace.pending.traced,
             (unsigned long long)trace.pending.first_seq,
-            (unsigned long long)trace.pending.last_seq);
+            (unsigned long long)trace.pending.last_seq,
+            (unsigned long long)trace.pending.bad,
+            (unsigned long long)trace.pending.legacy,
+            (unsigned long long)trace.pending.seq_gaps);
   ANativeWindow_release(window);
   fprintf(stderr, "oneios-display: %s after %lu frames\n", result == 0 ? "the socket closed" : result == 1 ? "asked to stop" : "error", frames);
   return result;

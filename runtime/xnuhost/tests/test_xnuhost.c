@@ -1778,6 +1778,21 @@ static void test_queue_join(void)
   CHECK(!xs_queue_join(&last, &op));
   op = qop(XS_OP_MAP, 0x100000 + 3 * P, P, 3, 0x8000 + 3 * P);
   CHECK(!xs_queue_join(&last, &op));
+  // Descending adjacent ranges, including a third page; different backing or
+  // permissions and a gap/overlap are not equivalent and must stay separate.
+  last = qop(XS_OP_MAP, 0x100000 + 2 * P, P, 3, 0x8000 + 2 * P);
+  op = qop(XS_OP_MAP, 0x100000 + P, P, 3, 0x8000 + P);
+  CHECK(xs_queue_join(&last, &op) && last.va == 0x100000 + P && last.size == 2 * P && last.offset == 0x8000 + P);
+  op = qop(XS_OP_MAP, 0x100000, P, 1, 0x8000);
+  CHECK(!xs_queue_join(&last, &op) && last.size == 2 * P);
+  op = qop(XS_OP_MAP, 0x100000, P, 3, 0x40000);
+  CHECK(!xs_queue_join(&last, &op));
+  op = qop(XS_OP_MAP, 0x100000 - P, P, 3, 0x8000 - P);
+  CHECK(!xs_queue_join(&last, &op));
+  op = qop(XS_OP_MAP, 0x100000, 2 * P, 3, 0x8000);
+  CHECK(!xs_queue_join(&last, &op));
+  op = qop(XS_OP_MAP, 0x100000, P, 3, 0x8000);
+  CHECK(xs_queue_join(&last, &op) && last.va == 0x100000 && last.size == 3 * P && last.offset == 0x8000);
   // the same range mapped again: the later map
   last = qop(XS_OP_MAP, 0x200000, P, 1, 0x1000 * 4);
   op = qop(XS_OP_MAP, 0x200000, P, 3, 0x40000);

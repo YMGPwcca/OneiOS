@@ -226,6 +226,22 @@ static void test_unmap_queue(uint64_t task, uint64_t thread, uint64_t code_va, u
   check(H->task_unmap(C0, task, x_va, 0x4000) == 0 && H->task_map(C0, task, x_va, 0x4000, XH_PROT_READ, other_pa) == 0 &&
         load_once(C0, thread, code_va, x_va, &trap, &got) == XH_TRAP_BRK && got == 0x2222,
         "an unmap and a new map of the same address, queued: the thread sees the new page");
+  // Descending adjacent VA and RAM pages are eligible for one deferred map.
+  // Verify both pages, then verify that a later unmap still takes effect.
+  const uint64_t rev_va = 0x700000000ull;
+  uint64_t rev_lo = page_alloc(), rev_hi = page_alloc();
+  *(volatile uint64_t *)(uintptr_t)kva(rev_lo) = 0xabc1;
+  *(volatile uint64_t *)(uintptr_t)kva(rev_hi) = 0xabc2;
+  check(rev_hi == rev_lo + 0x4000 &&
+        H->task_map(C0, task, rev_va + 0x4000, 0x4000, XH_PROT_READ, rev_hi) == 0 &&
+        H->task_map(C0, task, rev_va, 0x4000, XH_PROT_READ, rev_lo) == 0 &&
+        load_once(C0, thread, code_va, rev_va, &trap, &got) == XH_TRAP_BRK && got == 0xabc1 &&
+        load_once(C0, thread, code_va, rev_va + 0x4000, &trap, &got) == XH_TRAP_BRK && got == 0xabc2,
+        "descending adjacent maps preserve both backing pages");
+  check(H->task_unmap(C0, task, rev_va, 0x8000) == 0 &&
+        load_once(C0, thread, code_va, rev_va, &trap, NULL) == XH_TRAP_FAULT && trap.far == rev_va &&
+        load_once(C0, thread, code_va, rev_va + 0x4000, &trap, NULL) == XH_TRAP_FAULT && trap.far == rev_va + 0x4000,
+        "unmap after descending maps faults on both pages");
   // A full queue (256): the next unmap is ordered and takes the queue with it; the last one is queued again.
   int ok = 1;
   for (unsigned i = 0; i < 300; i++) ok &= H->task_unmap(C0, task, fill_va + (uint64_t)i * 0x4000, 0x4000) == 0;

@@ -197,6 +197,32 @@ static void test_copy(void)
   CHECK(dst[0] == 0xee && dst[DS * 4] == 0xee && dst[DS + 7] == 0xee && dst[DS + 24] == 0xee);
 }
 
+static void test_contiguous_copy(void)
+{
+  // Full-width subspan with nonzero y, both raw layouts: preserve every byte
+  // before and after the span. Padded rows and partial rects remain row copies.
+  for (unsigned bpp = 4; bpp <= 8; bpp += 4) {
+    uint8_t src[8 * 5 * 6], dst[sizeof src], want[sizeof src];
+    for (size_t i = 0; i < sizeof src; i++) src[i] = (uint8_t)(i * 13 + 7);
+    int buffer = bpp == 4 ? XHD_BUFFER_BGRA_8888 : XHD_BUFFER_RGBA_FP16;
+    uint32_t format = bpp == 4 ? XHD_FORMAT_BGRX : XHD_FORMAT_RGBA16F;
+    size_t stride = bpp * 5;
+    struct xhd_rect r = { 0, 1, 5, 3 };
+    memset(dst, 0xa5, sizeof dst); memset(want, 0xa5, sizeof want);
+    memcpy(want + stride, src + stride, stride * 3);
+    CHECK(xhd_copy(dst, stride, buffer, src, stride, format, r) == 0);
+    CHECK(!memcmp(dst, want, sizeof dst));
+    memset(dst, 0xa5, sizeof dst); memset(want, 0xa5, sizeof want);
+    stride += bpp;
+    for (unsigned y = 1; y < 4; y++) memcpy(want + y * stride, src + y * stride, bpp * 5);
+    CHECK(xhd_copy(dst, stride, buffer, src, stride, format, r) == 0);
+    CHECK(!memcmp(dst, want, sizeof dst));
+    r = (struct xhd_rect){ 0 };
+    CHECK(xhd_copy(dst, stride, buffer, src, stride, format, r) == 0);
+    CHECK(!memcmp(dst, want, sizeof dst));
+  }
+}
+
 // ---- the protocol against a serving thread --------------------------------------------------
 struct server { char path[200]; int delay_ms; uint32_t width, height; int mode; int done; };
 
@@ -365,7 +391,23 @@ static void test_frame_trace(void)
   CHECK(trace.pending.traced == 2 && trace.pending.provenance_packets == 2 &&
         trace.pending.provenance_mixed && trace.pending.bad == 1 && trace.last_seq == 17);
 
-  // A mismatched timestamp/provenance is rejected as trace data, not damage.
+  // A future/oversized record with a valid v3 prefix is not valid v3.
+  // Keep the rectangle for display; reject metadata and preserve sequence cursor.
+  trace.pending = (struct xhd_trace_pending){ 0 };
+  damage = (struct xhd_rect){ 0 };
+  v3.reserved = 0; v3.base.base.seq = 18;
+  uint8_t oversized[sizeof v3 + 8];
+  memset(oversized, 0, sizeof oversized);
+  memcpy(oversized, &v3, sizeof v3);
+  CHECK(send(pair[0], oversized, sizeof oversized, 0) == (ssize_t)sizeof oversized);
+  CHECK(xhd_drain_trace(pair[1], &frame, &damage, &trace) == 0);
+  CHECK(trace.last_seq == 17 && trace.pending.traced == 0 && trace.pending.bad == 1);
+  CHECK(damage.x == v3.base.base.x && damage.w == v3.base.base.w);
+  // Recognize bad extended data before the first valid trace.
+  trace = (struct xhd_trace_state){ 0 }; damage = (struct xhd_rect){ 0 };
+  CHECK(send(pair[0], &v3, 24, 0) == 24);
+  CHECK(xhd_drain_trace(pair[1], &frame, &damage, &trace) == 0);
+  CHECK(trace.active && trace.pending.bad == 1 && !trace.pending.traced && damage.w == v3.base.base.w);
   close(pair[0]); close(pair[1]);
 }
 
@@ -595,6 +637,7 @@ int main(int argc, char **argv)
   test_rects();
   test_hello_check();
   test_copy();
+  test_contiguous_copy();
   test_formats();
   test_copy_formats();
   test_frame_trace();

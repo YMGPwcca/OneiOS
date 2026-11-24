@@ -99,3 +99,32 @@ Firmware confirms CPUs 0-5 share cluster 0, capacity 741 and advertised max 3,62
 Separate per-condition median syscall means: old/new on 0-2 = 8.325/5.853 us; on 0-7 = 12.613/11.988 us. Do not calculate the paired median delta from ratios of separate medians. Only three measured blocks; mixed secondary metrics (especially tiny enqueue costs near counter resolution) do not establish universal improvements. Retain the exact scalar copy candidate provisionally based on correctness and favorable syscall signal, not a proven full iOS speedup. Wider mask is unfavorable for this synthetic workload, not evidence that Prime cores are intrinsically slower or that production affinity should change.
 
 Next optional focused topology study uses only the existing validated P1 candidate binary and fixture hashes from the completed Doze runs.json. Three equal-cardinality masks: 0-2 (hex 7), 3-5 (hex 38), and 5-7 (hex e0; one regular plus two Prime cores). All cpu-pin=0, same 3 vCPU workload and existing safety/admission checks. Require Deep IDLE and screen off before/after every run, exact final vCPU mask, and unchanged runtime source. One warmup and three measured rotating blocks. No rebuild, full CI rerun, root, takeover, clock/thermal changes or new default. This isolates mask composition at fixed cardinality better than 0-2 vs 0-7 but does not isolate Prime-only behavior, actual CPU residency, or full iOS scaling. Keep P1 VM, timer and fault optimizations evidence-gated; P0 frame/ABI and physical release gates remain open.
+
+
+## Equal-size CPU topology study — operator receipt PASS
+
+Checkout `fabab2d0c5d3be48f415ca03f78359aa2abb7716`, unchanged candidate runtime from `f9893c7`, fixture hashes verified by prior Doze runs.json. All 12 runs passed, one warmup block plus three measured rotating blocks. Same 3 vCPU workload, profiler ON, cpu-pin=0, spin=0 and map-defer=1. Final vCPU masks match each requested CPU set. Deep IDLE and screen=false checked before/after every run; battery 29.6-29.9 C, normal idle policy restored. Logs on operator host: `/tmp/oneios-native-placement.d_yxo9l1`, `/tmp/oneios-p1-topology.Fr2nZT.log`.
+
+| Metric | 0-2 us | 3-5 us | 5-7 us | 3-5 vs 0-2 paired % | 5-7 vs 0-2 paired % | 5-7 vs 3-5 paired % |
+|---|---:|---:|---:|---:|---:|---:|
+| syscall_round | 5.673 | 5.641 | 14.011 | +0.18 | +144.21 | +149.66 |
+| syscall_up | 2.972 | 2.968 | 6.722 | +0.34 | +121.03 | +129.42 |
+| syscall_down | 2.697 | 2.678 | 7.285 | -0.44 | +169.97 | +172.03 |
+| fault_resolve | 15.655 | 15.374 | 28.673 | -2.25 | +83.16 | +87.37 |
+| task_map | 0.033 | 0.033 | 0.030 | -12.12 | -12.12 | -9.09 |
+| task_unmap | 0.033 | 0.032 | 0.029 | -3.03 | -12.12 | -9.38 |
+| timer_kick | 15.264 | 14.639 | 122.438 | -4.09 | +913.81 | +754.49 |
+| discard_one | 2.389 | 2.449 | 3.581 | +4.04 | +52.08 | +49.08 |
+| discard_64 | 82.421 | 81.852 | 80.556 | +0.43 | -0.89 | -0.19 |
+| fill_resident | 0.603 | 0.607 | 0.601 | +0.83 | -0.33 | -1.15 |
+| fill_given | 3.728 | 3.712 | 7.443 | -0.97 | +101.27 | +103.25 |
+
+The two 3-core masks inside cluster 0 were similar for syscall round-trip. The mixed 5-7 mask (one 3.6288 GHz core and two 4.7424 GHz Prime cores) regressed syscall, fault and timer latency. This measures mask composition, not a controlled Prime-only test or individual core IPC; no residency/frequency trace proves the cause. The old same-core pairing regression is specific to its tested mask/workload. Do not automatically favor Prime cores for trap-heavy paths or remove them from production 8-vCPU use. No additional CPU microbenchmark required for this source batch. Preserve full-bridge affinity defaults, governor/thermal safeguards and all release gates.
+
+## Consolidated VM/display source batch (CI pending)
+
+- P1.1: extend existing deferred map coalescing to immediately adjacent descending virtual and RAM file ranges with equal protection. No queue-capacity, unmap, TLB barriers or lock changes. Unit tests reject noncontiguous/protection/overlap cases; freestanding test exercises both backing pages and later unmap. One fewer host mmap per eligible join; occurrence rate and latency benefit remain unmeasured.
+- P2.4: collapse full-width, tightly packed, same-layout BGRX/BGRA or RGBA16F copy into one exact memcpy. Preserve per-row copies for padding/partial damage and all conversions. Test both formats, nonzero y, padding and surrounding bytes.
+- P0.3/P2.1: distinguish post attempts, errors and successful valid-content posts. A locked buffer must be released; failed unlockAndPost or invalid copy terminates the helper with an error, preserves pending trace for final reporting, does not increment valid post cadence or trace latency. This is not physical presentation.
+- P0.3: use MSG_TRUNC to distinguish oversized XHDF records from valid v3, preserve complete legacy rectangle for unknown extensions, count malformed metadata even before the first valid trace, and mark batches with missing/invalid/legacy metadata or seq gaps as unknown rather than single-source. No protocol layout change.
+- Full local CI once, no ADB/physical benchmark as part of CI. Physical GPU/frame acceptance remains pending.

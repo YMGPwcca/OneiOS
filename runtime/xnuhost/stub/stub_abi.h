@@ -82,7 +82,7 @@ struct xs_trap_page {
 
 // The deferred queue (task.c, map-defer) joins `op` to `last`, the entry before it, where one host call does what the two
 // did, in the same order (host-overhead, 2026-11-15). Returns 1 and rewrites `last` when they join, else 0:
-//   map + map     the next page of the same file range with the same protection: one longer map;
+//   map + map     adjacent VA/file ranges with the same protection, in either direction: one longer map;
 //                 the same range again: the later map (MAP_FIXED replaces);
 //   unmap + unmap adjacent or overlapping ranges: one unmap of both;
 //   unmap + map   of the same range: the map alone (MAP_FIXED replaces the old mapping in one step);
@@ -95,6 +95,17 @@ static inline int xs_queue_join(struct xs_op *last, const struct xs_op *op)
   if (op->op == XS_OP_MAP && last->op == XS_OP_MAP) {
     if (same) { *last = *op; return 1; }
     if (last->prot == op->prot && end == op->va && last->offset + last->size == op->offset) { last->size += op->size; return 1; }
+    // Descending fills are contiguous too. Only combine immediately adjacent
+    // non-overlapping ranges of the same file and protection; never reorder
+    // across another queue entry. Inputs have already passed task_map validation.
+    if (last->prot == op->prot && op_end == last->va &&
+        last->offset >= op->offset && last->offset - op->offset == op->size &&
+        last->size <= UINT64_MAX - op->size) {
+      last->va = op->va;
+      last->offset = op->offset;
+      last->size += op->size;
+      return 1;
+    }
     return 0;
   }
   if (op->op == XS_OP_UNMAP && last->op == XS_OP_UNMAP) {

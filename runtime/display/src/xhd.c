@@ -197,7 +197,9 @@ int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *dama
   // Bounded, nonblocking drain: an overactive guest cannot starve posting.
   for (int i = 0; i < 4096; i++) {
     struct xh_frame_trace_packet_v3 packet;
-    ssize_t n = recv(fd, &packet, sizeof packet, MSG_DONTWAIT);
+    // Linux SOCK_SEQPACKET + MSG_TRUNC returns the actual record length even
+    // when only the prefix fits. Never accept an oversized record as valid v3.
+    ssize_t n = recv(fd, &packet, sizeof packet, MSG_DONTWAIT | MSG_TRUNC);
     if (n < 0) {
       if (errno == EINTR) continue;
       if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
@@ -205,13 +207,20 @@ int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *dama
       return -1;
     }
     if (n == 0) { fprintf(stderr, "oneios-display: xnuhost closed the socket\n"); return -1; }
-    if (n != 20 && n != (ssize_t)sizeof packet.base.base &&
-        n != (ssize_t)sizeof packet.base && n != (ssize_t)sizeof packet) continue;
-    // First 20 bytes are unchanged in legacy, v1, v2 and v3 packets.
-    if (memcmp(packet.base.base.magic, "XHDF", 4)) continue;
+    if (n < 4 || memcmp(packet.base.base.magic, "XHDF", 4)) continue;
+    // Keep legacy-compatible damage for an unknown/truncated extension only
+    // when the complete 20-byte rectangle exists; never use its metadata.
+    if (trace && n != 20) trace->active = true;
+    if (n < 20) {
+      if (trace) trace->pending.bad++;
+      continue;
+    }
     struct xhd_rect r = { packet.base.base.x, packet.base.base.y,
                           packet.base.base.w, packet.base.base.h };
-    if (!xhd_rect_clip(&r, frame->width, frame->height)) continue;
+    if (!xhd_rect_clip(&r, frame->width, frame->height)) {
+      if (trace && n != 20) trace->pending.bad++;
+      continue;
+    }
     xhd_rect_union(damage, &r);
     if (!trace) continue;
     if (n == (ssize_t)sizeof packet.base.base)
@@ -220,7 +229,8 @@ int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *dama
       xhd_trace_note(trace, &packet, xh_frame_trace_v2_valid(&packet.base), xhd_mono_ns());
     else if (n == (ssize_t)sizeof packet)
       xhd_trace_note(trace, &packet, xh_frame_trace_v3_valid(&packet), xhd_mono_ns());
-    else trace->pending.legacy++;
+    else if (n == 20) trace->pending.legacy++;
+    else trace->pending.bad++;
   }
   return 0;
 }
@@ -254,6 +264,20 @@ int xhd_copy(uint8_t *dst, size_t dst_stride, int buffer, const uint8_t *src, si
 {
   unsigned in = xh_pixels_bpp(format), out = buffer == XHD_BUFFER_RGBA_FP16 ? 8 : buffer == XHD_BUFFER_BGRA_8888 || buffer == XHD_BUFFER_RGBX_8888 ? 4 : 0;
   if (!in || !out) return -EINVAL;
+  if (!r.w || !r.h) return 0;
+  // Identical layout, no row padding, and full-width damage: the exact rows
+  // form a single contiguous span. Never include padding or adjacent pixels.
+  const bool raw = (format == XHD_FORMAT_RGBA16F && buffer == XHD_BUFFER_RGBA_FP16) ||
+                   (format == XHD_FORMAT_BGRX && buffer == XHD_BUFFER_BGRA_8888);
+  if (raw && r.x == 0 && (size_t)r.w <= SIZE_MAX / in) {
+    const size_t row_bytes = (size_t)r.w * in;
+    if (src_stride == row_bytes && dst_stride == row_bytes &&
+        (uint64_t)r.y + r.h <= SIZE_MAX / row_bytes) {
+      memcpy(dst + (size_t)r.y * row_bytes, src + (size_t)r.y * row_bytes,
+             (size_t)r.h * row_bytes);
+      return 0;
+    }
+  }
   for (uint32_t row = r.y; row < r.y + r.h; row++) {
     const uint8_t *s = src + (size_t)row * src_stride + (size_t)r.x * in;
     uint8_t *d = dst + (size_t)row * dst_stride + (size_t)r.x * out;

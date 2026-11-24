@@ -102,6 +102,14 @@ int main(void)
   xhd_perf_record_trace(&p, &source, t1 + XHD_PERF_WINDOW_NS);
   CHECK(p.source_unknown_posts == 2 && p.source_unique_posts == 3);
 
+  source.traced = source.provenance_packets = 1;
+  source.seq_gaps = 1;
+  xhd_perf_record_trace(&p, &source, t1 + XHD_PERF_WINDOW_NS);
+  CHECK(p.source_unknown_posts == 3 && p.source_unique_posts == 3);
+  source.seq_gaps = 0; source.bad = 1; source.provenance_mixed = true;
+  xhd_perf_record_trace(&p, &source, t1 + XHD_PERF_WINDOW_NS);
+  CHECK(p.source_unknown_posts == 4 && p.source_mixed_posts == 1);
+
   // Fixed eight-source capacity; additional identities count as overflow,
   // they never replace an earlier source or fabricate a matched fence.
   for (uint64_t gen = 20; gen < 27; gen++) {
@@ -116,6 +124,22 @@ int main(void)
   CHECK(p.source_unique_posts == 0 && p.source_mixed_posts == 0 &&
         p.source_unknown_posts == 0 && p.source_overflow_posts == 0 &&
         p.sources[0].posts == 0);
+
+  // Failed posts or invalid copies never enter successful cadence/trace histograms.
+  xhd_perf_begin(&p, t0);
+  source = (struct xhd_trace_pending){ .traced = 1, .provenance_packets = 1,
+    .provenance_resource_gen = 4, .provenance_resource_id = 1, .last_seq = 1,
+    .oldest_flush_ns = t0, .newest_flush_ns = t0, .newest_recv_ns = t0 };
+  CHECK(!xhd_perf_finish_attempt(&p, -5, true, t1, 1000, 1000, 1000, 10, true, &source));
+  CHECK(!xhd_perf_finish_attempt(&p, 0, false, t1, 1000, 1000, 1000, 0, false, &source));
+  CHECK(!xhd_perf_finish_attempt(&p, -5, false, t1, 1000, 1000, 1000, 0, false, &source));
+  CHECK(p.post_attempts == 3 && p.post_errors == 2 && p.copy_errors == 2 &&
+        !p.posts && !p.last_post_ns && !p.traced_posts && !p.post.count);
+  CHECK(xhd_perf_finish_attempt(&p, 0, true, t1, 1000, 1000, 1000, 10, true, &source));
+  CHECK(p.posts == 1 && p.post_attempts == 4 && p.traced_posts == 1 &&
+        p.source_unique_posts == 1 && p.copied_pixels == 10 && !p.gap.count);
+  xhd_perf_next_window(&p, t1 + XHD_PERF_WINDOW_NS);
+  CHECK(!p.post_attempts && !p.post_errors && !p.copy_errors && p.last_post_ns == t1);
 
   printf("frame_perf tests: %d checks, %d failed\n",checks,failed);
   return failed?1:0;

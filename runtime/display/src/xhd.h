@@ -36,7 +36,7 @@ int xhd_dataspace_parse(const char *name);
 
 // One SOCK_SEQPACKET message, little-endian:
 //   hello  { "XHD1", width, height, stride, format } + the frame memfd (SCM_RIGHTS)
-//   flush  { "XHDF", x, y, w, h } optionally with v1 (40 bytes) or v2 scanout (64 bytes)
+//   flush  { "XHDF", x, y, w, h } optionally with v1 (40), v2 (64), or v3 (88 bytes)
 // and from the helper, straight after connecting (xnuhost waits for it before it sizes the frame in a session):
 //   panel  { "XHDP", width, height, hz, 0 }
 struct xhd_message { char magic[4]; uint32_t a, b, c, d; };
@@ -71,14 +71,14 @@ struct xhd_trace_pending {
   uint64_t scanout_copy_sum_ns, scanout_copy_max_ns, oldest_scanout_start_ns;
   // Every packet contributing to a post must carry the same v3 identity
   // before that post may be attributed to one scanout resource. Non-v3
-  // packets, invalid records, and multiple identities remain unassigned.
+  // packets, invalid records, sequence gaps and multiple identities remain unassigned.
   uint64_t provenance_packets, provenance_queue_gen, provenance_resource_gen;
   uint32_t provenance_resource_id, provenance_owner_ctx;
   bool provenance_mixed;
 };
 struct xhd_trace_state {
   uint64_t last_seq;                 // survives per-post pending resets
-  bool active;                       // a valid extended XHDF has been observed
+  bool active;                       // extended or malformed XHDF observed (even before a valid one)
   struct xhd_trace_pending pending;
 };
 // Extended packets are optional: a legacy XHDF remains valid, and older helpers
