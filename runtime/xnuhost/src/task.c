@@ -628,6 +628,28 @@ int64_t xh_task_destroy(uint64_t handle)
   return 0;
 }
 
+static void log_task_timing(int pid, const xh_task_timing_profile *snapshot)
+{
+  static const char *const names[XH_TT_STAGES] = {
+    "order_locks", "order_with_deferred_ack", "order_direct_ack",
+    "release_locks", "release_ack"
+  };
+  for (unsigned stage = 0; stage < XH_TT_STAGES; stage++) {
+    const xh_task_timing_hist *h = &snapshot->stage[stage];
+    const uint64_t n = xh_tt_count(h);
+    if (!n && !h->aborted) continue;
+    LOGI("perf-task-wait: scope=%s host_pid=%d stage=%s n=%llu aborted_or_invalid=%llu "
+         "mean_us=%.2f p95_bucket_us=%.2f p99_bucket_us=%.2f max_us=%.2f "
+         "(cumulative approximate snapshot; wall wait not CPU time)",
+         pid ? "active_task" : "process_total", pid, names[stage],
+         (unsigned long long)n, (unsigned long long)h->aborted,
+         n ? (double)h->sum_ns / (double)n / 1000.0 : 0.0,
+         (double)xh_tt_quantile_ns(h, 95) / 1000.0,
+         (double)xh_tt_quantile_ns(h, 99) / 1000.0,
+         (double)h->max_ns / 1000.0);
+  }
+}
+
 // A bounded, lifetime-to-date summary for ACTIVE task-process slots only.
 // Reaped/retired tasks may have disappeared; host PID is not the guest's XNU PID.
 // The snapshot never allocates, never walks /proc and never holds T.lock while logging.
@@ -641,9 +663,15 @@ void xh_task_perf_log(void)
     uint64_t events[XH_TP_EVENTS];
     uint64_t cpu_traps[XH_MAX_CPUS];
     xh_task_queue_profile queue;
+    xh_task_timing_profile timing;
     uint64_t score;
   } top[TOP] = { 0 };
   unsigned active = 0, with_events = 0;
+  // The process total retains samples even after a task has been destroyed;
+  // it is available even if the active task table is empty or busy.
+  xh_task_timing_profile total;
+  xh_tt_snapshot(&total, &T.timing_total);
+  log_task_timing(0, &total);
   if (pthread_mutex_trylock(&T.lock)) {
     LOGI("perf-task: snapshot skipped: task table busy");
     return;
@@ -676,6 +704,7 @@ void xh_task_perf_log(void)
     }
     for (unsigned why = 0; why < XH_TQ_REASONS; why++)
       item.queue.fallbacks[why] = xh_tq_read(&t->profile.queue.fallbacks[why]);
+    xh_tt_snapshot(&item.timing, &t->profile.timing);
     for (unsigned shift = TOP - 1; shift > place; shift--) top[shift] = top[shift - 1];
     top[place] = item;
   }
@@ -720,6 +749,7 @@ void xh_task_perf_log(void)
          (unsigned long long)q->fallbacks[XH_TQ_MAP_QUEUE_FULL],
          (unsigned long long)q->fallbacks[XH_TQ_UNMAP_QUEUE_FULL],
          (unsigned long long)q->fallbacks[XH_TQ_UNMAP_TASK_RUNNING]);
+    log_task_timing(it->pid, &it->timing);
   }
 }
 
