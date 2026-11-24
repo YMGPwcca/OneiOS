@@ -48,6 +48,18 @@ int main(void)
   CHECK(xh_fence_perf_quantile_le_us(&p.other, 100) == 1300000);
   CHECK(p.other.bins[XH_FENCE_BUCKETS - 1] == 1);
   xh_fence_perf_record(NULL, XH_FENCE_COMPLETED, true, 1, 2);
+  // Three completed chains in two callback batches, then a stale generation
+  // and an invalid clock. A canceled/refused command never calls this helper.
+  xh_fence_perf_record_publish(&p, 2, 2, 1000000, 1200000);
+  xh_fence_perf_record_publish(&p, 1, 1, 2000000, 2500000);
+  xh_fence_perf_record_publish(&p, 1, 0, 3000000, 3100000);
+  CHECK(p.publish.count == 2 && p.published_chains == 3 && p.unpublished_chains == 1);
+  CHECK(p.publish.sum_us == 700 && p.publish.max_us == 500);
+  CHECK(xh_fence_perf_quantile_le_us(&p.publish, 95) == 500);
+  xh_fence_perf_record_publish(&p, 1, 1, 0, 1000);
+  CHECK(p.publish.count == 2 && p.published_chains == 4 && p.invalid_publish_time == 1);
+  xh_fence_perf_record_publish(&p, 1, 2, 1000, 2000);
+  CHECK(p.published_chains == 4);
   struct xh_fence_hist stage = { 0 };
   CHECK(!xh_fence_hist_span(&stage, 0, 1));
   CHECK(!xh_fence_hist_span(&stage, 9, 8));

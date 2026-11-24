@@ -15,6 +15,24 @@ SPEC.loader.exec_module(perf)
 
 
 class InteractivePerfTests(unittest.TestCase):
+    def test_fence_used_publication_separate_from_backend_wait(self):
+        legacy = ("gpu-fence-trace: mono_ms=1000 window_ms=5000 "
+                  "render_wait_n=3 mean_us=2000 p95_le_us=4000 p99_le_us=8000 max_us=6000 "
+                  "other_wait_n=1 mean_us=100 p95_le_us=250 p99_le_us=250 max_us=100 "
+                  "released_on_refusal=2 canceled_on_destroy_or_reset=1 invalid_clocks=0")
+        modern = legacy.replace("mono_ms=1000", "mono_ms=6000") + (
+            " used_publish_n=2 used_publish_mean_us=30 used_publish_p95_le_us=250 "
+            "used_publish_p99_le_us=250 used_publish_max_us=40 used_published_chains=3 "
+            "used_unpublished_chains=1 used_publish_invalid_clocks=0")
+        rows = perf.analyze_logs(legacy + "\n" + modern, "")["frame_trace"]["fence_windows"]
+        self.assertEqual(2, len(rows))
+        self.assertNotIn("used_publish", rows[0])
+        self.assertEqual(6000, rows[1]["render"]["max_us"])
+        self.assertEqual(40, rows[1]["used_publish"]["max_us"])
+        self.assertEqual(2, rows[1]["used_publish"]["n"])
+        self.assertEqual(3, rows[1]["used_publish"]["published_chains"])
+        self.assertEqual(1, rows[1]["used_publish"]["unpublished_chains"])
+
     def test_measured_metrics_and_manual_icon_latency_remain_distinct(self):
         guest = "\n".join((
             '[1000.1] xnuhost I gpu: 10 s host: backboardd fences 12, submit->retired mean 1700 us max 517141 us',

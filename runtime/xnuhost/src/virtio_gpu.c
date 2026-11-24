@@ -374,11 +374,11 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
 // Publish mergeable completions in their existing list order. Holding the
 // device lock covers the generation check and all publications, not a GPU wait.
 // Individual (unfenced) replies use a stack record and do not allocate.
-static void push_pending(gpu_state *g, const pending *list)
+static unsigned push_pending(gpu_state *g, const pending *list)
 {
   xh_virtio_lock(g->dev);
   xh_virtio_used items[16];
-  unsigned n = 0;
+  unsigned n = 0, published = 0;
   for (const pending *p = list; p; p = p->next) {
     bool current = p->gen == g->gen;
     if (g->trace)
@@ -388,12 +388,13 @@ static void push_pending(gpu_state *g, const pending *list)
     if (!current) continue;
     items[n++] = (xh_virtio_used){ .head = p->head, .written = p->written };
     if (n == sizeof items / sizeof items[0]) {
-      xh_virtio_push_batch(g->dev, 0, items, n);
+      published += xh_virtio_push_batch(g->dev, 0, items, n);
       n = 0;
     }
   }
-  if (n) xh_virtio_push_batch(g->dev, 0, items, n);
+  if (n) published += xh_virtio_push_batch(g->dev, 0, items, n);
   xh_virtio_unlock(g->dev);
+  return published;
 }
 
 // A callback can retire many mergeable fences on a (context, ring).
@@ -405,6 +406,8 @@ static void gpu_fence_perf_report(const struct xh_fence_perf *p, uint64_t now_ns
        "render_wait_n=%llu mean_us=%llu p95_le_us=%llu p99_le_us=%llu max_us=%llu "
        "other_wait_n=%llu mean_us=%llu p95_le_us=%llu p99_le_us=%llu max_us=%llu "
        "released_on_refusal=%llu canceled_on_destroy_or_reset=%llu invalid_clocks=%llu "
+       "used_publish_n=%llu used_publish_mean_us=%llu used_publish_p95_le_us=%llu used_publish_p99_le_us=%llu used_publish_max_us=%llu "
+       "used_published_chains=%llu used_unpublished_chains=%llu used_publish_invalid_clocks=%llu "
        "origin=virtio_submit_fence_to_backend_callback_not_GPU_execution_or_panel_present",
        (unsigned long long)(now_ns / UINT64_C(1000000)),
        (unsigned long long)(window_ns / UINT64_C(1000000)),
@@ -420,7 +423,15 @@ static void gpu_fence_perf_report(const struct xh_fence_perf *p, uint64_t now_ns
        (unsigned long long)p->other.max_us,
        (unsigned long long)p->rejected,
        (unsigned long long)p->canceled,
-       (unsigned long long)p->invalid_time);
+       (unsigned long long)p->invalid_time,
+       (unsigned long long)p->publish.count,
+       (unsigned long long)(p->publish.count ? p->publish.sum_us / p->publish.count : 0),
+       (unsigned long long)xh_fence_perf_quantile_le_us(&p->publish, 95),
+       (unsigned long long)xh_fence_perf_quantile_le_us(&p->publish, 99),
+       (unsigned long long)p->publish.max_us,
+       (unsigned long long)p->published_chains,
+       (unsigned long long)p->unpublished_chains,
+       (unsigned long long)p->invalid_publish_time);
 }
 
 // Takes only matching pending commands off the list: a retirement of another
@@ -433,6 +444,7 @@ static void retire(gpu_state *g, uint32_t ctx, int64_t ring, uint64_t fence,
   struct xh_fence_perf report;        // assigned only at the reporting boundary; no default-path zeroing
   uint64_t window_ns = 0;
   bool report_ready = false;
+  const uint64_t callback_ns = g->fence_trace && outcome == XH_FENCE_COMPLETED ? scanout_now_ns() : 0;
   pthread_mutex_lock(&g->pl);
   for (pending **link = &g->fences; *link;) {
     pending *p = *link;
@@ -444,10 +456,21 @@ static void retire(gpu_state *g, uint32_t ctx, int64_t ring, uint64_t fence,
       *link = p->next; p->next = NULL; *tail = p; tail = &p->next;
     } else link = &p->next;
   }
+  pthread_mutex_unlock(&g->pl);
+  // Publish matching current-generation chains before optional accounting
+  // and formatting. Never acquire pl while holding the device lock.
+  unsigned published = done ? push_pending(g, done) : 0;
   if (g->fence_trace && done) {
+    const uint64_t publish_end_ns = outcome == XH_FENCE_COMPLETED ? scanout_now_ns() : 0;
+    pthread_mutex_lock(&g->pl);
+    unsigned matched = 0;
+    for (pending *p = done; p; p = p->next) {
+      xh_fence_perf_record(&g->fence_perf, outcome, p->fence_fast, p->fence_started_ns, callback_ns);
+      matched++;
+    }
+    if (outcome == XH_FENCE_COMPLETED)
+      xh_fence_perf_record_publish(&g->fence_perf, matched, published, callback_ns, publish_end_ns);
     const uint64_t now_ns = scanout_now_ns();
-    for (pending *p = done; p; p = p->next)
-      xh_fence_perf_record(&g->fence_perf, outcome, p->fence_fast, p->fence_started_ns, now_ns);
     if (g->fence_report_since_ns && now_ns >= g->fence_report_since_ns &&
         now_ns - g->fence_report_since_ns >= UINT64_C(5000000000)) {
       report = g->fence_perf;
@@ -456,11 +479,9 @@ static void retire(gpu_state *g, uint32_t ctx, int64_t ring, uint64_t fence,
       g->fence_report_since_ns = now_ns;
       report_ready = true;
     }
+    pthread_mutex_unlock(&g->pl);
   }
-  pthread_mutex_unlock(&g->pl);
-  // Guest completion precedes optional reporting; do not extend its wait
-  // with formatting/log output. Retired records are freed outside device lock.
-  if (done) push_pending(g, done);
+  // Retired records are freed outside device lock.
   while (done) { pending *p = done; done = p->next; free(p); }
   if (report_ready) gpu_fence_perf_report(&report, scanout_now_ns(), window_ns);
 }

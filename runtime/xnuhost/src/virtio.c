@@ -129,9 +129,10 @@ void xh_virtio_push(xh_virtio *d, unsigned qi, uint16_t head, uint32_t written)
   pthread_mutex_unlock(&d->lock);
 }
 
-void xh_virtio_push_batch(xh_virtio *d, unsigned qi, const xh_virtio_used *items, unsigned count)
+unsigned xh_virtio_push_batch(xh_virtio *d, unsigned qi, const xh_virtio_used *items, unsigned count)
 {
-  if (!items || !count || qi >= XH_VIRTIO_QUEUES) return;
+  if (!items || !count || qi >= XH_VIRTIO_QUEUES) return 0;
+  unsigned published = 0;
   pthread_mutex_lock(&d->lock);
   vqueue *q = &d->q[qi];
   if (q->ready && q->num) {
@@ -148,10 +149,12 @@ void xh_virtio_push_batch(xh_virtio *d, unsigned qi, const xh_virtio_used *items
         }
         __atomic_store_n(&used[1], idx, __ATOMIC_RELEASE);
         raise_irq(d, 1);
+        published = count;
       }
     }
   }
   pthread_mutex_unlock(&d->lock);
+  return published;
 }
 
 bool xh_virtio_ready(xh_virtio *d)

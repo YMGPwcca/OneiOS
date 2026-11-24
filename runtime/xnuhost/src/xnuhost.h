@@ -628,7 +628,8 @@ void       xh_virtio_push(xh_virtio *dev, unsigned queue, uint16_t head, uint32_
 // Complete an ordered group of chains with one used-index publication and
 // one interrupt. The device caller still owns generation/chain validity.
 typedef struct { uint16_t head; uint32_t written; } xh_virtio_used;
-void       xh_virtio_push_batch(xh_virtio *dev, unsigned queue, const xh_virtio_used *items, unsigned count);
+// Returns the number of chains actually published to a valid used ring.
+unsigned   xh_virtio_push_batch(xh_virtio *dev, unsigned queue, const xh_virtio_used *items, unsigned count);
 void       xh_virtio_config_changed(xh_virtio *dev);
 // Whether the guest's driver has set DRIVER_OK: the device's queues are in use.
 bool       xh_virtio_ready(xh_virtio *dev);

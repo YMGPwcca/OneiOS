@@ -49,6 +49,13 @@ def trace_windows(host, display, windows):
             if all(row[k] is not None for k in ("mono_ms", "window_ms")) and all(
                     {"n", "mean_us", "p95_le_us", "p99_le_us", "max_us"} <= row[k].keys()
                     for k in ("render", "other")):
+                publish_keys = ("n", "mean_us", "p95_le_us", "p99_le_us", "max_us", "invalid_clocks")
+                all_fields = fields(line)
+                if all("used_publish_" + key in all_fields for key in publish_keys) and {
+                        "used_published_chains", "used_unpublished_chains"} <= all_fields.keys():
+                    row["used_publish"] = {key: all_fields["used_publish_" + key] for key in publish_keys}
+                    row["used_publish"]["published_chains"] = all_fields["used_published_chains"]
+                    row["used_publish"]["unpublished_chains"] = all_fields["used_unpublished_chains"]
                 fences.append(row)
     for line in display.splitlines():
         if "oneios-display: frame-trace:" in line:
@@ -190,6 +197,14 @@ def _show(report):
         if selected:
             print(f"GPU_VIRTIO_FENCE_CLASS={name} samples={sum(r['n'] for r in selected)} "
                   f"max_window_p95_us={max(r['p95_le_us'] for r in selected)} max_us={max(r['max_us'] for r in selected)}")
+    published = [r["used_publish"] for r in trace["fence_windows"] if "used_publish" in r]
+    measured = [r for r in published if r["n"]]
+    if published:
+        print(f"TRACE_FENCE_USED_PUBLISH windows={len(published)} callback_batches={sum(r['n'] for r in published)} "
+              f"published_chains={sum(r['published_chains'] for r in published)} "
+              f"unpublished_chains={sum(r['unpublished_chains'] for r in published)} "
+              f"max_us={max((r['max_us'] for r in measured), default=None)} "
+              f"scope=backend_callback_to_host_used_ring_and_IRQ_request_not_guest_wakeup")
     for r in trace["active_post_windows"]:
         print(f"ACTIVE_POST_WINDOW mono_ms={r['mono_ms']} gaps={r['active_gaps']} "
               f"p95_us={r['active_gap_p95_us']} p99_us={r['active_gap_p99_us']} "

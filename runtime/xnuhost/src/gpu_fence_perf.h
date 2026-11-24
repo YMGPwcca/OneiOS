@@ -19,6 +19,10 @@ struct xh_fence_hist {
 struct xh_fence_perf {
   struct xh_fence_hist fast, other;  // fast = xnu:backboardd context at enqueue
   uint64_t rejected, canceled, invalid_time;
+  // Per callback batch, not per fence. Host used-index publication and IRQ
+  // request are observable; guest IRQ handling / fence wakeup are not.
+  struct xh_fence_hist publish;
+  uint64_t published_chains, unpublished_chains, invalid_publish_time;
 };
 
 static inline uint64_t xh_fence_bound_us(unsigned i)
@@ -53,6 +57,17 @@ static inline void xh_fence_perf_record(struct xh_fence_perf *p,
   if (outcome == XH_FENCE_REJECTED) { p->rejected++; return; }
   if (!xh_fence_hist_span(fast ? &p->fast : &p->other, enqueued_ns, retired_ns))
     p->invalid_time++;
+}
+
+static inline void xh_fence_perf_record_publish(struct xh_fence_perf *p,
+                                                unsigned matched, unsigned published,
+                                                uint64_t callback_ns, uint64_t end_ns)
+{
+  if (!p || published > matched) return;
+  p->published_chains += published;
+  p->unpublished_chains += matched - published;
+  if (published && !xh_fence_hist_span(&p->publish, callback_ns, end_ns))
+    p->invalid_publish_time++;
 }
 
 static inline uint64_t xh_fence_perf_quantile_le_us(const struct xh_fence_hist *h, unsigned percentile)

@@ -162,7 +162,7 @@ static stat_ctx *stat_find(uint32_t id)      // with st.lock held
 static void stat_report(uint64_t now)         // with st.lock held
 {
   if (!st.since) { st.since = now; return; }
-  if (now - st.since < 10000000u) return;
+  if (now <= st.since || now - st.since < 10000000u) return;
   uint64_t holds = 0, keepalives = 0;
   drm2kgsl_renderer_hold_stats(&holds, &keepalives);
   if (st.render_n || st.other_n || st.blob_n)
@@ -265,9 +265,16 @@ static void fence_retired(struct virgl_context *ctx, uint32_t ring, uint64_t fen
     }
     c->last_retire[ring] = now;
   }
-  stat_report(now);
+  const uint32_t id = ctx->ctx_id;
   pthread_mutex_unlock(&st.lock);
-  if (the && the->retire) the->retire(the->dev, ctx->ctx_id, ring, fence);
+  // Publish the real backend completion before the periodic report, which
+  // can format several lines and acquire backend statistics locks. No
+  // change to KGSL wait/retirement ordering or fence lifetime.
+  if (the && the->retire) the->retire(the->dev, id, ring, fence);
+  // The guest may already destroy the context; do not dereference ctx here.
+  pthread_mutex_lock(&st.lock);
+  stat_report(now_us());
+  pthread_mutex_unlock(&st.lock);
 }
 
 static int ctx_create(xh_gpu3d *b, uint32_t id, uint32_t capset_id, const char *name, size_t name_length)
@@ -601,7 +608,7 @@ static int create_blob(xh_gpu3d *b, uint32_t id, uint32_t res, uint32_t blob_mem
   uint64_t took = now_us() - start;
   pthread_mutex_lock(&st.lock);
   st.blob_n++; st.blob_sum += took; if (took > st.blob_max) st.blob_max = took;
-  stat_report(start + took);
+  stat_report(now_us());
   pthread_mutex_unlock(&st.lock);
   if (!r && id && nentries && blob_mem != XH_GPU_BLOB_GUEST) note_pages(id, res, entries[0].addr);
   return r;
