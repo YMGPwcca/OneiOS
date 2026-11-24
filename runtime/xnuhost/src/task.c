@@ -432,6 +432,7 @@ static int64_t order(task *t, const struct xs_op *ops, unsigned count)
   if (t->dead) { t->npending = t->nunmaps = 0; pthread_mutex_unlock(&t->qlock); pthread_mutex_unlock(&t->lock); return -ESRCH; }
   // The deferred maps and unmaps first, in their order: an unmap or protect after them must find them done.
   unsigned first = t->npending;
+  if (T.profile_tasks) xh_tq_record_batch(&t->profile.queue, true, first, t->nunmaps);
   memcpy(sp->ops, t->pending, first * sizeof *ops);
   if (t->nunmaps) { __atomic_store_n(&t->unmaps_out, true, __ATOMIC_SEQ_CST); t->nunmaps = 0; }   // before npending: as in thread_run
   __atomic_store_n(&t->npending, 0, __ATOMIC_SEQ_CST);
@@ -717,6 +718,8 @@ int64_t xh_task_map(uint64_t handle, uint64_t va, uint64_t size, uint32_t prot, 
     pthread_mutex_unlock(&t->qlock);
     if (queued) { p->maps_deferred++; p->ops_joined += joined; profile_event(t, XH_TP_MAP_DEFERRED); return 0; }
     if (t->dead) return -ESRCH;
+    // The deferred array was full; preserve the existing ordered fallback.
+    if (T.profile_tasks) xh_tq_record_fallback(&t->profile.queue, XH_TQ_MAP_QUEUE_FULL);
   }
   p->maps_ordered++;
   profile_event(t, XH_TP_MAP_ORDERED);
@@ -739,11 +742,13 @@ int64_t xh_task_unmap(uint64_t handle, uint64_t va, uint64_t size)
     pthread_mutex_lock(&t->qlock);
     bool queued = false;
     bool joined = false;
+    bool queue_full = false, task_running = false;
     struct xs_op saved;
     unsigned n = t->npending;
     // Joined to the last entry, npending stays (it is not 0, so a release that counts itself after the load below sees
     // the queue and takes it, under qlock, with this unmap in it).
     if (!t->dead) joined = queue_join(t, &op, &saved);
+    queue_full = !t->dead && !joined && n >= XS_PENDING_MAX;
     if (!t->dead && (joined || n < XS_PENDING_MAX)) {
       if (!joined) t->pending[n] = op;
       t->nunmaps++;
@@ -751,6 +756,7 @@ int64_t xh_task_unmap(uint64_t handle, uint64_t va, uint64_t size)
       queued = __atomic_load_n(&t->running, __ATOMIC_SEQ_CST) == 0;
       // A thread is counted: take the unmap back (a release that saw it waits for qlock to take the queue).
       if (!queued) {
+        task_running = true;
         t->nunmaps--;
         if (joined) t->pending[n - 1] = saved;
         __atomic_store_n(&t->npending, n, __ATOMIC_SEQ_CST);
@@ -760,6 +766,10 @@ int64_t xh_task_unmap(uint64_t handle, uint64_t va, uint64_t size)
     pthread_mutex_unlock(&t->qlock);
     if (queued) { p->unmaps_deferred++; p->ops_joined += joined; profile_event(t, XH_TP_UNMAP_DEFERRED); return 0; }
     if (t->dead) return -ESRCH;
+    if (T.profile_tasks) {
+      if (queue_full) xh_tq_record_fallback(&t->profile.queue, XH_TQ_UNMAP_QUEUE_FULL);
+      else if (task_running) xh_tq_record_fallback(&t->profile.queue, XH_TQ_UNMAP_TASK_RUNNING);
+    }
   }
   p->unmaps_ordered++;
   profile_event(t, XH_TP_UNMAP_ORDERED);
@@ -1006,6 +1016,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
     pthread_mutex_lock(&t->qlock);
     nops = t->npending;
     if (nops && !t->dead) {
+      if (T.profile_tasks) xh_tq_record_batch(&t->profile.queue, false, nops, t->nunmaps);
       memcpy((uint8_t *)tp + XS_OPS_OFF, t->pending, nops * sizeof(struct xs_op));
       // unmaps_out before npending goes to 0: a release that reads npending 0 from here reads unmaps_out set.
       if (t->nunmaps) { __atomic_store_n(&t->unmaps_out, true, __ATOMIC_SEQ_CST); t->nunmaps = 0; }
