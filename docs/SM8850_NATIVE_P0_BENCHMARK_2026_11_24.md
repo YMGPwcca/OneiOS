@@ -121,10 +121,45 @@ Checkout `fabab2d0c5d3be48f415ca03f78359aa2abb7716`, unchanged candidate runtime
 
 The two 3-core masks inside cluster 0 were similar for syscall round-trip. The mixed 5-7 mask (one 3.6288 GHz core and two 4.7424 GHz Prime cores) regressed syscall, fault and timer latency. This measures mask composition, not a controlled Prime-only test or individual core IPC; no residency/frequency trace proves the cause. The old same-core pairing regression is specific to its tested mask/workload. Do not automatically favor Prime cores for trap-heavy paths or remove them from production 8-vCPU use. No additional CPU microbenchmark required for this source batch. Preserve full-bridge affinity defaults, governor/thermal safeguards and all release gates.
 
-## Consolidated VM/display source batch (CI pending)
+## Consolidated VM/display source batch (local CI receipt PASS)
 
 - P1.1: extend existing deferred map coalescing to immediately adjacent descending virtual and RAM file ranges with equal protection. No queue-capacity, unmap, TLB barriers or lock changes. Unit tests reject noncontiguous/protection/overlap cases; freestanding test exercises both backing pages and later unmap. One fewer host mmap per eligible join; occurrence rate and latency benefit remain unmeasured.
 - P2.4: collapse full-width, tightly packed, same-layout BGRX/BGRA or RGBA16F copy into one exact memcpy. Preserve per-row copies for padding/partial damage and all conversions. Test both formats, nonzero y, padding and surrounding bytes.
 - P0.3/P2.1: distinguish post attempts, errors and successful valid-content posts. A locked buffer must be released; failed unlockAndPost or invalid copy terminates the helper with an error, preserves pending trace for final reporting, does not increment valid post cadence or trace latency. This is not physical presentation.
 - P0.3: use MSG_TRUNC to distinguish oversized XHDF records from valid v3, preserve complete legacy rectangle for unknown extensions, count malformed metadata even before the first valid trace, and mark batches with missing/invalid/legacy metadata or seq gaps as unknown rather than single-source. No protocol layout change.
 - Full local CI once, no ADB/physical benchmark as part of CI. Physical GPU/frame acceptance remains pending.
+
+
+## VM/display local CI and CPU scaling — operator receipt PASS
+
+Runtime source `72a54f6b13f725756500c23e0c4c370813647b31`; benchmark checkout `cbab66aa1f551f5c2c943d84ef4d0fdadf7f84f0`. The scaling harness accepted the successful full local CI log at `/tmp/oneios-vm-display-ci.9UPjHk.log` for the exact runtime source. The operator supplied the harness receipt, not the complete CI log; detailed individual VM/display check counts are not asserted. Native run directory `/tmp/oneios-cpu-scaling.vf6i0k4v`. Parser self-tests PASS; all 40 runs passed, one warmup block and three measured blocks. Normal Android shell, forced Deep Doze checked per run, battery 28.8-28.9 C, idle policy restored. Same synthetic fixtures, profiler on, no bridges, no input, 2D/no display, no clock or governor changes.
+
+### Latency (3 vCPUs; inherited mask; no per-core pin)
+
+| Metric | 0-2 us | 0-5 us | 0-7 us | 0-5 paired delta | 0-7 paired delta |
+|---|---:|---:|---:|---:|---:|
+| syscall_round | 5.632 | 11.704 | 11.987 | +107.81% | +112.26% |
+| syscall_up | 2.962 | 5.983 | 6.069 | +101.99% | +106.71% |
+| syscall_down | 2.692 | 5.698 | 5.871 | +111.66% | +117.69% |
+| fault_resolve | 15.132 | 15.025 | 14.951 | -0.71% | -2.08% |
+| timer_kick | 14.187 | 14.570 | 16.865 | +4.45% | +19.79% |
+
+The 0-5 regression occurs without access to either Prime core, so cross-cluster migration alone cannot explain prior results. Scheduler placement, idle/wake behavior, frequency and cache effects remain hypotheses; no measured causal attribution.
+
+### Parallel (all configured vCPUs active)
+
+| vCPUs | Allowed host CPUs | Placement | Median wall ms | Median rounds/s | Median reported scaling |
+|---:|---|---|---:|---:|---:|
+| 2 | 0-1 | shared | 28 | 35714 | 1.96x |
+| 2 | 6-7 | shared | 18 | 55556 | 2.89x |
+| 6 | 0-5 | shared | 35 | 85714 | 4.12x |
+| 6 | 0-5 | one core per vCPU | 23 | 130435 | 6.19x |
+| 6 | 0-7 | shared | 38 | 78947 | 4.57x |
+| 8 | 0-7 | shared | 39 | 102564 | 5.54x |
+| 8 | 0-7 | one core per vCPU | 51 | 78431 | 3.61x |
+
+Matched median wall-time deltas: 2 regular -> 2 Prime -35.71%; 6 shared 0-5 -> 6 pinned -34.29%; 6 shared 0-5 -> 6 shared 0-7 +8.57%; 8 shared -> 8 pinned +8.33%. Reported per-condition medians and medians of per-block deltas are different statistics. Parallel workload is 500 rounds of 100,000 guest loop iterations plus one syscall per active thread, with integer-ms wall time; reported scaling is relative to that run's own single-thread phase, not a common baseline. No universal scaling efficiency or actual iOS UI FPS is inferred from apparent superlinear values.
+
+### Decision
+
+The six-core individually pinned candidate wins this parallel benchmark; small shared masks win the earlier single-dominant-vCPU latency workload. Prime cores are faster in the matched two-core compute-plus-trap workload. Eight individually pinned cores are unfavorable in this sample; 8-vCPU shared is the better measured 8-vCPU candidate. This overturns a blanket recommendation against per-core pinning. The 6+2 mixed policy (six vCPUs restricted to cluster 0 and two to cluster 1 within one guest), 4-vCPU scaling, and representative full-bridge iOS workloads remain untested. Do not set guest cluster roles or production affinity based on these results alone. Stop repeated synthetic CPU benchmarks for now; proceed to GPU submission/fence/scanout attribution and evidence-driven optimization. No physical takeover, default CPU-policy changes, thermal changes or release-gate relaxation.
