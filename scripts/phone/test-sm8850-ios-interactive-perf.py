@@ -65,6 +65,27 @@ class InteractivePerfTests(unittest.TestCase):
         self.assertIsNone(legacy['cpu']['spotlight_percent_of_one_core_max'])
         self.assertEqual(0, legacy['cpu']['spotlight_observed_windows'])
 
+    def test_trace_preserves_distinct_fence_classes_and_window_bounds(self):
+        host = (
+            "gpu-queue-trace: mono_ms=5000 window_ms=5000 stage=fast_wait n=2 mean_us=10 p95_le_us=20 p99_le_us=20 max_us=19 invalid_clocks=0\n"
+            "gpu-fence-trace: mono_ms=5000 window_ms=5000 render_wait_n=3 mean_us=5 p95_le_us=10 p99_le_us=10 max_us=9 "
+            "other_wait_n=4 mean_us=50 p95_le_us=100 p99_le_us=100 max_us=99 released_on_refusal=1\n"
+        )
+        display = (
+            "oneios-display: perf: mono_ms=5000 window_ms=5000 posts=4 posted_rate=0.8 active_cadence=60 active_gaps=3 "
+            "gap_p95_us=33000 lock_p95_us=1 copy_p95_us=2 post_p95_us=3 lock_max_us=1 copy_max_us=2 post_max_us=3 "
+            "active_gap_p95_us=16000 active_gap_p99_us=16000 active_gap_max_us=16000 active_over_60=0 active_over_120=3\n"
+            "oneios-display: frame-trace: mono_ms=5000 traced_posts=4 seq_gaps=1 invalid=0\n"
+            "oneios-display: scanout-trace: mono_ms=5000 copy_samples=4 copy_max_us=200\n"
+        )
+        t = perf.analyze_logs(host, display)["frame_trace"]
+        self.assertEqual(2, t["queue_windows"][0]["n"])
+        self.assertEqual(9, t["fence_windows"][0]["render"]["max_us"])
+        self.assertEqual(99, t["fence_windows"][0]["other"]["max_us"])
+        self.assertEqual(1, t["transport_windows"][0]["seq_gaps"])
+        self.assertEqual(200, t["scanout_windows"][0]["copy_max_us"])
+        self.assertEqual(3, t["active_post_windows"][0]["active_over_120"])
+
     def test_legacy_log_does_not_invent_fps(self):
         r = perf.analyze_logs('SpringBoard[30] boot', 'oneios-display: first frame posted')
         self.assertFalse(r['display']['instrumentation_present'])

@@ -59,10 +59,21 @@ class VisualBenchTests(unittest.TestCase):
         self.assertNotIn('touch-exclusive=1', s)
         source = (HERE / 'sm8850-ios-gpu-visual.py').read_text()
         self.assertIn('p.add_argument("--touch", action="store_true"', source)
-        self.assertRegex(source, r'make_visual_script\(bench, stage, args\.duration, args\.ram_mib,\s*touch=touch, gpu_trace=gpu_trace, cpu_probe=cpu_probe,\s*cpu_affinity_bench=cpu_affinity_bench\)')
+        self.assertRegex(source, r'make_visual_script\(bench, stage, args\.duration, args\.ram_mib,\s*touch=touch, gpu_trace=gpu_trace, cpu_probe=cpu_probe,\s*cpu_affinity_bench=cpu_affinity_bench, frame_trace=frame_trace\)')
         self.assertIn('touch_requested', source)
         self.assertIn('LIVE_TOUCH_GRABBED=YES', source)
         self.assertIn('exclusive sec_touchscreen grab was never confirmed', source)
+
+    def test_frame_trace_requires_3d_and_preserves_bounded_guest(self):
+        script = visual.make_visual_script(bench, STAGE, 240, 4096,
+                                           touch=True, gpu_trace=False, frame_trace=True)
+        self.assertIn('--gpu 3d --display shm --set touch-exclusive=1', script)
+        self.assertIn('--set frame-trace=1', script)
+        self.assertIn('FRAME_TRACE=1', script)
+        self.assertIn('timeout -s TERM -k 15 240', script)
+        self.assertNotIn('ONEIOS_GPU_TRACE=1 timeout', script)
+        self.assertNotIn('--set frame-trace=1', visual.make_visual_script(bench, STAGE, 240, 4096))
+        self.assertEqual(0, subprocess.run(['sh', '-n'], input=script, text=True, capture_output=True).returncode)
 
     def test_native_exclusivity_has_mode_gate_and_failure_closes_fd(self):
         source = (HERE.parent.parent / 'runtime/xnuhost/src/input.c').read_text()
@@ -101,7 +112,7 @@ class VisualBenchTests(unittest.TestCase):
         jni = (HERE.parent.parent / 'runtime/display/src/jni.c').read_text()
         self.assertIn('log_frame_perf(&perf, tick_ns)', jni)
         self.assertIn('ANativeWindow_lock(window, &buffer, &dirty)', jni)
-        self.assertIn('xhd_perf_record(&perf, post_done_ns', jni)
+        self.assertIn('xhd_perf_finish_attempt(&perf,', jni)
         self.assertIn('lock_max_us=', jni)
         self.assertIn('active_cadence=', jni)
         self.assertIn('pending.w ? 0 : 1000', jni)

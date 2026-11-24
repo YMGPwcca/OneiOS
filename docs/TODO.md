@@ -147,3 +147,6 @@ Source batch: command allocation reduction, same-ring refusal isolation, batched
 
 
 Native GPU host probe PASS 6/6 at `a2f1316`; fresh-context submit-to-retire median 44.20 ms, max 79.35 ms. Next measure first/hot/paced same-context stages with targeted gpuctl build and host-timing parser; no runtime/power/fence mechanism change or full CI repetition. Real iOS FPS unverified.
+
+
+Native GPU same-context timing PASS 207/207 at `65a4f78` (first median 42.996 ms; hot 0.117 ms, paced60 0.754 ms, paced120 0.765 ms; medians across session medians). End synthetic GPU benchmark; use explicit --frame-trace on representative isolated visible iOS run after storage and map-count checks. See performance tracker. No runtime or OneOS policy change.

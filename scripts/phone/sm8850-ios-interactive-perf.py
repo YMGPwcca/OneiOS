@@ -26,6 +26,46 @@ def _values(text, pattern, cast=int):
     return [cast(m) for m in re.findall(pattern, text)]
 
 
+def trace_windows(host, display, windows):
+    """Keep each reported window separate; do not invent pooled quantiles.
+    Fence logs contain repeated names, so parse the two classes independently."""
+    def fields(line):
+        return {k: int(v) for k, v in re.findall(r"\b([a-z][a-z0-9_]*)=(\d+)\b", line)}
+    queues, fences, transport, scanout = [], [], [], []
+    for line in host.splitlines():
+        if "gpu-queue-trace:" in line:
+            row = fields(line)
+            stage = re.search(r"\bstage=(\w+)", line)
+            if stage and {"mono_ms", "window_ms", "n", "p95_le_us", "max_us"} <= row.keys():
+                queues.append({"stage": stage.group(1), **row})
+        elif "gpu-fence-trace:" in line and "render_wait_n=" in line and "other_wait_n=" in line:
+            prefix, rest = line.split("render_wait_n=", 1)
+            render, other = rest.split("other_wait_n=", 1)
+            row = {"mono_ms": fields(prefix).get("mono_ms"),
+                   "window_ms": fields(prefix).get("window_ms"),
+                   "render": fields("n=" + render), "other": fields("n=" + other)}
+            if all(row[k] is not None for k in ("mono_ms", "window_ms")) and all(
+                    {"n", "mean_us", "p95_le_us", "p99_le_us", "max_us"} <= row[k].keys()
+                    for k in ("render", "other")):
+                fences.append(row)
+    for line in display.splitlines():
+        if "oneios-display: frame-trace:" in line:
+            row = fields(line)
+            if {"mono_ms", "traced_posts", "seq_gaps", "invalid"} <= row.keys():
+                transport.append(row)
+        elif "oneios-display: scanout-trace:" in line:
+            row = fields(line)
+            if {"mono_ms", "copy_samples", "copy_max_us"} <= row.keys():
+                scanout.append(row)
+    active = [r for r in windows if r["active_gaps"] >= 3 and
+              {"active_gap_p95_us", "active_gap_p99_us", "active_gap_max_us",
+               "active_over_60", "active_over_120"} <= r.keys()]
+    return {"queue_windows": queues, "fence_windows": fences,
+            "transport_windows": transport, "scanout_windows": scanout,
+            "active_post_windows": active,
+            "scope": "host stage and post telemetry, not causal GPU-to-frame or physical presentation"}
+
+
 def analyze_logs(host, display):
     """Return descriptive evidence only: no inferred root cause or fake FPS."""
     windows = []
@@ -74,6 +114,7 @@ def analyze_logs(host, display):
             "copy_max_us": copy_peak if windows else None,
             "post_max_us": post_peak if windows else None,
         },
+        "frame_trace": trace_windows(host, display, windows),
         "touch": {"next_frame_latency_ms": host_gaps,
                   "max_next_frame_ms": max(host_gaps, default=None),
                   "no_subsequent_guest_frame": no_frame},
@@ -136,6 +177,22 @@ def _show(report):
     print("BACKBOARDD_PIDS=" + ",".join(map(str,report["processes"]["backboardd_pids"])))
     print("ANDROID_MEMAVAILABLE_MIN_MIB=" + str(report["memory"]["android_memavailable_mib_min"]))
     print("ABI_WARNINGS=" + str(report["memory"]["host_statistics64_abi_warning_lines"]))
+    trace = report["frame_trace"]
+    for key in ("queue_windows", "fence_windows", "transport_windows", "scanout_windows", "active_post_windows"):
+        print("TRACE_" + key.upper() + "=" + str(len(trace[key])))
+    for stage in sorted({r["stage"] for r in trace["queue_windows"]}):
+        selected = [r for r in trace["queue_windows"] if r["stage"] == stage]
+        print(f"GPU_QUEUE_STAGE={stage} samples={sum(r['n'] for r in selected)} "
+              f"max_window_p95_us={max(r['p95_le_us'] for r in selected)} max_us={max(r['max_us'] for r in selected)}")
+    for name in ("render", "other"):
+        selected = [r[name] for r in trace["fence_windows"] if r[name]["n"]]
+        if selected:
+            print(f"GPU_VIRTIO_FENCE_CLASS={name} samples={sum(r['n'] for r in selected)} "
+                  f"max_window_p95_us={max(r['p95_le_us'] for r in selected)} max_us={max(r['max_us'] for r in selected)}")
+    for r in trace["active_post_windows"]:
+        print(f"ACTIVE_POST_WINDOW mono_ms={r['mono_ms']} gaps={r['active_gaps']} "
+              f"p95_us={r['active_gap_p95_us']} p99_us={r['active_gap_p99_us']} "
+              f"max_us={r['active_gap_max_us']} over60={r['active_over_60']} over120={r['active_over_120']}")
     print("SETTINGS_ICON_COLD_WARM_LATENCY=MANUAL_OBSERVATION_REQUIRED")
 
 
