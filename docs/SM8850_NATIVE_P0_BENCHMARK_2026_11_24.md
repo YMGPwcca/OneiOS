@@ -163,3 +163,23 @@ Matched median wall-time deltas: 2 regular -> 2 Prime -35.71%; 6 shared 0-5 -> 6
 ### Decision
 
 The six-core individually pinned candidate wins this parallel benchmark; small shared masks win the earlier single-dominant-vCPU latency workload. Prime cores are faster in the matched two-core compute-plus-trap workload. Eight individually pinned cores are unfavorable in this sample; 8-vCPU shared is the better measured 8-vCPU candidate. This overturns a blanket recommendation against per-core pinning. The 6+2 mixed policy (six vCPUs restricted to cluster 0 and two to cluster 1 within one guest), 4-vCPU scaling, and representative full-bridge iOS workloads remain untested. Do not set guest cluster roles or production affinity based on these results alone. Stop repeated synthetic CPU benchmarks for now; proceed to GPU submission/fence/scanout attribution and evidence-driven optimization. No physical takeover, default CPU-policy changes, thermal changes or release-gate relaxation.
+
+
+## Framework ON/OFF exploratory CPU comparison — 4/4 matched cases PASS
+
+Operator console receipt: checkout `e0389854b6209bfff036e486f6bc262c114e42b0`, unchanged runtime source `72a54f6b13f725756500c23e0c4c370813647b31`, CI receipt `/tmp/oneios-vm-display-ci.9UPjHk.log`, evidence directory `/tmp/oneios-framework-cpu.1_czgvws`. All parser/plan self-tests passed. Four ON baseline cases and their four OFF counterparts passed with the requested vCPU masks, using the existing 20-second Framework-only smoke window. Framework stop confirmed by existing lifecycle; subsequent new Android boot observed via unprivileged ADB. No full iOS/GPU3D run, APFS rearm, thermal policy switch or production placement change. Root-side stage upgrade reported PASS and preserved its rollback backup. No independent recovery qualification is inferred.
+
+| Workload | Framework ON | Framework OFF | OFF vs ON |
+|---|---:|---:|---:|
+| 3 vCPU mask 0-2, syscall round (us) | 7.912 | 7.986 | +0.9% |
+| 3 vCPU mask 0-2, fault resolve (us) | 19.754 | 15.554 | -21.3% |
+| 3 vCPU mask 0-2, timer kick (us) | 15.264 | 16.091 | +5.4% |
+| 3 vCPU mask 0-5, syscall round (us) | 12.220 | 11.353 | -7.1% |
+| 3 vCPU mask 0-5, fault resolve (us) | 15.554 | 15.003 | -3.5% |
+| 3 vCPU mask 0-5, timer kick (us) | 15.187 | 17.221 | +13.4% |
+| 6 vCPU pinned 0-5, parallel wall (ms) | 18 | 31 | +72.2% |
+| 6 vCPU pinned 0-5, rounds/s | 166667 | 96774 | -41.9% |
+| 8 vCPU shared 0-7, parallel wall (ms) | 43 | 32 | -25.6% |
+| 8 vCPU shared 0-7, rounds/s | 93023 | 125000 | +34.4% |
+
+This is **one** matched block, not medians over three measured blocks. The ON arm was forced Deep Doze, then idle force released before Framework stop; OFF idle state, CPU frequency, residency, thermal readings and task-thread placement were not independently matched. Thus no isolated causal estimate of Framework overhead, or statistical significance, is claimed. The raw native logs remain on the operator host. The near-unchanged 0-2 syscall latency suggests that stopping Framework alone is not sufficient to eliminate handoff cost. The two parallel candidates reverse their throughput ranking after Framework stop; do not select a production affinity based solely on the earlier Deep Doze ranking. Retain 8-vCPU shared and 6-vCPU pinned as workload-dependent candidates. The prior seven parallel conditions have only two matched Framework OFF observations: 2-regular, 2-prime, 6-group, 6-wide and 8-pinned remain unmeasured OFF, as does 3-vCPU latency mask 0-7. Do not label the full matrix completed or require another live run simply to repeat the four observations. GPU/display development can proceed independently.
