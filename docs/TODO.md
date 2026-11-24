@@ -29,7 +29,8 @@
 - [x] C/P1.3 first slice: udmabuf list sizing and single-chunk fd transfer; 998/998 leak scenarios, both reuse cases FD/KGSL-object delta zero, LeakSanitizer clean. Multi-chunk/coherence/wait unchanged; no persistent buffer cache without lifetime evidence.
 - [x] D/P1.4 first slices: CPU scanout compaction and bounded late full-frame drain, separate timing/coverage; full local CI PASS at `88ab6ca` (display 261/261, frame profiler 55/55, XNUHost 14404/14404). Direct sharing, physical FPS and on-device validation remain open.
 - [x] E: full local CI and ARM64 runtime-only package/ELF/SHA verification at `88ab6ca` / `49e6f51`; package SHA256 `c93e55ae6e4e39cb02f35547b661765ccfc174697521fc88be1b09b9bbcfc0a9`. Log `/tmp/oneios-phase-de.VAUgMw.log`.
-- [ ] F: read-only artifact/device/storage readiness first; separately approved matched CPU-profile and old/new runtime comparisons only after existing admission and safety review. No uncapped run, automatic risk acknowledgment, storage cleanup or independent recovery claim.
+- [x] F0/F0.1/F0.2: artifact verification, rollback-backed runtime stage, verified sparse Data rearm and guarded 180s/frame-task preflights for default and prime-first PASS; no Framework stop. Logs `/tmp/oneios-phase-f0.YBykI7.log`, `/tmp/oneios-phase-f-stage.2Sl1Hd.log`, `/tmp/oneios-phase-f-admission.wnGGcb/rearm-admission.log`.
+- [ ] F1/F2: separate operator-approved guarded matched CPU-profile and old/new runtime comparisons; independent watchdog and unassisted return unverified. Preserve fresh clone until F1-A; compare seed digests, archive exact session evidence and verify normal Android return before a second trial. No uncapped run, automatic risk acknowledgement or storage cleanup.
 
 ## 2026-11-25 performance handoff: Phase A/B source batch
 
