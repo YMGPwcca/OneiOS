@@ -27,8 +27,9 @@
 - [x] A/B focused CachyOS regression and original archive reanalysis at `fe01153` / OneOS `49e6f51`. 14391 XNUHost checks, 439 bridge checks, 956 GPU leak checks, ARM64/QEMU and all Python suites passed. Corrected aggregate 2848 gaps; 1642 over 60Hz / 2727 over 120Hz budget. New physical profile and full packaging validation remain pending.
 - [x] C/P1.2 first slice: fence completion before periodic report and used publication accounting; focused CachyOS PASS at `cd8b68b` (29 fence profiler, 14395 XNUHost). Head-of-line/priority decisions remain pending attributable trace.
 - [x] C/P1.3 first slice: udmabuf list sizing and single-chunk fd transfer; 998/998 leak scenarios, both reuse cases FD/KGSL-object delta zero, LeakSanitizer clean. Multi-chunk/coherence/wait unchanged; no persistent buffer cache without lifetime evidence.
-- [ ] D/P1.4 first source slices: compact adjacent CPU scanout runs on first selection, bounded late drain only after validated full-frame lock, separate timing/coverage metrics. Host tests and Android helper/package build pending. Direct sharing/AHardwareBuffer import and synchronization remain unresolved; no zero-copy claim.
-- [ ] E: full local CI and ARM64 package/ELF/SHA verification (includes D regressions). F: separately admitted representative iOS matched A/B. Existing safety gates unchanged.
+- [x] D/P1.4 first slices: CPU scanout compaction and bounded late full-frame drain, separate timing/coverage; full local CI PASS at `88ab6ca` (display 261/261, frame profiler 55/55, XNUHost 14404/14404). Direct sharing, physical FPS and on-device validation remain open.
+- [x] E: full local CI and ARM64 runtime-only package/ELF/SHA verification at `88ab6ca` / `49e6f51`; package SHA256 `c93e55ae6e4e39cb02f35547b661765ccfc174697521fc88be1b09b9bbcfc0a9`. Log `/tmp/oneios-phase-de.VAUgMw.log`.
+- [ ] F: read-only artifact/device/storage readiness first; separately approved matched CPU-profile and old/new runtime comparisons only after existing admission and safety review. No uncapped run, automatic risk acknowledgment, storage cleanup or independent recovery claim.
 
 ## 2026-11-25 performance handoff: Phase A/B source batch
 
