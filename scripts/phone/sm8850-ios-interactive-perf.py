@@ -7,6 +7,7 @@ from short gaps between *posted* buffers, not guaranteed actual iOS animation FP
 """
 
 import argparse
+import importlib.util
 import json
 import re
 from pathlib import Path
@@ -211,14 +212,42 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--xnuhost", type=Path, help="saved xnuhost log")
     p.add_argument("--display", type=Path, help="saved oneios-display log")
+    p.add_argument("--archive", type=Path, help="existing collector tar; paired same-session traces only")
+    p.add_argument("--archive-session", help="explicit archived session directory suffix")
+    p.add_argument("--expected-launch", help="reject a paired session with missing/mismatched launch ID")
     p.add_argument("--json", type=Path, help="write read-only evidence report JSON")
     args = p.parse_args(argv)
     if bool(args.xnuhost) != bool(args.display):
         p.error("--xnuhost and --display must be supplied together")
+    if args.archive and args.xnuhost:
+        p.error("--archive and explicit log paths are mutually exclusive")
+    if (args.archive_session or args.expected_launch) and not args.archive:
+        p.error("--archive-session and --expected-launch require --archive")
+    if args.archive_session and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.archive_session):
+        p.error("invalid --archive-session token")
+    if args.expected_launch and not re.fullmatch(r"[a-f0-9]{32}", args.expected_launch):
+        p.error("invalid --expected-launch identifier")
     try:
-        host_path, display_path = (args.xnuhost, args.display) if args.xnuhost else _latest_pair()
-        report = analyze_logs(_read(host_path, MAX_HOST), _read(display_path, MAX_DISPLAY))
-        report["sources"] = {"xnuhost": str(host_path), "display": str(display_path)}
+        if args.archive:
+            spec = importlib.util.spec_from_file_location(
+                "oneios_stall_archive", Path(__file__).with_name("sm8850-frame-stall-report.py"))
+            archive_tool = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(archive_tool)
+            meta = {}
+            try:
+                host, display = archive_tool.read_logs(args.archive, None, args.archive_session,
+                                                       expected_launch=args.expected_launch, metadata=meta)
+            except (archive_tool.MissingTraceInputs, archive_tool.tarfile.TarError) as exc:
+                p.error(str(exc))
+            report = analyze_logs(host, display)
+            report["sources"] = {"archive": str(args.archive),
+                                 "session": args.archive_session or "current"}
+            report["session_metadata"] = meta
+            report["expected_launch_matched"] = True if args.expected_launch else None
+        else:
+            host_path, display_path = (args.xnuhost, args.display) if args.xnuhost else _latest_pair()
+            report = analyze_logs(_read(host_path, MAX_HOST), _read(display_path, MAX_DISPLAY))
+            report["sources"] = {"xnuhost": str(host_path), "display": str(display_path)}
         _show(report)
         if args.json:
             args.json.parent.mkdir(parents=True, exist_ok=True)

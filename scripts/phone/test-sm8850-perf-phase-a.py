@@ -105,6 +105,14 @@ class PhaseA(unittest.TestCase):
             with self.assertRaises(stall.MissingTraceInputs):
                 stall.read_logs(archive, None, expected_launch="b" * 32)
             self.assertEqual(("old", "old"), stall.read_logs(archive, None, "old", expected_launch="b" * 32))
+            report = Path(d) / "perf.json"
+            cmd = [sys.executable, str(HERE / "sm8850-ios-interactive-perf.py"),
+                   "--archive", str(archive), "--expected-launch", launch, "--json", str(report)]
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            self.assertEqual(launch, json.loads(report.read_text())["session_metadata"]["launch_id"])
+            cmd[5] = "b" * 32
+            failed = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(2, failed.returncode)
 
     def test_detached_profile_and_refusal_before_launch(self):
         for profile in ("off", "frame", "task", "frame-task"):

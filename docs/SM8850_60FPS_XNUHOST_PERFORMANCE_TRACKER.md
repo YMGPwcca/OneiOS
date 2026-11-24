@@ -17,6 +17,35 @@
 
 **Measurement contract:** FPS = distinct frames *presented* during a confirmed animated workload, not guest flush count, renderer policy events or ANativeWindow posts. Aim for >=60 presented FPS sustained where the display workload can deliver 60, frame budget <=16.667 ms, low active-window jank and improving p95/p99 touch-to-present latency. Keep raw interval distributions and classify idle separately. Do not declare success from an unverified presentation timestamp.
 
+## 2026-11-25: handoff execution order (Phase A and B)
+
+**Source batch, not accepted hardware/CI evidence.** Companion OneOS pinned to `6d283b1c949fb50425728f179a86aa186646b2a6` on `feat/sm8850-xnuhost-perf-p0`, descended from `51a05e9`; previous CPU benchmark branch is unchanged. This section records the new handoff IDs (distinct from the historical PERF-P0/P1 items and the safety TODO).
+
+| Handoff item | Source | Regression / CI / physical acceptance | Dependency and acceptance |
+|---|---|---|---|
+| A / P0.1 full takeover instrumentation | Implemented | Test source added; CachyOS and physical pending | `--perf-profile off\|frame\|task\|frame-task`; same launch preflight, detached root metadata and runtime flags; observed matching frame/queue/fence/task traces on a later admitted run. |
+| A / P0.2 offline analyzer corrections | Implemented | Synthetic handoff-value fixtures added; archive reanalysis and CachyOS tests pending | Same-session archive, correct active/all-gap split, budget coverage, bucket bounds vs max, valid CPU sampler parsing. No inferred FPS. |
+| B / P1.1 topology-aware placement | Candidate implemented | Fixture/CLI regression source added; native build, effective readbacks, representative iOS A/B pending | Qualified Oryon 6+2 topology, distinct initial masks, safe thermal narrowing, fallback; never production-default selection on one run. |
+
+**Latest handoff evidence (operator-provided summary, not a new raw-log reanalysis):** full-bridges Framework OFF 8-vCPU session `0f803f5ac4564942a641b0dcee8bb4d5`, 180.2s, peak posted-buffer rate 46.28, median active cadence 34.44, max recorded touch-to-next-guest-frame 214.1ms, render fence max 55.354ms. Active post totals 2,847 gaps; 1,642 above nominal 60-Hz budget and 2,727 above 120-Hz budget; max 248.218ms. The old 7,678.684ms field came from all-gap p95, not active stall. The previous Framework-on comparison had a different vCPU/bridge/pin configuration, so no isolated Framework effect or physical presentation claim. `Spotlight[248] 12%` is one observed value, not necessarily the peak.
+
+### Phase A implementation
+
+- Full takeover runners and OneOS root shell carry independent optional performance tokens across detach. Root-owned `framework.perf-profile` and `framework.cpu-profile` are written before one-shot consumption, then verified against native flags. Missing legacy default-only metadata is distinguished from explicit profiles. Opt-in frame/task instrumentation leaves per-command GPU verbosity off. Default invocation has no new trace flags.
+- Collector keeps the original archive. A launch-aware collection refuses to analyze a mismatched current launch; explicit historical selection remains available. Reports describe actual observed trace markers separately from requested metadata. `sm8850_perf_metrics.py` aggregates only reported valid budget counters, exposes partial coverage, preserves zero versus unknown and distinguishes histogram upper bucket bounds from measured maxima. All-gap candidate windows remain possible idle.
+- CPU process sampler accepts merged prefixes and positive non-10-second intervals, excludes the -sys sampler, and does not infer unlisted processes as zero. Existing `host_statistics64` ABI warning remains open; no suppressions or guessed fix.
+- The exact raw archive is on the operator's CachyOS host, not available in this development environment. The regression fixture uses the handoff totals synthetically, not fabricated raw windows.
+
+### Phase B implementation
+
+`--cpu-profile prime-first` / native `--set sm8850-prime-first=1` is restricted to the admitted full-bridges 8-vCPU bench with no cluster override. On the captured SM8850 topology the baseline target derives from the generic Oryon rule (lend the slowest two physical P cores to guest E): 0/1 -> 4/5, 2..7 -> 0/1/2/3/6/7. The candidate maps 0/1 -> 6/7, 2..7 -> 0/1/2/3/4/5. The two highest-capacity cores must be a distinct higher-frequency policy with Qualcomm MIDR, all eight present and inherited allowed, and all existing hot steps must exclude the Prime pair. IDs are derived, not assumed. Incompatible/missing topology logs DEFAULT_FALLBACK without applying the candidate.
+
+Guest cluster labels/order remain 2E/6P; each descriptor uses the mapped host core's actual capacity, frequency table and caches. This is experimental: XNU AMP may respond differently to fast E descriptors. At cap 0 the candidate uses singleton masks; at nonzero thermal steps all eight vCPUs share the existing restricted slower-core mask instead of forcing stacked pairs. The thermal thresholds, root cap/guard, firmware/kernel controls and reboot/deadline policy are not changed. Advertised descriptors remain the cold plan, as in the existing thermal bridge; effective masks can narrow.
+
+vCPU, guest user thread and task service thread follow placement independently. With perf-task enabled (or active candidate), `perf-placement:` reports cumulative attempts, failures, logarithmically sampled readback and mismatches, without per-event logs. Existing `perf-affinity:` provides sampled kernel-reported masks/migration counts/last CPU. A successful set call does not prove residency; GPU/display workers are not pinned by this patch. True per-core residency, GPU/display contention, profile overhead and actual frame benefit need representative evidence. Do not interpret a fallback session as the candidate arm or change default policy.
+
+**Offline gate:** `python3 scripts/phone/test-sm8850-perf-phase-a.py -v`, `python3 app/tests/test_sm8850_perf_profile.py -v`, existing interactive analyzer and bridge/XNUHost tests. Integrated in `scripts/ci-local.sh all`; no ADB, APFS stage/rearm, watchdog audit or live takeover. Run on CachyOS before progressing to physical validation. Continue Phase C (GPU fence/buffer) and D (display pipeline) as evidence permits; E full batch CI, F representative matched A/B, G runtime critical path and H HakiOS review. No repeat of the completed synthetic CPU/GPU campaign.
+
 ## P0 — XNUHost correctness and attribution
 
 - [ ] **PERF-P0-01 — Safe deferred-only task order error diagnostic.** `runtime/xnuhost/src/task.c`: fix `order(t,NULL,0)` log dereference, cover -ETIMEDOUT, >=1000ms, explicit op and empty batch; preserve wait rc and mapping synchronization. **Status: source fix + 11-check diagnostic unit test + Android ARM64 build and complete CachyOS local CI PASS on `7ee2743a` (operator log 2026-11-24). Integrated service-thread timeout injection is still pending; no performance gain claimed.** Existing tracker: ONI-P1-01.

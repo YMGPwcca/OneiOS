@@ -66,3 +66,16 @@ adb -s R5GL64LZ9HA shell -T 'getprop ro.boot.bootreason; getprop sys.boot_comple
 The separately risk-acknowledged destructive `run` command remains documented in
 [SM8850_FULL_IOS_10MIN.md](SM8850_FULL_IOS_10MIN.md) **for reference, not as a current recommendation**.
 Do not reuse a consumed APFS Data clone, loosen the OneOS app gate, alter watchdog nodes or boot partitions, or force another 600-second trial until P0 is addressed.
+
+## Optional performance controls (2026-11-25 source-only)
+
+On the performance branch, the existing full-run wrapper and telemetry monitor accept `--perf-profile off|frame|task|frame-task` and `--cpu-profile default|prime-first`. These are independent, opt-in measurement/placement flags, not live authorization or changes to thermal/reboot policy. Default flags are unchanged. Prime-first is an experimental candidate and can fall back explicitly; read the native profile markers and effective-affinity evidence, not just the requested metadata. The full-bridges 180-second restriction and all admission gates still apply.
+
+Analyze a previous collector archive without connecting to the phone:
+
+```bash
+python3 scripts/phone/sm8850-frame-stall-report.py --archive /path/to/device-logs.tar --expected-launch LAUNCH_ID --output /path/to/frame-stall-reanalysis.json
+python3 scripts/phone/sm8850-ios-interactive-perf.py --archive /path/to/device-logs.tar --expected-launch LAUNCH_ID --json /path/to/perf-reanalysis.json
+```
+
+Use the actual 32-character launch identifier; for a historical archive directory, also pass `--archive-session TOKEN` with the exact listed suffix. See the performance tracker for validation status. No new physical acceptance has been established.
