@@ -107,6 +107,17 @@ static bool sm8850_full_bridge_admitted(void)
       !sm8850_stage_line("/data/control/watchdog.generation", generation, sizeof generation))
     return false;
 
+  // Match opt-in runtime flags against the root-owned session record.
+  // Older default-only stages have no profile files and remain compatible.
+  char perf_profile[32], cpu_profile[32];
+  const char *want_perf = config.frame_trace ? (config.perf_task ? "frame-task" : "frame") :
+                           (config.perf_task ? "task" : "off");
+  const char *want_cpu = config.sm8850_prime_first ? "prime-first" : "default";
+  if (sm8850_stage_line("/data/control/framework.perf-profile", perf_profile, sizeof perf_profile) ?
+      strcmp(perf_profile, want_perf) : strcmp(want_perf, "off")) return false;
+  if (sm8850_stage_line("/data/control/framework.cpu-profile", cpu_profile, sizeof cpu_profile) ?
+      strcmp(cpu_profile, want_cpu) : strcmp(want_cpu, "default")) return false;
+
   // OneOS's 180s no-guard mode intentionally has neither thermal worker.
   // Match its same-generation stop receipt and reboot deadline instead of
   // fabricating thermal.guard.required / thermal.cap.required.

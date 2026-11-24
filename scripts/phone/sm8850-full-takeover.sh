@@ -15,7 +15,7 @@ Usage:
   bash scripts/phone/sm8850-full-takeover.sh prepare [SERIAL]
   bash scripts/phone/sm8850-full-takeover.sh rearm [SERIAL]
   bash scripts/phone/sm8850-full-takeover.sh stage-runtime [SERIAL]
-  bash scripts/phone/sm8850-full-takeover.sh run [SERIAL] --i-accept-10-minute-legacy-watchdog-risk [--duration SECONDS] [--perf-profile off|frame|task|frame-task]
+  bash scripts/phone/sm8850-full-takeover.sh run [SERIAL] --i-accept-10-minute-legacy-watchdog-risk [--duration SECONDS] [--perf-profile off|frame|task|frame-task] [--cpu-profile default|prime-first]
 stage-runtime: root-only stage update, no build/test, no APFS rearm and no
 Framework stop; requires previously consumed Data and prebuilt 3D artifacts.
 Full-bridges experimental branch: rearm and run are explicitly gated by
@@ -44,6 +44,7 @@ risk="${3:-}"
 duration=600
 duration_explicit=0
 perf_profile=off
+cpu_profile=default
 case "$mode" in prepare|rearm|stage-runtime|run) ;; *) usage ;; esac
 if [ "$mode" = run ]; then
     [ "$risk" = --i-accept-10-minute-legacy-watchdog-risk ] || usage
@@ -54,11 +55,25 @@ if [ "$mode" = run ]; then
         duration_explicit=1
         shift 2
     fi
-    if [ "$#" -gt 0 ]; then
-        [ "$#" -eq 2 ] && [ "$1" = --perf-profile ] || usage
-        perf_profile=$2
-        case "$perf_profile" in off|frame|task|frame-task) ;; *) usage ;; esac
-    fi
+    perf_seen=0
+    cpu_seen=0
+    while [ "$#" -gt 0 ]; do
+        [ "$#" -ge 2 ] || usage
+        case "$1" in
+            --perf-profile)
+                [ "$perf_seen" = 0 ] || usage
+                perf_seen=1
+                perf_profile=$2
+                case "$perf_profile" in off|frame|task|frame-task) ;; *) usage ;; esac ;;
+            --cpu-profile)
+                [ "$cpu_seen" = 0 ] || usage
+                cpu_seen=1
+                cpu_profile=$2
+                case "$cpu_profile" in default|prime-first) ;; *) usage ;; esac ;;
+            *) usage ;;
+        esac
+        shift 2
+    done
 elif [ "$mode" = rearm ] && [ "$#" -eq 4 ] && [ "$3" = --duration ]; then
     duration=$4
     duration_explicit=1
@@ -296,6 +311,7 @@ PY
     echo "RECOVERY=MANDATORY_REBOOT_AT_${duration}_SECONDS_OR_EARLIER_ON_FAILURE"
     extra=()
     [ "$perf_profile" = off ] || extra+=(--perf-profile "$perf_profile")
+    [ "$cpu_profile" = default ] || extra+=(--cpu-profile "$cpu_profile")
     if [ "${ONEIOS_SM8850_SOFT_THERMAL_OFF:-}" = I_ACCEPT_SOFT_GUARD_OFF_180S ]; then
       [ "$duration" = 180 ] || { echo "BLOCKED: passive thermal mode requires 180s" >&2; exit 2; }
       extra+=(--no-userspace-thermal-180)
