@@ -207,19 +207,19 @@ check-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 check-task-profiler-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	@if [ -z "$(ARM64_NATIVE)$(QEMU)" ]; then echo "check-task-profiler-arm64: qemu-aarch64 not installed: skipped"; else \
 	  set -e; \
-	  d=$(mktemp -d "$(A)/profile-data.XXXXXX"); \
-	  trap 'rm -rf "$d"' EXIT HUP INT TERM; \
+	  d=$$(mktemp -d "$(A)/profile-data.XXXXXX"); \
+	  trap 'rm -rf "$$d"' EXIT HUP INT TERM; \
 	  for enabled in 0 1; do \
-	    mkdir "$d/$enabled"; log="$(A)/task-profiler-$enabled.log"; \
-	    if ! timeout 30 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data "$d/$enabled" \
-	       --cpus 3 --ram 256M --set ram-giveback=1 --set perf-task=$enabled --set perf-log=0 \
-	       --display none --no-input --width 64 --height 64 > "$log" 2>&1; then tail -60 "$log"; exit 1; fi; \
-	    grep -q 'TESTKERNEL: all passed' "$log" || { tail -60 "$log"; exit 1; }; \
+	    mkdir "$$d/$$enabled"; log="$(A)/task-profiler-$$enabled.log"; \
+	    if ! timeout 30 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data "$$d/$$enabled" \
+	       --cpus 3 --ram 256M --set ram-giveback=1 --set perf-task=$$enabled --set perf-log=0 \
+	       --display none --no-input --width 64 --height 64 > "$$log" 2>&1; then tail -60 "$$log"; exit 1; fi; \
+	    grep -q 'TESTKERNEL: all passed' "$$log" || { tail -60 "$$log"; exit 1; }; \
 	  done; \
 	  if grep -q 'perf-task-wait:' "$(A)/task-profiler-0.log"; then echo "profiler unexpectedly active by default"; exit 1; fi; \
 	  for stage in order_locks order_direct_ack release_locks release_ack; do \
-	    grep -Eq "perf-task-wait: scope=process_total host_pid=0 stage=$stage n=[1-9][0-9]* " "$(A)/task-profiler-1.log" \
-	      || { echo "missing completed timing stage: $stage"; tail -60 "$(A)/task-profiler-1.log"; exit 1; }; \
+	    grep -Eq "perf-task-wait: scope=process_total host_pid=0 stage=$$stage n=[1-9][0-9]* " "$(A)/task-profiler-1.log" \
+	      || { echo "missing completed timing stage: $$stage"; tail -60 "$(A)/task-profiler-1.log"; exit 1; }; \
 	  done; \
 	  grep 'perf-task-wait: scope=process_total' "$(A)/task-profiler-1.log"; \
 	  echo "check-task-profiler-arm64: PASS (OFF/ON test kernel; process totals retained)"; fi
