@@ -456,7 +456,7 @@ static int64_t order(task *t, const struct xs_op *ops, unsigned count)
   xh_vcpu *v = xh_cpu_self();
   const uint8_t epoch = (uint8_t)__atomic_load_n(&xh_cpu_place_epoch, __ATOMIC_ACQUIRE);
   if (xh_cpu_place && v && (t->service_placed != v->cpu.index + 1 || t->service_epoch != epoch)) {
-    xh_cpu_place(t->pid, v->cpu.index);
+    xh_cpu_place(t->pid, v->cpu.index, XH_PLACE_SERVICE);
     t->service_placed = (uint8_t)(v->cpu.index + 1);
     t->service_epoch = epoch;
   }
@@ -1075,7 +1075,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   const uint8_t epoch = (uint8_t)__atomic_load_n(&xh_cpu_place_epoch, __ATOMIC_ACQUIRE);
   if (xh_cpu_place && (th->placed != v->cpu.index + 1 || th->epoch != epoch)) {
     uint32_t tid = __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE);
-    if (tid) { xh_cpu_place((int)tid, v->cpu.index); th->placed = (uint8_t)(v->cpu.index + 1); th->epoch = epoch; }
+    if (tid) { xh_cpu_place((int)tid, v->cpu.index, XH_PLACE_GUEST); th->placed = (uint8_t)(v->cpu.index + 1); th->epoch = epoch; }
   }
   // Its vCPU's clamp (xnuhost.h xh_cpu_uclamp): the host's governor picks a core's clock from what runs there, and what
   // runs there while the vCPU waits is this thread. One sched_setattr when the value changes, none otherwise.

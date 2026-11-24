@@ -179,6 +179,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "spin-task")) { ok = number(value, 0, 1000, &c->spin_task); }
   else if (!strcmp(key, "cpu-pin")) { if (!strcmp(value, "2")) c->cpu_pin = 2; else { bool on; if (flag(value, &on)) return -1; c->cpu_pin = on; } }
   else if (!strcmp(key, "cpu-affinity-bench")) return flag(value, &c->cpu_affinity_bench);
+  else if (!strcmp(key, "sm8850-prime-first")) return flag(value, &c->sm8850_prime_first);
   else if (!strcmp(key, "map-defer")) { bool on; if (flag(value, &on)) return -1; c->map_defer = on; }
   else if (!strncmp(key, "hw-backend", 10)) {
     // hw-backend, hw-backend-<bridge>, hw-backend-fallback (bridges/hw_backend.h)
@@ -361,6 +362,10 @@ int xh_config_finish(xh_config *c)
   // but DO NOT fake bridges=1 by instantiating only OB_CH_BRIGHTNESS.
   // cpu-affinity-bench is separate and INCOMPATIBLE with the full CPU bridge;
   // the generic CPU bridge owns CPU placement with cpu-pin=1 instead.
+  if (c->sm8850_prime_first && (!c->sm8850_full_bridges || *c->clusters)) {
+    fprintf(stderr, "xnuhost: sm8850-prime-first=1 requires the admitted full-bridges profile and no cluster override\n");
+    return -1;
+  }
   if (c->sm8850_full_bridges &&
       (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
        !c->touch_exclusive || !c->input || !c->bridges || !c->tasks ||

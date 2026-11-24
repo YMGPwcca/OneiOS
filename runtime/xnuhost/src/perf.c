@@ -235,6 +235,7 @@ void xh_perf_log(bool since_start)
     if (xh_perf_detail_enabled && v->started) detail_report(v);
     if (!since_start) { last[i] = *p; last_cpu_ns[i] = cpu; }
   }
+  if (xh_cpu_place_report) xh_cpu_place_report();
   xh_task_perf_log();  // optional bounded per-task cumulative counters; no per-event logging
   if (!since_start) last_report = now;
 }

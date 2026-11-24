@@ -423,6 +423,7 @@ static br_thermal *thermal;       // the phone's temperatures: iOS's pressure le
 static br_cpu_topology cpu_host;  // the host's CPUs, and the plan as made: the thermal steps narrow it
 static br_cpu_plan cpu_plan_base;
 static bool cpu_planned;
+static bool cpu_prime_first_active; // selected before CPU threads and thermal callbacks
 extern unsigned xh_cpu_place_epoch;   // task.c: an iOS thread is placed again when it runs after this changes
 void xh_sysreg_stats_log(void);       // sysreg.c: the most frequent trapped instructions
 static bool net_up;
@@ -450,18 +451,63 @@ static void bt_sim_on(xl_machine *m)
 static uint64_t place_mask(unsigned vcpu)
 {
   uint64_t mask = __atomic_load_n(&cpu_plan.v[vcpu].affinity, __ATOMIC_ACQUIRE);     // the thermal step may narrow it
-  if (!config.cpu_pin || !mask) return mask;
+  if (!config.cpu_pin || !mask || cpu_prime_first_active) return mask;
   return br_cpu_pin_mask(&cpu_plan, &cpu_plan_base, vcpu);
 }
-static void place(int tid, unsigned vcpu)
+// Optional placement evidence, cumulative and separated by thread role.
+// Read back at powers-of-two placement attempts when successful, keeping
+// extra affinity syscalls logarithmically bounded and out of default runs.
+static struct {
+  uint64_t calls, failed, samples, read_errors, mismatches;
+} place_stats[XH_MAX_CPUS][XH_PLACE_ROLES];
+
+static void place(int tid, unsigned vcpu, enum xh_cpu_place_role role)
 {
-  if (vcpu >= cpu_plan.nvcpu) return;
+  if (vcpu >= cpu_plan.nvcpu || role >= XH_PLACE_ROLES) return;
   uint64_t mask = place_mask(vcpu);
   cpu_set_t set;
   CPU_ZERO(&set);
   for (unsigned i = 0; i < 64 && i < CPU_SETSIZE; i++) if (mask >> i & 1) CPU_SET(i, &set);
-  if (sched_setaffinity(tid, sizeof set, &set) && (tid == 0 || config.cpu_affinity_bench))
-    LOGE("cpu: vCPU %u thread %d on host CPUs 0x%llx: %s", vcpu, tid, (unsigned long long)mask, strerror(errno));
+  int rc = sched_setaffinity(tid, sizeof set, &set);
+  int saved_errno = errno;
+  if (rc && (tid == 0 || config.cpu_affinity_bench))
+    LOGE("cpu: vCPU %u thread %d on host CPUs 0x%llx: %s", vcpu, tid, (unsigned long long)mask, strerror(saved_errno));
+  if (config.perf_task || cpu_prime_first_active) {
+    uint64_t n = __atomic_add_fetch(&place_stats[vcpu][role].calls, 1, __ATOMIC_RELAXED);
+    if (rc) {
+      __atomic_fetch_add(&place_stats[vcpu][role].failed, 1, __ATOMIC_RELAXED);
+    } else if (n && !(n & (n - 1))) {
+      cpu_set_t effective;
+      CPU_ZERO(&effective);
+      if (sched_getaffinity(tid, sizeof effective, &effective)) {
+        __atomic_fetch_add(&place_stats[vcpu][role].read_errors, 1, __ATOMIC_RELAXED);
+      } else {
+        bool match = true;
+        for (unsigned i = 0; i < CPU_SETSIZE; i++)
+          if (!!CPU_ISSET(i, &set) != !!CPU_ISSET(i, &effective)) { match = false; break; }
+        __atomic_fetch_add(&place_stats[vcpu][role].samples, 1, __ATOMIC_RELAXED);
+        if (!match) __atomic_fetch_add(&place_stats[vcpu][role].mismatches, 1, __ATOMIC_RELAXED);
+      }
+    }
+  }
+  errno = saved_errno;
+}
+static void placement_report(void)
+{
+  static const char *const roles[XH_PLACE_ROLES] = { "vcpu", "guest-thread", "service-thread" };
+  for (unsigned i = 0; i < cpu_plan.nvcpu; i++)
+    for (unsigned r = 0; r < XH_PLACE_ROLES; r++) {
+      const uint64_t calls = __atomic_load_n(&place_stats[i][r].calls, __ATOMIC_RELAXED);
+      if (!calls) continue;
+      LOGI("perf-placement: vcpu=%u role=%s calls=%llu failed=%llu readback_samples=%llu "
+           "readback_errors=%llu readback_mismatches=%llu current_target=0x%llx (cumulative; not residency)",
+           i, roles[r], (unsigned long long)calls,
+           (unsigned long long)__atomic_load_n(&place_stats[i][r].failed, __ATOMIC_RELAXED),
+           (unsigned long long)__atomic_load_n(&place_stats[i][r].samples, __ATOMIC_RELAXED),
+           (unsigned long long)__atomic_load_n(&place_stats[i][r].read_errors, __ATOMIC_RELAXED),
+           (unsigned long long)__atomic_load_n(&place_stats[i][r].mismatches, __ATOMIC_RELAXED),
+           (unsigned long long)place_mask(i));
+    }
 }
 // Strict bench-only pairing: up to 8 vCPUs each get a distinct, allowed
 // host CPU (shared with the iOS thread released by that vCPU). This is scoped
@@ -538,9 +584,10 @@ static void thermal_step(void *ctx, const br_thermal_state *state)
 {
   (void)ctx;
   if (!cpu_planned) return;
-  br_cpu_plan_cap(&cpu_plan, &cpu_plan_base, &cpu_host, state->cap);
+  if (cpu_prime_first_active) br_cpu_plan_prime_cap(&cpu_plan, &cpu_plan_base, &cpu_host, state->cap);
+  else br_cpu_plan_cap(&cpu_plan, &cpu_plan_base, &cpu_host, state->cap);
   __atomic_fetch_add(&xh_cpu_place_epoch, 1, __ATOMIC_ACQ_REL);
-  for (unsigned i = 0; i < cpu_plan.nvcpu; i++) { int tid = vcpu_tid(i); if (tid > 0) place(tid, i); }
+  for (unsigned i = 0; i < cpu_plan.nvcpu; i++) { int tid = vcpu_tid(i); if (tid > 0) place(tid, i, XH_PLACE_VCPU); }
   uint64_t p = cpu_plan.nvcpu ? __atomic_load_n(&cpu_plan.v[cpu_plan.nvcpu - 1].affinity, __ATOMIC_ACQUIRE) : 0;
   LOGI("thermal: step %u (%s): P vCPUs on host CPUs 0x%llx%s", state->cap, br_thermal_level_name(state->level), (unsigned long long)p,
        state->cap ? "" : " (all of their kind)");
@@ -854,10 +901,26 @@ static int boot(void)
     br_cpu_topology host;
     if (br_cpu_read("/sys", &host) == 0 && br_cpu_plan_make(&host, config.ncpu, false, &cpu_plan) == 0) {
       cpu_host = host;
+      if (config.sm8850_prime_first) {
+        cpu_set_t allowed;
+        uint64_t mask = 0;
+        if (!sched_getaffinity(0, sizeof allowed, &allowed))
+          for (unsigned i = 0; i < 64 && i < CPU_SETSIZE; i++)
+            if (CPU_ISSET(i, &allowed)) mask |= UINT64_C(1) << i;
+        if (!br_cpu_plan_prime_first(&host, mask, &cpu_plan)) {
+          cpu_prime_first_active = true;
+          LOGI("SM8850_CPU_PROFILE=PRIME_FIRST_ACTIVE (experimental; guest 2E/6P order, mapped host descriptors)");
+        } else {
+          LOGI("SM8850_CPU_PROFILE=DEFAULT_FALLBACK (topology or inherited CPU mask not qualified)");
+        }
+      } else if (config.sm8850_full_bridges) {
+        LOGI("SM8850_CPU_PROFILE=DEFAULT");
+      }
       cpu_plan_base = cpu_plan;
       cpu_planned = true;
       for (unsigned i = 0; i < config.ncpu; i++) machine.cpu_cluster[i] = cpu_plan.v[i].type;      // E vCPUs first, then P
       xh_cpu_place = place;
+      if (config.perf_task || cpu_prime_first_active) xh_cpu_place_report = placement_report;
       br_cpufreq *cpufreq = br_cpufreq_create(&cpu_plan, vcpu_tid);
       if (cpufreq && xh_mmio_add(&(xh_mmio_region){ .base = XL_BOARD_CPUFREQ, .size = (uint64_t)config.ncpu * BR_CPUFREQ_WINDOW, .name = "cpufreq",
                                                     .opaque = cpufreq, .read = cpufreq_read, .write = cpufreq_write }) == 0) {

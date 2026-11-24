@@ -17,7 +17,8 @@ xh_vcpu g_vcpu[XH_MAX_CPUS];
 unsigned g_ncpu;
 struct xh_upcalls g_upcalls;
 bool g_upcalls_set;
-void (*xh_cpu_place)(int tid, unsigned vcpu);
+void (*xh_cpu_place)(int tid, unsigned vcpu, enum xh_cpu_place_role role);
+void (*xh_cpu_place_report)(void);
 unsigned (*xh_cpu_uclamp)(unsigned vcpu);
 unsigned xh_gpu_vcpu_boost;
 
@@ -415,7 +416,7 @@ static void *vcpu_main(void *arg)
   char name[16];
   snprintf(name, sizeof name, "xnu-cpu%u", v->cpu.index);
   pthread_setname_np(pthread_self(), name);
-  if (xh_cpu_place) xh_cpu_place(0, v->cpu.index);
+  if (xh_cpu_place) xh_cpu_place(0, v->cpu.index, XH_PLACE_VCPU);
   pthread_sigmask(SIG_SETMASK, &vcpu_mask, NULL);
   uint64_t entry = v->entry, a0 = v->arg0, a1 = v->arg1, a2 = v->arg2;
   if (!entry) { entry = (uint64_t)(uintptr_t)g_upcalls.cpu_entry; a1 = a0; a0 = (uint64_t)(uintptr_t)&v->cpu; }

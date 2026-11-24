@@ -118,6 +118,7 @@ typedef struct {
   bool  frame_trace;        // frame-trace=1: opt-in versioned XHDF timestamps; legacy 20-byte prefix preserved
   int   spin_host, spin_task;   // task.c: microseconds a vCPU (spin-host) and an iOS thread (spin-task) spin for the other
                             // side of a hand-off before they sleep in a futex; -1 = unset (the defaults in task.c)
+  bool  sm8850_prime_first; // full-bridges-only experiment: vCPU0/1 on qualified Prime cores
   bool  cpu_affinity_bench; // strictly bench/shm/exclusive-touch/bridges=0: opt-in one host core per vCPU + its guest threads;
                              // only sched_setaffinity on our threads (no cpu governor/uclamp/frequency/thermal mutations)
   int   cpu_pin;            // main.c: a vCPU and the iOS thread it runs share one host CPU of the vCPU's mask: 1, 0, -1 = unset (1);
@@ -523,7 +524,9 @@ uint64_t xh_counter_hz(void);
 xh_vcpu *xh_cpu_self(void);                           // the calling vCPU, NULL on other threads
 // Set before the vCPUs start: puts a Linux thread (0 = the caller) on the host CPUs of a vCPU. Called
 // by each vCPU thread for itself and for the iOS thread a vCPU runs, when that vCPU changes.
-extern void (*xh_cpu_place)(int tid, unsigned vcpu);
+enum xh_cpu_place_role { XH_PLACE_VCPU, XH_PLACE_GUEST, XH_PLACE_SERVICE, XH_PLACE_ROLES };
+extern void (*xh_cpu_place)(int tid, unsigned vcpu, enum xh_cpu_place_role role);
+extern void (*xh_cpu_place_report)(void); // optional bounded placement summary
 // Set before the vCPUs start (main.c, with the CPU plan): the utilisation clamp (uclamp.min, 0-1024) the work on a vCPU
 // should carry now (the guest's cpufreq request for it, the GPU path's animation boost). thread_run gives it to the iOS
 // thread it releases when it differs from what that thread carries: the vCPU thread itself waits while user code runs,
