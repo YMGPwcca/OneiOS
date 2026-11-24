@@ -620,6 +620,7 @@ void xh_task_perf_log(void)
     int pid;
     uint64_t events[XH_TP_EVENTS];
     uint64_t cpu_traps[XH_MAX_CPUS];
+    xh_task_queue_profile queue;
     uint64_t score;
   } top[TOP] = { 0 };
   unsigned active = 0, with_events = 0;
@@ -644,6 +645,17 @@ void xh_task_perf_log(void)
     unsigned place = 0;
     while (place < TOP && item.score <= top[place].score) place++;
     if (place == TOP) continue;
+    // Only inspect extra queue metrics for a task that enters top 8; no
+    // extra snapshot scan of every active Linux task process.
+    for (unsigned side = 0; side < 2; side++) {
+      item.queue.batches[side] = xh_tq_read(&t->profile.queue.batches[side]);
+      item.queue.queued_ops[side] = xh_tq_read(&t->profile.queue.queued_ops[side]);
+      item.queue.queued_unmap_requests[side] = xh_tq_read(&t->profile.queue.queued_unmap_requests[side]);
+      for (unsigned bin = 0; bin < XH_TQ_DEPTH_BUCKETS; bin++)
+        item.queue.depth_bins[side][bin] = xh_tq_read(&t->profile.queue.depth_bins[side][bin]);
+    }
+    for (unsigned why = 0; why < XH_TQ_REASONS; why++)
+      item.queue.fallbacks[why] = xh_tq_read(&t->profile.queue.fallbacks[why]);
     for (unsigned shift = TOP - 1; shift > place; shift--) top[shift] = top[shift - 1];
     top[place] = item;
   }
@@ -669,6 +681,25 @@ void xh_task_perf_log(void)
          (unsigned long long)it->events[XH_TP_HOST_FUTEX_WAIT],
          (unsigned long long)it->events[XH_TP_TASK_FUTEX_SLEEP],
          busiest, (unsigned long long)it->cpu_traps[busiest]);
+    const xh_task_queue_profile *q = &it->queue;
+    uint64_t deep_release = 0, deep_order = 0;
+    for (unsigned bin = 5; bin < XH_TQ_DEPTH_BUCKETS; bin++) {
+      deep_release += q->depth_bins[0][bin];
+      deep_order += q->depth_bins[1][bin];
+    }
+    LOGI("perf-task-queue: host_pid %d release_batches %llu entries %llu unmap_calls %llu depth32+ %llu at256+ %llu; "
+         "order_batches %llu entries %llu unmap_calls %llu depth32+ %llu at256+ %llu; "
+         "fallback map_full %llu unmap_full %llu unmap_running %llu (cumulative, task_pid=host_pid)",
+         it->pid,
+         (unsigned long long)q->batches[0], (unsigned long long)q->queued_ops[0],
+         (unsigned long long)q->queued_unmap_requests[0], (unsigned long long)deep_release,
+         (unsigned long long)q->depth_bins[0][8],
+         (unsigned long long)q->batches[1], (unsigned long long)q->queued_ops[1],
+         (unsigned long long)q->queued_unmap_requests[1], (unsigned long long)deep_order,
+         (unsigned long long)q->depth_bins[1][8],
+         (unsigned long long)q->fallbacks[XH_TQ_MAP_QUEUE_FULL],
+         (unsigned long long)q->fallbacks[XH_TQ_UNMAP_QUEUE_FULL],
+         (unsigned long long)q->fallbacks[XH_TQ_UNMAP_TASK_RUNNING]);
   }
 }
 
