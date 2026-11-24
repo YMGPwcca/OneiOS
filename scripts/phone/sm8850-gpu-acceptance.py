@@ -31,11 +31,18 @@ printf 'boot_completed=%s\n' "$(getprop sys.boot_completed)"
 printf 'zygote=%s\n' "$(getprop init.svc.zygote)"
 printf 'selinux=%s\n' "$(getenforce)"
 if pidof system_server >/dev/null 2>&1; then echo system_server=yes; else echo system_server=no; fi
-if pidof xnuhost xnuhost-gui-bench xnuhost-tasks oneios-display OneiOSDisplay >/dev/null 2>&1; then
+if pidof xnuhost xnuhost-gpu xnuhost-gui-bench xnuhost-tasks oneios-display OneiOSDisplay >/dev/null 2>&1; then
   echo guest_running=yes
 else echo guest_running=no; fi
-if [ -r /data/adb/oneios-m3q-framework/control/state ]; then
-  printf 'takeover_state=%s\n' "$(cat /data/adb/oneios-m3q-framework/control/state)"
+# OneOS control files survive a device-side reboot. Compare their boot
+# generation without modifying them or weakening same-boot admission.
+printf 'boot_id=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
+ctl=/data/adb/oneios-m3q-framework/control
+printf 'takeover_boot=%s\n' "$(cat "$ctl/boot" 2>/dev/null || :)"
+if [ -e "$ctl/state" ] || [ -L "$ctl/state" ]; then
+  if [ -r "$ctl/state" ]; then
+    printf 'takeover_state=%s\n' "$(cat "$ctl/state")"
+  else echo takeover_state=unreadable; fi
 else echo takeover_state=absent; fi
 printf 'free_kib=%s\n' "$(df -Pk /data/local/tmp | awk 'END {print $4}')"
 printf 'battery_pct=%s\n' "$(cat /sys/class/power_supply/battery/capacity)"
@@ -84,6 +91,31 @@ def decode_kv(text):
     return parsed
 
 
+BOOT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def takeover_state_status(v):
+    """Classify the persisted marker, never delete/repair it from a GPU probe."""
+    state = v.get("takeover_state")
+    if state in ("absent", "complete", "returned", "idle"):
+        return "INACTIVE"
+    if state not in ("starting", "running", "returning"):
+        return "UNKNOWN_STATE"
+    current, previous = v.get("boot_id", ""), v.get("takeover_boot", "")
+    if not all(isinstance(x, str) and BOOT_ID.fullmatch(x) and
+               x != "00000000-0000-0000-0000-000000000000"
+               for x in (current, previous)):
+        return "UNVERIFIED_BOOT"
+    if current == previous:
+        return "ACTIVE_CURRENT_BOOT"
+    # Stale active marker alone is not enough. The existing separate
+    # Framework/no-guest gates must also have affirmative evidence.
+    if not (v.get("boot_completed") == "1" and v.get("zygote") == "running"
+            and v.get("system_server") == "yes" and v.get("guest_running") == "no"):
+        return "OLD_BOOT_BUT_DEVICE_NOT_IDLE"
+    return "STALE_PREVIOUS_BOOT"
+
+
 def validate_preflight(v):
     failures = []
     checks = {
@@ -93,7 +125,7 @@ def validate_preflight(v):
         "framework": v.get("boot_completed") == "1" and v.get("zygote") == "running" and v.get("system_server") == "yes",
         "selinux": v.get("selinux") == "Enforcing",
         "no_guest": v.get("guest_running") == "no",
-        "no_takeover": v.get("takeover_state") in ("absent", "complete", "returned", "idle"),
+        "no_takeover": takeover_state_status(v) in ("INACTIVE", "STALE_PREVIOUS_BOOT"),
         "space": v.get("free_kib", "").isdigit() and int(v["free_kib"]) >= MIN_FREE_KIB,
         "battery": v.get("battery_pct", "").isdigit() and int(v["battery_pct"]) >= 30,
         "temperature": v.get("battery_temp_decic", "").isdigit() and 0 < int(v["battery_temp_decic"]) <= 440,
@@ -154,11 +186,14 @@ def hardware(adb, gpuctl, report):
     v = decode_kv(root(adb, DEVICE_AUDIT).stdout)
     checks, failures = validate_preflight(v)
     storage = storage_summary(v)
-    report.update({"preflight": {"values": v, "checks": checks},
+    report.update({"preflight": {"values": v, "checks": checks,
+                                 "takeover_state_status": takeover_state_status(v)},
                    "storage": storage,
                    "PREFLIGHT": "BLOCKED" if failures else "PASS", "failures": failures})
     if failures:
         reason = "preflight failed: " + ", ".join(failures)
+        if "no_takeover" in failures:
+            reason += " [takeover_state_status=" + takeover_state_status(v) + "]"
         if "space" in failures:
             reason += (f" [free={storage['free_kib']} KiB, "
                        f"required={storage['required_kib']} KiB, "
@@ -239,6 +274,7 @@ def main(argv=None):
             report["usb_serial"] = adb[-1]
             hardware(adb, args.gpuctl, report)
             print("PREFLIGHT=" + report["PREFLIGHT"])
+            print("TAKEOVER_STATE_STATUS=" + report["preflight"]["takeover_state_status"])
             print("SPACE_FREE_KIB=" + str(report["storage"]["free_kib"]))
             print("SPACE_REQUIRED_KIB=" + str(report["storage"]["required_kib"]))
             if args.action == "host-submit":

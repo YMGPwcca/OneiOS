@@ -59,6 +59,27 @@ class GPUAcceptanceTests(unittest.TestCase):
                 _, failures = tool.validate_preflight(data)
                 self.assertIn(expected, failures)
 
+    def test_active_marker_from_previous_boot_is_not_live_takeover(self):
+        current = "23fc4b8e-1c67-45d1-8efa-802e001cddc1"
+        previous = "7410ec00-8e64-4a0a-a652-39da6181bf22"
+        for state in ("starting", "running", "returning"):
+            with self.subTest(state=state):
+                data = {**GOOD_DEVICE, "takeover_state": state,
+                        "boot_id": current, "takeover_boot": previous}
+                self.assertEqual("STALE_PREVIOUS_BOOT", tool.takeover_state_status(data))
+                self.assertEqual([], tool.validate_preflight(data)[1])
+                for value in (current, "", "unknown", "00000000-0000-0000-0000-000000000000"):
+                    bad = {**data, "takeover_boot": value}
+                    self.assertIn("no_takeover", tool.validate_preflight(bad)[1])
+                for key, value in (("boot_id", ""), ("boot_completed", "0"),
+                                   ("zygote", "stopped"), ("system_server", "no"),
+                                   ("guest_running", "yes")):
+                    bad = {**data, key: value}
+                    self.assertIn("no_takeover", tool.validate_preflight(bad)[1])
+                for unknown in ("", "failed", "unreadable", "unexpected"):
+                    self.assertIn("no_takeover", tool.validate_preflight(
+                        {**data, "takeover_state": unknown})[1])
+
     def test_storage_diagnostics_report_exact_deficit_and_unknown(self):
         actual = tool.storage_summary({**GOOD_DEVICE, "free_kib": str(tool.MIN_FREE_KIB - 1025)})
         self.assertEqual(tool.MIN_FREE_KIB - 1025, actual["free_kib"])
