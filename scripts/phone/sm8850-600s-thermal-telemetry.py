@@ -2,9 +2,11 @@
 """SM-S948B bounded (60..600s) takeover + PASSIVE 15-second telemetry.
 
 Uses the existing OneiOS full-takeover wrapper and its bounded DEVICE-SIDE
-framework deadline. It never requests a return, changes thermal policy, clocks,
-or watchdog state. Android kernel/firmware protection and existing recovery are
-left untouched. This is experimental evidence, not safety certification.
+framework deadline. Telemetry is read-only. On the dedicated SM8850 performance
+branch, the existing 180-second passive experiment is the fixed profile: no
+additional OneOS root thermal monitor or CPU cap worker. Other branches keep
+their existing profile selection. Android kernel/firmware protection, watchdog
+and deadline are unchanged. This is not safety certification.
 """
 from __future__ import annotations
 
@@ -25,6 +27,12 @@ DEVICE = "SM-S948B"
 FIRMWARE = "S948BXXS4BZIG"
 WRAPPER = Path("scripts/phone/sm8850-full-takeover.sh")
 RISK = "--i-accept-10-minute-legacy-watchdog-risk"
+
+
+def configure_performance_thermal_profile(branch, duration, env):
+    """Select the existing passive profile for the dedicated 180s experiment."""
+    if branch == "feat/sm8850-xnuhost-perf-p0" and duration == 180:
+        env["ONEIOS_SM8850_SOFT_THERMAL_OFF"] = "I_ACCEPT_SOFT_GUARD_OFF_180S"
 
 # A minimal, read-only probe. It runs in Android's init namespace (not inside
 # xnuhost's /data bind mount). Both process markers are in current xnuhost.log.
@@ -591,6 +599,12 @@ def main() -> int:
         assert state_of(m) == ("a", 123.5, 700)
         assert numeric("-11") == -11 and numeric("not_available") is None
         assert "42.0 C" in raw_metric_human("/sys/class/power_supply/battery/temp", "420")
+        for branch, duration in (("feat/sm8850-xnuhost-perf-p0", 180),
+                                 ("feat/sm8850-xnuhost-perf-p0", 600),
+                                 ("feat/oneios-sm8850-m3q", 180)):
+            env = {}
+            configure_performance_thermal_profile(branch, duration, env)
+            assert bool(env) == (branch == "feat/sm8850-xnuhost-perf-p0" and duration == 180)
         print("SELF_TEST=PASS NO_DEVICE_ACCESS")
         return 0
     if not args.preflight_only and not args.i_accept_10_minute_legacy_watchdog_risk:
@@ -606,6 +620,9 @@ def main() -> int:
     if (branch in {"feat/oneios-sm8850-m3q", "feat/sm8850-full-bridges-takeover", "feat/sm8850-xnuhost-perf-p0"}
             and args.duration != 180):
         ap.error("SM8850 full bridges live trial requires --duration 180")
+    # Apply once before either preflight or the rearm/run subprocesses.
+    # Never depend on the caller remembering a separate shell export.
+    configure_performance_thermal_profile(branch, args.duration, os.environ)
     if not (repo / WRAPPER).is_file():
         ap.error(f"Missing existing OneiOS wrapper: {repo / WRAPPER}")
     if not Path(args.adb).is_file():

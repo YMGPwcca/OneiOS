@@ -104,6 +104,34 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('feat/oneios-sm8850-m3q|feat/sm8850-full-bridges-takeover)', local_ci)
         self.assertNotIn('feat/oneios-sm8850-m3q|feat/sm8850-guarded-duration-tracing)', wrapper)
 
+    def test_performance_runner_fixed_180s_profile_and_matching_rearm(self):
+        path = ROOT / "scripts/phone/sm8850-600s-thermal-telemetry.py"
+        spec = importlib.util.spec_from_file_location("bounded_telemetry", path)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        key = "ONEIOS_SM8850_SOFT_THERMAL_OFF"
+        token = "I_ACCEPT_SOFT_GUARD_OFF_180S"
+        for branch in ("feat/sm8850-xnuhost-perf-p0",
+                       "feat/oneios-sm8850-m3q",
+                       "feat/sm8850-guarded-duration-tracing"):
+            for duration in (180, 600):
+                with self.subTest(branch=branch, duration=duration):
+                    env = {}
+                    runner.configure_performance_thermal_profile(branch, duration, env)
+                    expected = {key: token} if (
+                        branch == "feat/sm8850-xnuhost-perf-p0" and duration == 180
+                    ) else {}
+                    self.assertEqual(expected, env)
+        source = path.read_text()
+        self.assertLess(source.index("configure_performance_thermal_profile(branch, args.duration, os.environ)"),
+                        source.index("    if args.preflight_only:"))
+        wrapper = WRAPPER.read_text()
+        self.assertIn('if [ "$BRANCH" = feat/sm8850-xnuhost-perf-p0 ] &&', wrapper)
+        self.assertLess(wrapper.index('[ "$duration_explicit" = 1 ] && [ "$duration" = 180 ]'),
+                        wrapper.index("export " + key + "=" + token))
+        self.assertIn('--duration "$duration" --preflight-only', wrapper)
+        self.assertIn("extra+=(--no-userspace-thermal-180)", wrapper)
+
     def test_no_guard_cpu_cap_profile_admitted_before_data_consumption(self):
         switch = ONEOS_SWITCH.read_text()
         host = TAKEOVER_SOURCE.read_text()

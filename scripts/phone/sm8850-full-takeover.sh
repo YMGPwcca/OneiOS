@@ -23,8 +23,9 @@ ONEIOS_SM8850_FULL_BRIDGES_180S=I_ACCEPT_UNQUALIFIED_180S_LIVE_TEST.
 Both rearm and run require --duration 180, selected by the operator.
 Re-arming fresh one-shot Data and launching are separate steps; the
 180s software deadline is not an independently qualified recovery guarantee.
-For operator-selected 180s software-thermal-soft-trip-disable + lower clock
-experiment, additionally set:
+On feat/sm8850-xnuhost-perf-p0, the existing 180s passive experiment is
+selected by the wrapper for rearm/run; callers need no separate export.
+On other supported branches, the explicit passive experiment still uses:
 ONEIOS_SM8850_SOFT_THERMAL_OFF=I_ACCEPT_SOFT_GUARD_OFF_180S
 This disables the OneOS root thermal monitor AND its 28% CPU cap worker.
 Kernel/firmware thermal protections remain unchanged; recovery is unqualified.
@@ -94,7 +95,8 @@ git diff --quiet && git diff --cached --quiet || {
     exit 2
 }
 FULL_BRIDGES_BRANCH=0
-case "$(git branch --show-current)" in
+BRANCH=$(git branch --show-current)
+case "$BRANCH" in
     feat/sm8850-guarded-duration-tracing)
         [ "$mode" != stage-runtime ] || {
             echo "BLOCKED: stage-runtime is for full-bridges integration only" >&2
@@ -119,6 +121,12 @@ case "$(git branch --show-current)" in
         esac ;;
     *) echo "Expected an authorized SM8850 feature branch" >&2; exit 2 ;;
 esac
+# The dedicated performance branch uses one fixed 180s profile throughout
+# rearm, preflight and live run. The existing duration/risk gates above remain.
+if [ "$BRANCH" = feat/sm8850-xnuhost-perf-p0 ] &&
+   { [ "$mode" = rearm ] || [ "$mode" = run ]; }; then
+    export ONEIOS_SM8850_SOFT_THERMAL_OFF=I_ACCEPT_SOFT_GUARD_OFF_180S
+fi
 [ "$(git -C app rev-parse HEAD)" = "$(git rev-parse HEAD:app)" ] || {
     echo "BLOCKED: OneOS submodule commit does not match OneiOS gitlink" >&2
     exit 2
@@ -258,8 +266,15 @@ PY
       python3 scripts/phone/sm8850-takeover.py \
         --rearm-data --confirm --serial "$serial"
       echo "===== READ-ONLY ${duration}S LIVE ADMISSION PREFLIGHT ====="
-      "$ADB" -s "$serial" shell -T \
-        "su -c '/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run $duration'"
+      if [ "${ONEIOS_SM8850_SOFT_THERMAL_OFF:-}" = I_ACCEPT_SOFT_GUARD_OFF_180S ]; then
+        # Same explicit token and marker checks as the live host launcher.
+        python3 scripts/phone/sm8850-600s-thermal-telemetry.py \
+          --repo "$ROOT" --adb "$ADB" --serial "$serial" \
+          --duration "$duration" --preflight-only
+      else
+        "$ADB" -s "$serial" shell -T \
+          "su -c '/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run $duration'"
+      fi
       echo "FULL_BRIDGES_${duration}S_REARM=PASS_NO_FRAMEWORK_STOP"
       echo "LIVE_FRAMEWORK_STOP=NO"
     else
