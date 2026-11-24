@@ -10,7 +10,9 @@
 
 ## What is measured (not assumed)
 
-- Latest evaluated 180.6-second physical session: OneiOS `f244b5cdfdedd592cc68bcbbb0770762def9e140` and pinned OneOS `f5c1b4a44fc45d78987694a230f7ffabb213e99c`; session `7434ae27f8e84b76806f7a4b506e90c9`.
+**Latest F1 evidence (2026-11-25):** both exact-session analyses PASS at runtime `88ab6ca` / OneOS `49e6f51`; default retained, prime-first opt-in only, stable 60 FPS not reached. See the [F1 receipt](#phase-f1-operator-ab-receipt-and-next-priority-2026-11-25). Controlled old/new runtime comparison deferred; proceed with offline Phase G.
+
+- Prior 180.6-second physical reference session (latest F1 A/B receipt below): OneiOS `f244b5cdfdedd592cc68bcbbb0770762def9e140` and pinned OneOS `f5c1b4a44fc45d78987694a230f7ffabb213e99c`; session `7434ae27f8e84b76806f7a4b506e90c9`.
 - Display **57.42 posts/s peak**, **43.91 Hz median estimated active post cadence**. These are **not actual presented FPS**. Nine of sixteen gesture summaries lacked a next guest frame *before summary close*, not proof of dropped touches.
 - XNUHost **8,889,193 traps**, **4,897,306 guest faults**, **3,921,008 syscalls**, about **1,895,124 actual host timer calls** during the run; GPU fence max **61.656 ms**. The CPU/VM counts are potential costs; their causal connection to each slow frame remains unknown.
 - Guest thermal junction **104.8 C** reported from earlier passive chat telemetry and recovery provenance not fully authenticated. Preserve telemetry and do not hide uncertainty; do not use temperature cutoffs as a tuning proxy.
@@ -280,3 +282,36 @@ Operator CachyOS at OneiOS `88ab6cace4d56b68ef5ce9056c47c0043096a16c`, OneOS `49
 At validated runtime source `88ab6cace4d56b68ef5ce9056c47c0043096a16c`, OneOS `49e6f51ba0cd52eba4049b39120186efff422076`, the operator matched the package hash and all four native artifacts. F0 log `/tmp/oneios-phase-f0.YBykI7.log`: normal Android on SM-S948B/m3q/SM8850 S948BXXS4BZIG, SELinux Enforcing, boot ID `2cb5d726-5b7c-46ca-bace-072f2e7a5e2d`, no XNUHost process. Strict independent-watchdog readiness BLOCKED; archived reboot-only smoke remains deadline-request evidence, not proof of unassisted recovery. F0.1 `PHASE_F_STAGE=PASS` at `/tmp/oneios-phase-f-stage.2Sl1Hd.log`: reboot-only passive audit, boot-pinned 28-sensor thermal manifest, rollback-backed OneOS and native upgrade; all four staged hashes match, no Framework stop. Rollback directories retained `.rollback/oneos-compat.RHw0zWJy` and `.rollback/runtime.axL4W4Ko`.
 
 F0.2 `PHASE_F_REARM=PASS`, `APFS_DATA=FRESH_UNCONSUMED`, `DEFAULT_PREFLIGHT=PASS`, `PRIME_FIRST_PREFLIGHT=PASS`, `FRAMEWORK_STOP=NO`, `LIVE_TAKEOVER=NO`: `/tmp/oneios-phase-f-admission.wnGGcb/rearm-admission.log` (separate profile receipts in the same directory). F2FS reflink unsupported; sparse fallback and isolated mount namespace probe passed. Both replacement files verified against existing benchmark seed, not historically attested; modified prior guest Data preserved in `.retired-data/consumed.hTFvYsdH`, with rearm-source digest manifest available for a matched future clone. Free space changed from 63666544 to 61454036 KiB; 30 GiB reserve unchanged. Both 180s/frame-task preflights acknowledged the requested CPU profile and guarded default; root guard/cap checks explicitly ready/not certified, legacy watchdog `UNVERIFIED_REBOOT_ONLY`, unassisted return unverified. No claim of runtime affinity, live safety, physical FPS or new recovery validation. F1-A remains pending separate operator risk decision; do not rearm again before the first trial. If an explicitly approved guarded run is undertaken, use the existing bounded telemetry runner with `--no-rearm`, compare seed digest manifests for A and B, collect exact new session logs, and verify normal Android return before a second run. No automatic second launch, no thermal-policy changes.
+
+### Phase F1 operator A/B receipt and next priority (2026-11-25)
+
+Operator on CachyOS collected both launch-matched pairs from `/tmp/oneios-phase-f1-ab.naVZFn/collect/device-logs.tar`: `AB_COMPLETE=YES`, both analyzers PASS, four JSON reports in the parent directory. Runtime revision `88ab6cace4d56b68ef5ce9056c47c0043096a16c`, OneOS `49e6f51ba0cd52eba4049b39120186efff422076` (not this docs commit). A/default launch `77e4076633f84ad0880e5b6536c8fd8f`, archived suffix `lGy4jk`; B/prime-first `eebb6cbae59b43dc96b7f1fd9e7a51a7`, current. Both 180s full bridges, 8 vCPU, 4GiB, 1080x2340/60Hz, GPU3D, frame-task; root software thermal guard and CPU cap OFF in the actual sessions. Both reached guest-ready/first frame and normal Android boot was observed. B previously exited with postboot root status unavailable, not guest boot failure; later collection succeeded. Independent recovery qualification is still open, but no additional recovery investigation is required for offline performance work.
+
+| Metric (descriptive, not causal) | A / default | B / prime-first |
+|---|---:|---:|
+| Display windows / peak posts per second | 36 / 50.80 | 35 / 50.82 |
+| Median estimated active post cadence | 33.32 | 36.34 |
+| Active gaps / complete budget-count coverage | 2814 / 36 of 36 windows | 3773 / 35 of 35 windows |
+| Above 60Hz budget | 1612 (57.285%) | 2269 (60.138%) |
+| Above 120Hz budget | 2545 (90.441%) | 3480 (92.234%) |
+| Max active gap (ms) | 243.616 | 245.529 |
+| Max window p95/p99 active gap bucket bounds (ms) | 250/250 | 250/250 |
+| ANativeWindow lock/copy/post maxima (ms) | 12.31/15.97/5.10 | 11.43/5.91/3.67 |
+| Max touch-to-next-guest-frame (ms); no frame before summary close | 739.1; 3/11 | 622.4; 4/14 |
+| Render fence max (ms) | 24.854 | 32.656 |
+| Other fence max (ms) | 33.669 | 46.151 |
+| Flush service max (ms) | 7.871 | 20.114 |
+| Fast wait max / slow wait max (ms) | 0.374/11.581 | 0.924/6.453 |
+| Used-publish chains / unmatched publication count; max (ms) | 3942/0; 1.731 | 4489/0; 2.125 |
+| Late full-frame drain attempts / accepted damage / invalid clocks; max (us) | 2859/1/0; 17 | 3838/1/0; 15 |
+| Peak traps/s | 91022 | 115702 |
+| Spotlight peak % of one core; observed / >=80% windows | 28; 1/0 | 103; 8/7 |
+| host_statistics64 warning lines | 20 | 23 |
+| SpringBoard / backboardd observed PID | 30 / 52 | 30 / 52 |
+| Runtime CPU marker; affinity / role samples | DEFAULT; 56/168 | PRIME_FIRST_ACTIVE; 56/168 |
+
+Prior passive thermal summaries: A/B CPU peaks 104/106.3 C, GPU 78.4/86.1 C, battery pre 28.1/32.2 C and final 39.1/44.8 C. These are sampled values, not maximum possible junction temperatures; unequal initial thermal states and background activity prevent causal CPU-profile or power comparisons. No root thermal guard/cap is newly authorized or changed.
+
+**Decision:** preserve the default profile; keep prime-first explicitly opt-in. Its median cadence was ~9.1% higher but the proportion of over-60Hz gaps was ~2.85 percentage points worse, peak post rate essentially unchanged, and observed render/flush tails and temperatures worse. Neither reaches stable 60 FPS. Effective-mask samples and role counters exist but counts alone cannot establish readback success or residency. Different workloads, sparse top-process observations, and thermal starting states mean this is an exploratory same-runtime comparison, not a fully matched controlled A/B or old/new runtime speedup. No physical present timestamps, pooled p95/p99, or proof of touch loss. Late-drain measured at most 17 us, with only one accepted damage notification per arm; no evidence it removed a meaningful number of posts. All recorded matched used chains published, but no proof of guest IRQ wakeup latency. Queue wait measurements do not establish a general head-of-line causal mechanism. Retain the current queue ordering, resource lifetime, scanout and fence fixes provisionally.
+
+**Next:** Phase F1 collection complete, controlled F2 deferred. No further hot takeovers or repeat of completed native synthetic campaigns for this decision. Phase G starts with existing task-profile/affinity/CPU samples and exact log pairs: attribute trap classes, cumulative counters and map/unmap ACK tails; inspect timer/futex outcomes, guest process identities and the host_statistics64 ABI warning before changing semantics. Examine fresh-Data Spotlight/index/icon work as a workload confound, without disabling guest services. Add bounded PID/TID attribution only if current data lacks it. Audit actual compositor/layer/present telemetry and monotonic clock domains; physical FPS acceptance remains outstanding. Phase H Metal feasibility stays separate. Local-first regression for future source changes; no new runtime/OneOS, firmware, thermal or recovery policy changes in this receipt.
