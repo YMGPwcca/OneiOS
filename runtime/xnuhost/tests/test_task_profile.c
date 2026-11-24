@@ -13,6 +13,8 @@ static void *count_concurrently(void *arg)
     xh_task_profile_add(p, 2, XH_TP_TRAP_OTHER);
     xh_tq_record_batch(&p->queue, false, 1, 0);
     if (!(i % 5)) xh_tq_record_fallback(&p->queue, XH_TQ_UNMAP_TASK_RUNNING);
+    xh_tt_record(&p->timing, XH_TT_RELEASE_ACK, true, 4000);
+    if (!(i % 5)) xh_tt_record(&p->timing, XH_TT_ORDER_DIRECT_ACK, false, 0);
   }
   return NULL;
 }
@@ -101,6 +103,39 @@ int main(void)
   xh_tq_record_batch(NULL, true, 10, 1);
   CHECK(q.fallbacks[0] == 1 && q.fallbacks[1] == 1 && q.fallbacks[2] == 1);
   CHECK(xh_tq_read(&q.batches[1]) == 1);
+
+  // Concurrent updates use atomic bins and sums, not lost increments.
+  xh_task_timing_profile timing_snapshot;
+  xh_tt_snapshot(&timing_snapshot, &p.timing);
+  const xh_task_timing_hist *h = &timing_snapshot.stage[XH_TT_RELEASE_ACK];
+  CHECK(xh_tt_count(h) == (uint64_t)THREADS * LOOPS);
+  CHECK(h->sum_ns == (uint64_t)THREADS * LOOPS * 4000);
+  CHECK(h->max_ns == 4000 && h->bins[2] == (uint64_t)THREADS * LOOPS);
+  CHECK(xh_tt_quantile_ns(h, 99) == 4000);
+  CHECK(timing_snapshot.stage[XH_TT_ORDER_DIRECT_ACK].aborted ==
+        (uint64_t)THREADS * (LOOPS / 5));
+
+  xh_task_timing_profile timing = { 0 };
+  xh_tt_record(&timing, XH_TT_ORDER_DEFERRED_ACK, true, 1000);
+  xh_tt_record(&timing, XH_TT_ORDER_DEFERRED_ACK, true, 1001);
+  xh_tt_record(&timing, XH_TT_ORDER_DEFERRED_ACK, true, 16000001);
+  xh_tt_record(&timing, XH_TT_ORDER_DEFERRED_ACK, true, UINT64_C(2000000000));
+  xh_tt_record(&timing, XH_TT_ORDER_DEFERRED_ACK, false, 0);
+  xh_tt_record(&timing, XH_TT_ORDER_DIRECT_ACK, true, 0);
+  xh_tt_record(&timing, (enum xh_tt_stage)XH_TT_STAGES, true, 123);
+  xh_tt_record(NULL, XH_TT_RELEASE_ACK, true, 123);
+  xh_tt_snapshot(&timing_snapshot, &timing);
+  h = &timing_snapshot.stage[XH_TT_ORDER_DEFERRED_ACK];
+  CHECK(xh_tt_count(h) == 4 && h->aborted == 1);
+  CHECK(h->sum_ns == UINT64_C(2016002002) && h->max_ns == UINT64_C(2000000000));
+  CHECK(h->bins[0] == 1 && h->bins[1] == 1 && h->bins[13] == 1 && h->bins[15] == 1);
+  CHECK(xh_tt_quantile_ns(h, 50) == 2000);
+  CHECK(xh_tt_quantile_ns(h, 75) == 64000000);
+  CHECK(xh_tt_quantile_ns(h, 99) == UINT64_C(2000000000));
+  CHECK(xh_tt_quantile_ns(h, 0) == 0 && xh_tt_quantile_ns(h, 101) == 0);
+  CHECK(xh_tt_count(&timing_snapshot.stage[XH_TT_ORDER_DIRECT_ACK]) == 1);
+  CHECK(xh_tt_count(&timing_snapshot.stage[XH_TT_RELEASE_ACK]) == 0);
+  CHECK(xh_tt_quantile_ns(&timing_snapshot.stage[XH_TT_RELEASE_ACK], 95) == 0);
 
   printf("task profile: %u checks, %u failed\n", checks, failed);
   return failed != 0;
