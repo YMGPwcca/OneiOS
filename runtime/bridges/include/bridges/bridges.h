@@ -68,6 +68,14 @@ typedef struct {
 // nvcpu == host CPUs each vCPU gets one host CPU; otherwise Linux places it.
 // This is a guest topology model, NOT a host cpufreq or governor override.
 int br_cpu_plan_make(const br_cpu_topology *t, unsigned nvcpu, bool pin, br_cpu_plan *out);
+// Full-bridges SM8850 experiment: verify eight Oryon cores, two faster
+// cores in a separate frequency domain, six slower cores and inherited
+// affinity. Output unchanged on refusal; callers retain the generic plan.
+// Guest cluster order is preserved and per-core descriptors match the
+// mapped CPU. At hot steps share the existing thermal mask.
+int br_cpu_plan_prime_first(const br_cpu_topology *t, uint64_t allowed, br_cpu_plan *out);
+void br_cpu_plan_prime_cap(br_cpu_plan *plan, const br_cpu_plan *base,
+                           const br_cpu_topology *t, unsigned cap);
 // Sets the affinity of Linux thread `tid` (0 = caller) to vCPU `index`'s mask. Returns 0 or -errno.
 int br_cpu_place(int tid, const br_cpu_plan *plan, unsigned index);
 // Utilisation clamp of `tid`: asks Linux's governor for at least `khz` on the cores of vCPU `index`

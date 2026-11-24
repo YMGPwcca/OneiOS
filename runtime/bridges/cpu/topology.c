@@ -302,6 +302,57 @@ uint64_t br_cpu_pin_mask(const br_cpu_plan *plan, const br_cpu_plan *base, unsig
   return mask;
 }
 
+int br_cpu_plan_prime_first(const br_cpu_topology *t, uint64_t allowed, br_cpu_plan *out)
+{
+  if (!t || !out || t->ncpu != 8 || t->n_p != 8 || t->n_e ||
+      (allowed & UINT64_C(0xff)) != UINT64_C(0xff)) return -1;
+  unsigned best = 0;
+  for (unsigned i = 0; i < 8; i++) {
+    const br_host_cpu *c = &t->cpu[i];
+    if (!c->present || c->implementer != 0x51 || c->type != 'P' ||
+        !c->capacity || c->capacity > 1024 || !c->max_khz || !c->nfreq) return -1;
+    if (c->capacity > t->cpu[best].capacity) best = i;
+  }
+  const br_host_cpu *prime = &t->cpu[best];
+  unsigned fast[2], rest[6], nf = 0, nr = 0;
+  uint64_t slow_mask = 0;
+  for (unsigned i = 0; i < 8; i++) {
+    const br_host_cpu *c = &t->cpu[i];
+    if (c->capacity == prime->capacity) {
+      if (nf == 2 || c->max_khz != prime->max_khz || c->policy != prime->policy) return -1;
+      fast[nf++] = i;
+    } else {
+      if (nr == 6 || c->max_khz >= prime->max_khz || c->policy == prime->policy) return -1;
+      rest[nr++] = i;
+      slow_mask |= UINT64_C(1) << i;
+    }
+  }
+  if (nf != 2 || nr != 6) return -1;
+  // Reject profiles that cannot honor every existing thermal step.
+  for (unsigned cap = 1; cap <= 3; cap++) {
+    uint64_t mask = br_cpu_thermal_mask(t, 'P', cap);
+    if (!mask || (mask & ~slow_mask)) return -1;
+  }
+  br_cpu_plan candidate = { .nvcpu = 8, .n_e = 2, .n_p = 6 };
+  for (unsigned i = 0; i < 8; i++) {
+    unsigned cpu = i < 2 ? fast[i] : rest[i - 2];
+    vcpu_from(t, UINT64_C(1) << cpu, i < 2 ? 'E' : 'P', &candidate.v[i]);
+    candidate.v[i].host_cpu = cpu;
+  }
+  *out = candidate;
+  return 0;
+}
+
+void br_cpu_plan_prime_cap(br_cpu_plan *plan, const br_cpu_plan *base,
+                           const br_cpu_topology *t, unsigned cap)
+{
+  // On a qualified plan, thermal narrowing supersedes singleton pairing.
+  // Let Linux distribute the eight vCPUs rather than stack fixed pairs.
+  uint64_t hot = cap ? br_cpu_thermal_mask(t, 'P', cap) : 0;
+  for (unsigned i = 0; i < base->nvcpu; i++)
+    __atomic_store_n(&plan->v[i].affinity, cap ? hot : base->v[i].affinity, __ATOMIC_RELEASE);
+}
+
 int br_cpu_place(int tid, const br_cpu_plan *plan, unsigned index)
 {
   if (index >= plan->nvcpu) return -EINVAL;

@@ -235,6 +235,39 @@ static void test_sm8850_cpu(const char *tmp)
   CHECK(plan.v[0].affinity == 0x10 && plan.v[1].affinity == 0x20);
   CHECK(plan.v[2].affinity == 0x40 && plan.v[3].affinity == 0x80);
   CHECK(plan.v[4].affinity == 0x01 && plan.v[7].affinity == 0x08);
+  br_cpu_plan candidate;
+  CHECK(br_cpu_plan_prime_first(&t, 0xff, &candidate) == 0);
+  const unsigned expected[] = {6, 7, 0, 1, 2, 3, 4, 5};
+  CHECK(candidate.n_e == 2 && candidate.n_p == 6 && candidate.nvcpu == 8);
+  for (unsigned i = 0; i < 8; i++) {
+    const br_vcpu *v = &candidate.v[i];
+    CHECK(v->host_cpu == expected[i] && v->affinity == (UINT64_C(1) << expected[i]));
+    CHECK(v->type == (i < 2 ? 'E' : 'P') && v->cluster_id == (unsigned)(i >= 2));
+    CHECK(v->capacity == t.cpu[expected[i]].capacity && v->max_khz == t.cpu[expected[i]].max_khz);
+    CHECK(v->nfreq == t.cpu[expected[i]].nfreq && v->freq_khz[0] == t.cpu[expected[i]].freq_khz[0]);
+  }
+  br_cpu_plan live = candidate;
+  for (unsigned cap = 1; cap <= 3; cap++) {
+    br_cpu_plan_prime_cap(&live, &candidate, &t, cap);
+    for (unsigned i = 0; i < 8; i++)
+      CHECK(live.v[i].affinity == 0x3f && live.v[i].host_cpu == expected[i]);
+  }
+  br_cpu_plan_prime_cap(&live, &candidate, &t, 0);
+  for (unsigned i = 0; i < 8; i++) CHECK(live.v[i].affinity == candidate.v[i].affinity);
+  br_cpu_plan unchanged;
+  memcpy(&unchanged, &plan, sizeof plan);
+  CHECK(br_cpu_plan_prime_first(&t, 0x7f, &plan) != 0 && !memcmp(&plan, &unchanged, sizeof plan));
+  br_cpu_topology bad = t;
+  bad.cpu[7].implementer = 0;
+  CHECK(br_cpu_plan_prime_first(&bad, 0xff, &plan) != 0 && !memcmp(&plan, &unchanged, sizeof plan));
+  bad = t;
+  bad.cpu[7].policy = 7;
+  CHECK(br_cpu_plan_prime_first(&bad, 0xff, &plan) != 0);
+  // Derive IDs from topology instead of assuming CPU6/7 are always Prime.
+  bad = t;
+  bad.cpu[0] = t.cpu[6]; bad.cpu[6] = t.cpu[0];
+  CHECK(br_cpu_plan_prime_first(&bad, 0xff, &live) == 0);
+  CHECK(live.v[0].host_cpu == 0 && live.v[1].host_cpu == 7 && live.v[2].host_cpu == 1);
   CHECK(br_cpu_plan_make(&t, 4, false, &plan) == 0);
   CHECK(plan.n_e == 1 && plan.n_p == 3 && plan.v[0].type == 'E');
   CHECK(plan.v[0].affinity == 0x20);  // one lent performance core, two prime cores stay P
