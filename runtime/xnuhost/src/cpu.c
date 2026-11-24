@@ -100,13 +100,16 @@ void xh_cpu_timer_set(xh_vcpu *v, uint64_t deadline)
   // for it already, so no timer_settime (host-overhead, 2026-11-15: the PC's boot made 2,000 a second, each a host call).
   if (deadline != UINT64_MAX && __atomic_load_n(&v->timer_armed, __ATOMIC_ACQUIRE) &&
       __atomic_load_n(&v->timer_deadline, __ATOMIC_ACQUIRE) == deadline && deadline > xh_counter()) {
+    if (xh_perf_detail_enabled) xh_detail_timer_result(&v->detail, XH_DT_SAME_FUTURE, 0);
     xh_cpu_line(v->cpu.index, false);
     return;
   }
   v->perf.timer_calls++;
   if (deadline == UINT64_MAX) {
+    bool was_armed = xh_perf_detail_enabled && __atomic_load_n(&v->timer_armed, __ATOMIC_ACQUIRE);
     __atomic_store_n(&v->timer_armed, false, __ATOMIC_RELEASE);
-    timer_settime(*(timer_t *)v->timer, 0, &spec, NULL);
+    int rc = timer_settime(*(timer_t *)v->timer, 0, &spec, NULL);
+    if (xh_perf_detail_enabled) xh_detail_timer_result(&v->detail, was_armed ? XH_DT_CANCEL_ARMED : XH_DT_CANCEL_DISARMED, rc);
     xh_cpu_line(v->cpu.index, false);
     return;
   }
@@ -114,7 +117,8 @@ void xh_cpu_timer_set(xh_vcpu *v, uint64_t deadline)
   __atomic_store_n(&v->timer_armed, true, __ATOMIC_RELEASE);
   uint64_t now = xh_counter();
   if (deadline <= now) {
-    timer_settime(*(timer_t *)v->timer, 0, &spec, NULL);
+    int rc = timer_settime(*(timer_t *)v->timer, 0, &spec, NULL);
+    if (xh_perf_detail_enabled) xh_detail_timer_result(&v->detail, XH_DT_DUE, rc);
     xh_cpu_line(v->cpu.index, xh_gic_pending(v->cpu.index));
     return;
   }
@@ -124,7 +128,8 @@ void xh_cpu_timer_set(xh_vcpu *v, uint64_t deadline)
   spec.it_value.tv_sec = (time_t)(ns / 1000000000ull);
   spec.it_value.tv_nsec = (long)(ns % 1000000000ull) + 1;
   if (spec.it_value.tv_nsec >= 1000000000l) { spec.it_value.tv_sec++; spec.it_value.tv_nsec -= 1000000000l; }
-  timer_settime(*(timer_t *)v->timer, 0, &spec, NULL);
+  int rc = timer_settime(*(timer_t *)v->timer, 0, &spec, NULL);
+  if (xh_perf_detail_enabled) xh_detail_timer_result(&v->detail, XH_DT_ARM, rc);
   xh_cpu_line(v->cpu.index, false);
 }
 
@@ -163,7 +168,8 @@ void xh_cpu_idle(xh_vcpu *v)
         step.tv_nsec = (long)((deadline - now) * 1000000000ull / hz) + 1000;
       }
     }
-    futex(&v->cpu.irq_pending, FUTEX_WAIT_PRIVATE, 0, &step);
+    long wait_rc = futex(&v->cpu.irq_pending, FUTEX_WAIT_PRIVATE, 0, &step);
+    if (xh_perf_detail_enabled) xh_detail_futex(&v->detail, true, wait_rc, errno);
   }
   __atomic_store_n(&v->idle, 0, __ATOMIC_RELEASE);
   v->perf.ticks_idle += xh_counter() - began;

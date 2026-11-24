@@ -121,6 +121,7 @@ typedef struct {
   uint64_t events[XH_TP_BUCKETS][XH_TP_EVENTS];
   xh_task_queue_profile queue;
   xh_task_timing_profile timing;
+  uint64_t trap_class[XH_DC_COUNT];
 } xh_task_profile;
 
 static inline unsigned xh_tq_depth_bucket(unsigned n)

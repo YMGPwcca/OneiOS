@@ -13,6 +13,7 @@
 #include <string.h>
 #include <time.h>
 
+bool xh_perf_detail_enabled;
 static xh_perf shared_perf;               // for host calls outside a vCPU thread (none today)
 static int perf_every = 30;
 static uint64_t last_report;              // counter
@@ -69,6 +70,7 @@ xh_perf *xh_perf_self(void)
 void xh_perf_init(const xh_config *c)
 {
   perf_every = c->perf_log < 0 ? 30 : c->perf_log;
+  xh_perf_detail_enabled = c->perf_task;
   start_counter = last_report = xh_counter();
 }
 
@@ -125,6 +127,65 @@ static int thread_psr(int tid)
 #endif
 }
 
+// Read-only evidence from the exact known vCPU thread.
+static void detail_report(const xh_vcpu *v)
+{
+  char allowed[256] = "unknown", migrations[32] = "unknown";
+#if defined(__linux__)
+  char path[80], line[512];
+  snprintf(path, sizeof path, "/proc/self/task/%d/status", v->tid);
+  FILE *f = fopen(path, "r");
+  if (f) {
+    while (fgets(line, sizeof line, f))
+      if (xh_detail_allowed_list(line, allowed, sizeof allowed)) break;
+    fclose(f);
+  }
+  snprintf(path, sizeof path, "/proc/self/task/%d/sched", v->tid);
+  f = fopen(path, "r");
+  if (f) {
+    unsigned long long n;
+    while (fgets(line, sizeof line, f))
+      if (sscanf(line, " se.nr_migrations : %llu", &n) == 1) {
+        snprintf(migrations, sizeof migrations, "%llu", n);
+        break;
+      }
+    fclose(f);
+  }
+#endif
+  const xh_detail_profile *d = &v->detail;
+  const char *const names[XH_DC_COUNT] = {
+    "bsd_direct", "bsd_indirect", "mach", "platform", "fault_read",
+    "fault_write", "fault_exec", "fault_unknown"
+  };
+  for (unsigned cls = 0; cls < XH_DC_COUNT; cls++) {
+    uint64_t n = xh_detail_read(&d->intervals[cls]);
+    if (n) LOGI("perf-detail: vcpu=%u class=%s intervals=%llu ge16_667ms=%llu "
+                "(cumulative next-run interval excluding idle; not isolated syscall time)",
+                v->cpu.index, names[cls], (unsigned long long)n,
+                (unsigned long long)xh_detail_read(&d->over_budget[cls]));
+  }
+  LOGI("perf-timer: vcpu=%u same_future_skipped=%llu cancel_armed=%llu cancel_disarmed=%llu "
+       "already_due=%llu arm_future=%llu host_errors=%llu (cumulative)",
+       v->cpu.index, (unsigned long long)xh_detail_read(&d->timer[XH_DT_SAME_FUTURE]),
+       (unsigned long long)xh_detail_read(&d->timer[XH_DT_CANCEL_ARMED]),
+       (unsigned long long)xh_detail_read(&d->timer[XH_DT_CANCEL_DISARMED]),
+       (unsigned long long)xh_detail_read(&d->timer[XH_DT_DUE]),
+       (unsigned long long)xh_detail_read(&d->timer[XH_DT_ARM]),
+       (unsigned long long)xh_detail_read(&d->timer[XH_DT_ERRORS]));
+  for (unsigned side = 0; side < 2; side++)
+    LOGI("perf-futex: vcpu=%u scope=%s returned=%llu changed=%llu signal=%llu timeout=%llu other=%llu "
+         "(cumulative wait syscall outcomes; not proof of interrupt delivery)",
+         v->cpu.index, side ? "idle" : "thread_run",
+         (unsigned long long)xh_detail_read(&d->futex[side][XH_DW_RETURNED]),
+         (unsigned long long)xh_detail_read(&d->futex[side][XH_DW_CHANGED]),
+         (unsigned long long)xh_detail_read(&d->futex[side][XH_DW_SIGNAL]),
+         (unsigned long long)xh_detail_read(&d->futex[side][XH_DW_TIMEOUT]),
+         (unsigned long long)xh_detail_read(&d->futex[side][XH_DW_OTHER]));
+  LOGI("perf-affinity: vcpu=%u tid=%d allowed=%s migrations=%s last_cpu=%d "
+       "(kernel-reported mask and cumulative migrations; unknown if unavailable)",
+       v->cpu.index, v->tid, allowed, migrations, thread_psr(v->tid));
+}
+
 void xh_perf_log(bool since_start)
 {
   static const char *const names[XP_COUNT] = { "up (trap->vCPU)", "down (vCPU->task)", "kernel: syscall", "kernel: fault",
@@ -171,6 +232,7 @@ void xh_perf_log(bool since_start)
            "last on host CPU %d", i,
            cpu >= cpu_then ? (double)(cpu - cpu_then) / 1e7 / seconds : 0.0, kern > 0 ? 100.0 * kern / w : 0.0,
            100.0 * (double)user / w, 100.0 * (double)idle / w, (double)t / seconds, thread_psr(v->tid));
+    if (xh_perf_detail_enabled && v->started) detail_report(v);
     if (!since_start) { last[i] = *p; last_cpu_ns[i] = cpu; }
   }
   xh_task_perf_log();  // optional bounded per-task cumulative counters; no per-event logging

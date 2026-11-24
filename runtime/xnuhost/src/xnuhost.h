@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <sys/types.h>
 #include "xnuhost/hostcall.h"
+#include "perf_detail.h"
 #include "xnuhost/pixels.h"
 #include "bridges/hw_backend.h"     // br_hw_settings: hw-backend, hw-backend-<bridge>, hw-backend-fallback (runtime/bridges)
 
@@ -474,6 +475,7 @@ void     xh_hist_add(xh_hist *h, uint64_t ns);
 uint64_t xh_hist_quantile(const xh_hist *h, double q);   // ns (the upper bound of the bucket it falls in)
 uint64_t xh_ticks_ns(uint64_t ticks);                   // counter ticks to nanoseconds
 xh_perf *xh_perf_self(void);                            // the calling vCPU's, else a shared one
+extern bool xh_perf_detail_enabled;  // immutable after initialization
 void     xh_perf_init(const xh_config *c);
 void     xh_perf_tick(void);                            // main loop: a report every perf-log seconds
 void     xh_perf_log(bool since_start);                 // the report now (the stop, SIGQUIT)
@@ -500,6 +502,7 @@ struct xh_vcpu {
   uint64_t  stat_acks, acks_mark;     // interrupts acknowledged; the count when the last interrupt upcall began
   uint64_t  stat_reraised, stat_timer, stat_sgi;   // frame_resume re-raises; INTID 27 and SGIs acknowledged
   xh_perf   perf;
+  xh_detail_profile detail;  // opt-in host-only state, not the guest ABI
 };
 extern xh_vcpu g_vcpu[XH_MAX_CPUS];
 extern unsigned g_ncpu;

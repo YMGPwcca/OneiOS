@@ -664,6 +664,7 @@ void xh_task_perf_log(void)
     uint64_t cpu_traps[XH_MAX_CPUS];
     xh_task_queue_profile queue;
     xh_task_timing_profile timing;
+    uint64_t trap_class[XH_DC_COUNT];
     uint64_t score;
   } top[TOP] = { 0 };
   unsigned active = 0, with_events = 0;
@@ -705,6 +706,8 @@ void xh_task_perf_log(void)
     for (unsigned why = 0; why < XH_TQ_REASONS; why++)
       item.queue.fallbacks[why] = xh_tq_read(&t->profile.queue.fallbacks[why]);
     xh_tt_snapshot(&item.timing, &t->profile.timing);
+    for (unsigned cls = 0; cls < XH_DC_COUNT; cls++)
+      item.trap_class[cls] = xh_detail_read(&t->profile.trap_class[cls]);
     for (unsigned shift = TOP - 1; shift > place; shift--) top[shift] = top[shift - 1];
     top[place] = item;
   }
@@ -749,6 +752,13 @@ void xh_task_perf_log(void)
          (unsigned long long)q->fallbacks[XH_TQ_MAP_QUEUE_FULL],
          (unsigned long long)q->fallbacks[XH_TQ_UNMAP_QUEUE_FULL],
          (unsigned long long)q->fallbacks[XH_TQ_UNMAP_TASK_RUNNING]);
+    LOGI("perf-task-class: host_pid=%d bsd_direct=%llu bsd_indirect=%llu mach=%llu platform=%llu "
+         "fault_read=%llu fault_write=%llu fault_exec=%llu fault_unknown=%llu (cumulative actual trap hits)",
+         it->pid, (unsigned long long)it->trap_class[XH_DC_BSD_DIRECT],
+         (unsigned long long)it->trap_class[XH_DC_BSD_INDIRECT],
+         (unsigned long long)it->trap_class[XH_DC_MACH], (unsigned long long)it->trap_class[XH_DC_PLATFORM],
+         (unsigned long long)it->trap_class[XH_DC_FAULT_READ], (unsigned long long)it->trap_class[XH_DC_FAULT_WRITE],
+         (unsigned long long)it->trap_class[XH_DC_FAULT_EXEC], (unsigned long long)it->trap_class[XH_DC_FAULT_UNKNOWN]);
     log_task_timing(it->pid, &it->timing);
   }
 }
@@ -1032,6 +1042,7 @@ static void run_done(xh_vcpu *v, task *t, uint32_t kind)
                         kind == XH_TRAP_FAULT ? XH_TP_TRAP_FAULT :
                         kind == XH_TRAP_INTERRUPT ? XH_TP_TRAP_INTERRUPT : XH_TP_TRAP_OTHER;
     xh_task_profile_add(&t->profile, v->cpu.index, category);
+    v->detail.previous_class = XH_DC_COUNT;
   }
   p->ret_at = xh_counter();
   p->ret_idle = p->ticks_idle;
@@ -1051,7 +1062,9 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
     uint64_t gap = entered - p->ret_at, idle = p->ticks_idle - p->ret_idle;
     unsigned k = p->ret_kind == XH_TRAP_SYSCALL ? XP_K_SYSCALL : p->ret_kind == XH_TRAP_FAULT ? XP_K_FAULT :
                  p->ret_kind == XH_TRAP_INTERRUPT ? XP_K_IRQ : XP_K_OTHER;
-    xh_hist_add(&p->h[k], xh_ticks_ns(gap > idle ? gap - idle : 0));
+    const uint64_t ns = xh_ticks_ns(gap > idle ? gap - idle : 0);
+    xh_hist_add(&p->h[k], ns);
+    if (T.profile_tasks) xh_detail_interval(&v->detail, v->detail.previous_class, ns);
     p->ret_at = 0;
   }
   memset(trap, 0, sizeof *trap);
@@ -1169,7 +1182,8 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
     }
     p->host_sleeps++;
     profile_event(t, XH_TP_HOST_FUTEX_WAIT);
-    futex(&tp->to_host, FUTEX_WAIT, 0, &step);
+    long wait_rc = futex(&tp->to_host, FUTEX_WAIT, 0, &step);
+    if (T.profile_tasks) xh_detail_futex(&v->detail, false, wait_rc, errno);
   }
   if (sleeping) __atomic_store_n(&tp->host_sleeping, 0, __ATOMIC_RELAXED);
   uint64_t seen = xh_counter();
@@ -1190,6 +1204,11 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
     state->pc += 4;
   }
   run_done(v, t, trap->kind);
+  if (T.profile_tasks) {
+    unsigned cls = xh_detail_classify(trap->kind, trap->access, state->x[16]);
+    v->detail.previous_class = cls;
+    if (cls < XH_DC_COUNT) xh_detail_inc(&t->profile.trap_class[cls]);
+  }
   v->stat_traps++;
   // A trap no fault handler of the kernel can resolve by mapping a page: a data or instruction address outside
   // what an iOS task may use (a pointer that kept its authentication code, a wild jump), an undefined instruction,

@@ -137,6 +137,35 @@ int main(void)
   CHECK(xh_tt_count(&timing_snapshot.stage[XH_TT_RELEASE_ACK]) == 0);
   CHECK(xh_tt_quantile_ns(&timing_snapshot.stage[XH_TT_RELEASE_ACK], 95) == 0);
 
+  CHECK(xh_detail_classify(XH_TRAP_SYSCALL, 0, 0) == XH_DC_BSD_INDIRECT);
+  CHECK(xh_detail_classify(XH_TRAP_SYSCALL, 0, 4) == XH_DC_BSD_DIRECT);
+  CHECK(xh_detail_classify(XH_TRAP_SYSCALL, 0, UINT64_MAX) == XH_DC_MACH);
+  CHECK(xh_detail_classify(XH_TRAP_SYSCALL, 0, UINT64_C(0x80000000)) == XH_DC_PLATFORM);
+  CHECK(xh_detail_classify(XH_TRAP_FAULT, XH_PROT_READ, 0) == XH_DC_FAULT_READ);
+  CHECK(xh_detail_classify(XH_TRAP_FAULT, XH_PROT_WRITE, 0) == XH_DC_FAULT_WRITE);
+  CHECK(xh_detail_classify(XH_TRAP_FAULT, XH_PROT_EXEC, 0) == XH_DC_FAULT_EXEC);
+  CHECK(xh_detail_classify(XH_TRAP_FAULT, 0, 0) == XH_DC_FAULT_UNKNOWN);
+  CHECK(xh_detail_classify(XH_TRAP_INTERRUPT, 0, 0) == XH_DC_COUNT);
+  xh_detail_profile detail = { 0 };
+  xh_detail_interval(&detail, XH_DC_MACH, UINT64_C(16666666));
+  xh_detail_interval(&detail, XH_DC_MACH, UINT64_C(16666667));
+  xh_detail_interval(&detail, XH_DC_COUNT, UINT64_MAX);
+  CHECK(detail.intervals[XH_DC_MACH] == 2 && detail.over_budget[XH_DC_MACH] == 1);
+  xh_detail_timer_result(&detail, XH_DT_CANCEL_DISARMED, 0);
+  xh_detail_timer_result(&detail, XH_DT_ARM, -1);
+  CHECK(detail.timer[XH_DT_CANCEL_DISARMED] == 1 && detail.timer[XH_DT_ARM] == 1 && detail.timer[XH_DT_ERRORS] == 1);
+  xh_detail_futex(&detail, false, 0, EAGAIN);
+  xh_detail_futex(&detail, false, -1, EAGAIN);
+  xh_detail_futex(&detail, false, -1, EINTR);
+  xh_detail_futex(&detail, true, -1, ETIMEDOUT);
+  xh_detail_futex(&detail, true, -1, EINVAL);
+  CHECK(detail.futex[0][XH_DW_RETURNED] == 1 && detail.futex[0][XH_DW_CHANGED] == 1 && detail.futex[0][XH_DW_SIGNAL] == 1);
+  CHECK(detail.futex[1][XH_DW_TIMEOUT] == 1 && detail.futex[1][XH_DW_OTHER] == 1);
+  char mask[32] = "unknown";
+  CHECK(xh_detail_allowed_list("Cpus_allowed_list:\t0-3,6-7\n", mask, sizeof mask) && !strcmp(mask, "0-3,6-7"));
+  CHECK(!xh_detail_allowed_list("Cpus_allowed_list:\t0-3", mask, sizeof mask));
+  CHECK(!xh_detail_allowed_list("Cpus_allowed:\tff\n", mask, sizeof mask));
+  CHECK(!xh_detail_allowed_list("Cpus_allowed_list:\t0-3,6-7\n", mask, 3));
   printf("task profile: %u checks, %u failed\n", checks, failed);
   return failed != 0;
 }

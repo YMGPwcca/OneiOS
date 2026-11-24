@@ -96,7 +96,22 @@ def summarize(pairs):
         }
     return result
 
+def benchmark_mode(machine, system, runner, allow_emulated):
+    if system == "Linux" and machine in ("aarch64", "arm64") and not runner:
+        return "native_arm64"
+    if runner and allow_emulated:
+        return "emulated_diagnostic_only"
+    raise ValueError("performance benchmark requires native ARM64 Linux; QEMU is diagnostic only (explicit --allow-emulated)")
+
 def self_test():
+    assert benchmark_mode("aarch64", "Linux", "", False) == "native_arm64"
+    assert benchmark_mode("x86_64", "Linux", "qemu-aarch64", True) == "emulated_diagnostic_only"
+    for machine, system, runner, allow in (("x86_64", "Linux", "qemu-aarch64", False), ("x86_64", "Linux", "", True), ("arm64", "Darwin", "", False)):
+        try:
+            benchmark_mode(machine, system, runner, allow)
+        except ValueError:
+            continue
+        raise AssertionError("non-native timing accepted as native")
     counts = [19999, 19999, 19999, 5000, 5000, 5000, 2000, 3200, 50, 3200, 3200]
     text = "TESTKERNEL: all passed\nBENCH done\n" + "\n".join(
         f"guest BENCH {name}: n {count} mean 100 ns, p50 80 p90 120 p99 200 ns"
@@ -133,7 +148,8 @@ def run(args):
         raise ValueError("output directory is not empty: " + str(root))
     print("BENCH_DIR=" + str(root), flush=True)
     manifest = {
-        "host": platform.platform(), "runner": args.runner or "native ARM64",
+        "host": platform.platform(), "host_machine": platform.machine(),
+        "runner": args.runner or "native ARM64", "timing_mode": args.timing_mode,
         "binary_sha256": sha256(binary), "kernel_sha256": sha256(image / "kernel.kc"),
         "pairs": args.pairs, "scale": args.scale, "timeout_s": args.timeout,
         "warmup_pairs": 1, "runs": [],
@@ -178,7 +194,7 @@ def run(args):
         if i:
             measured.append(pair)
     summary = summarize(measured)
-    out = {"metrics": summary,
+    out = {"timing_mode": args.timing_mode, "host_machine": platform.machine(), "metrics": summary,
            "whole_process_elapsed_median_s": {
                str(enabled): statistics.median(p[enabled]["elapsed_s"] for p in measured)
                for enabled in (0, 1)},
@@ -197,6 +213,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--runner", default="")
+    parser.add_argument("--allow-emulated", action="store_true", help="diagnostic QEMU timings only; never hardware acceptance")
     parser.add_argument("--binary")
     parser.add_argument("--image")
     parser.add_argument("--output-dir")
@@ -209,8 +226,11 @@ def main():
         return
     if not args.binary or not args.image or not 1 <= args.pairs <= 50 or not 1 <= args.scale <= 9 or args.timeout < 1:
         parser.error("require binary/image, pairs 1..50, scale 1..9 and positive timeout")
-    if not args.runner and platform.machine() not in ("aarch64", "arm64"):
-        parser.error("ARM64 runner required on non-ARM64 host")
+    try:
+        args.timing_mode = benchmark_mode(platform.machine(), platform.system(), args.runner, args.allow_emulated)
+    except ValueError as e:
+        parser.error(str(e))
+    print("TIMING_MODE=" + args.timing_mode, flush=True)
     run(args)
 
 if __name__ == "__main__":

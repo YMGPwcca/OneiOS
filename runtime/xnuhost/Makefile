@@ -216,10 +216,13 @@ check-task-profiler-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	       --display none --no-input --width 64 --height 64 > "$$log" 2>&1; then tail -60 "$$log"; exit 1; fi; \
 	    grep -q 'TESTKERNEL: all passed' "$$log" || { tail -60 "$$log"; exit 1; }; \
 	  done; \
-	  if grep -q 'perf-task-wait:' "$(A)/task-profiler-0.log"; then echo "profiler unexpectedly active by default"; exit 1; fi; \
+	  if grep -Eq 'perf-task-wait:|perf-detail:|perf-timer:|perf-futex:|perf-affinity:' "$(A)/task-profiler-0.log"; then echo "profiler unexpectedly active by default"; exit 1; fi; \
 	  for stage in order_locks order_direct_ack release_locks release_ack; do \
 	    grep -Eq "perf-task-wait: scope=process_total host_pid=0 stage=$$stage n=[1-9][0-9]* " "$(A)/task-profiler-1.log" \
 	      || { echo "missing completed timing stage: $$stage"; tail -60 "$(A)/task-profiler-1.log"; exit 1; }; \
+	  done; \
+	  for marker in perf-detail: perf-timer: perf-futex: perf-affinity:; do \
+	    grep -q "$$marker" "$(A)/task-profiler-1.log" || { echo "missing $$marker"; tail -60 "$(A)/task-profiler-1.log"; exit 1; }; \
 	  done; \
 	  grep 'perf-task-wait: scope=process_total' "$(A)/task-profiler-1.log"; \
 	  echo "check-task-profiler-arm64: PASS (OFF/ON test kernel; process totals retained)"; fi
@@ -238,13 +241,15 @@ bench-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 # CI because this is a benchmark, not a latency acceptance gate.
 PROFILER_PAIRS ?= 6
 PROFILER_SCALE ?= 2
+PROFILER_ALLOW_EMULATED ?= 0  # explicit diagnostic opt-in only; native by default
 check-profiler-benchmark-parser:
 	python3 tests/bench_task_profiler.py --self-test
 
 bench-profiler-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc check-profiler-benchmark-parser
 	python3 tests/bench_task_profiler.py --runner "$(ARM64_RUN)" \
 	  --binary "$(A)/xnuhost" --image "$(A)/testimage" \
-	  --pairs "$(PROFILER_PAIRS)" --scale "$(PROFILER_SCALE)"
+	  --pairs "$(PROFILER_PAIRS)" --scale "$(PROFILER_SCALE)" \
+	  $(if $(filter 1,$(PROFILER_ALLOW_EMULATED)),--allow-emulated,)
 
 # The parallel test (docs/booter.md 2.6b): N threads of one task, one per vCPU, the same busy work at once; the speed-up
 # for 1, 2, 4 and 8 threads. PAR_CPUS=8 vCPUs; PAR_SET="--set cpu-pin=2" pins vCPU i (and its thread) on host CPU i.
