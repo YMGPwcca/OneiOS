@@ -150,3 +150,6 @@ Native GPU host probe PASS 6/6 at `a2f1316`; fresh-context submit-to-retire medi
 
 
 Native GPU same-context timing PASS 207/207 at `65a4f78` (first median 42.996 ms; hot 0.117 ms, paced60 0.754 ms, paced120 0.765 ms; medians across session medians). End synthetic GPU benchmark; use explicit --frame-trace on representative isolated visible iOS run after storage and map-count checks. See performance tracker. No runtime or OneOS policy change.
+
+
+Visual test follow-up: fix outdated Power/Volume/config source assertion; optional measured 4KiB compact Data clone maintains 30GiB reserve and 2GiB margin, no user-data removal. Actual available capacity remains a physical admission condition. Continue real iOS frame trace when admitted.

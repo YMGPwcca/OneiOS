@@ -31,6 +31,19 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn('rm -rf', s)
         self.assertNotIn('> "$BASE/', s)
 
+    def test_compact_has_pre_scan_margin_and_unchanged_postcopy_hash_gate(self):
+        s = snap.device_script('0'*16, D, compact=True)
+        self.assertIn('copy" compact "$BASE/data.img"', s)
+        self.assertIn('MIN_AFTER + 2097152', s)
+        self.assertIn('30GiB reserve crossed', s)
+        self.assertIn('Data hash mismatch or concurrent original write', s)
+        self.assertNotIn('MIN_AFTER + 10485760', s)
+        self.assertNotIn('rm -rf', s)
+        self.assertNotIn('> "$BASE/', s)
+        import subprocess
+        self.assertEqual(0, subprocess.run(['sh', '-n'], input=s, text=True,
+                                           capture_output=True).returncode)
+
     def test_hash_pins_are_validated(self):
         s = snap.device_script('0'*16, D, C, D)
         self.assertIn('source Data differs from supplied independent hash', s)

@@ -243,6 +243,8 @@ def verified_local_artifacts():
 def snapshot_new(adb, harness, report):
     cmd = [sys.executable, str(HERE / "sm8850-gpu-data-snapshot.py"),
            "snapshot", "--serial", adb[-1], "--adb", adb[0]]
+    if report.get("compact_clone_requested"):
+        cmd.append("--compact")
     print("SNAPSHOT_NEW_DATA=STARTED (original Data is read-only)", flush=True)
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           stdin=subprocess.DEVNULL, text=True, timeout=1800)
@@ -378,6 +380,7 @@ def run_visible(args, report):
     cpu_probe = bool(getattr(args, "cpu_probe", False))
     frame_trace = bool(getattr(args, "frame_trace", False))
     report["frame_trace_requested"] = frame_trace
+    report["compact_clone_requested"] = bool(getattr(args, "compact_clone", False))
     cpu_affinity_bench = bool(getattr(args, "cpu_affinity_bench", False))
     if cpu_affinity_bench and not touch:
         raise ValueError("cpu-affinity-bench requires --touch")
@@ -535,6 +538,7 @@ def main(argv=None):
     p.add_argument("--touch", action="store_true", help="bench-only exclusive native sec_touchscreen to iOS; physical Android touch suspended")
     p.add_argument("--detach", action="store_true", help="return after live guest GPU/display/touch are confirmed; collect logs after USB reconnect")
     p.add_argument("--no-gpu-trace", action="store_true", help="run only: suppress verbose GPU command trace for A/B without disabling performance/fence logging")
+    p.add_argument("--compact-clone", action="store_true", help="run only: measure sparse Data payload before allocating; keep 30 GiB reserve and copy margin")
     p.add_argument("--frame-trace", action="store_true", help="run only: require GPU3D and enable bounded host frame, fence and queue stage telemetry")
     p.add_argument("--cpu-probe", action="store_true", help="run only: read-only 5s CPU frequency, allowed cores and runqueue telemetry for detach/collect")
     p.add_argument("--cpu-affinity-bench", action="store_true", help="run only: opt-in native per-vCPU/iOS-thread pairing to four distinct allowed cores; no boosts or full bridges")
@@ -552,7 +556,7 @@ def main(argv=None):
         if not 90 <= args.duration <= load_tool("sm8850-ios-gpu-bench.py", "oneios_visual_duration").VISUAL_DURATION_MAX_SECONDS or args.ram_mib not in range(2048, 5121, 256):
             p.error("duration must be 90..1800 seconds, RAM 2048..5120 MiB in 256 MiB steps")
     else:
-        if not args.stage or args.detach or args.touch or args.no_gpu_trace or args.cpu_probe or args.cpu_affinity_bench or args.frame_trace:
+        if not args.stage or args.detach or args.touch or args.no_gpu_trace or args.cpu_probe or args.cpu_affinity_bench or args.frame_trace or args.compact_clone:
             p.error("collect requires --stage and cannot launch or detach a guest")
         try:
             load_tool("sm8850-ios-gpu-bench.py", "oneios_collect_validate").stage_name(args.stage)

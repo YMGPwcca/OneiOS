@@ -83,8 +83,14 @@ class VisualBenchTests(unittest.TestCase):
         self.assertIn('ioctl(exclusive_touch_fd, EVIOCGRAB, 0)', source)
         self.assertIn('xh_input_exclusive_touch_allowed(name, direct, have_touch)', source)
         self.assertIn('touch_exclusive && !have_touch', source)
-        self.assertIn('if (touch_exclusive) keys = false;', source)
-        self.assertIn('mode=bench, display=shm, input=1, bridges=0', config)
+        # The older blanket key disable was replaced by an ungrabbed Power
+        # source; Volume must still never be forwarded during exclusive input.
+        self.assertIn('if (touch_exclusive) keys = !have_power && bit(key, KEY_POWER);', source)
+        self.assertIn('sources[nfds].power_only = true;', source)
+        self.assertIn('sources[nfds].suppress_volume = touch_exclusive;', source)
+        self.assertIn('!s->suppress_volume || (v->code != KEY_VOLUMEUP_ && v->code != KEY_VOLUMEDOWN_)', source)
+        self.assertEqual(1, source.count('ioctl(fd, EVIOCGRAB, 1)'))
+        self.assertIn('touch-exclusive=1 requires bench/shm/input, bridges=0 unless sm8850-full-bridges=1', config)
         self.assertIn('if (config.touch_exclusive)', main)
         self.assertIn('return -1;', main.split('if (config.touch_exclusive)',1)[1].split('}',1)[0])
 
@@ -125,6 +131,15 @@ class VisualBenchTests(unittest.TestCase):
         self.assertLess(s.index('CURRENT_MAP_COUNT'), s.index('gpu-bench/attempted'))
         self.assertNotRegex(s, r'(?m)^\s*(?:echo|printf|tee|sysctl)\b[^\n]*\s*>\s*/proc/sys')
         self.assertNotIn('sysctl -w', s)
+
+    def test_compact_clone_is_explicit_and_does_not_change_guest_gates(self):
+        source = (HERE / 'sm8850-ios-gpu-visual.py').read_text()
+        self.assertIn('if report.get("compact_clone_requested"):', source)
+        self.assertIn('cmd.append("--compact")', source)
+        self.assertIn('p.add_argument("--compact-clone", action="store_true"', source)
+        self.assertIn('or args.compact_clone:', source)
+        self.assertIn('map_count_below_required_for_nonmutating_guest',
+                      visual.make_visual_script(bench, STAGE, 240, 4096, frame_trace=True))
 
     def test_one_shot_is_preserved_in_input_script(self):
         s = visual.make_visual_script(bench, STAGE, 240, 4096)

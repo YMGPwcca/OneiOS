@@ -45,7 +45,7 @@ def unique_paths(nonce):
     return PREFIX + nonce, UPLOAD_PREFIX + nonce
 
 
-def device_script(nonce, expected_helper_sha256, expected_data_sha256=None, expected_chip_sha256=None):
+def device_script(nonce, expected_helper_sha256, expected_data_sha256=None, expected_chip_sha256=None, *, compact=False):
     """Static, restricted device script: no user-provided paths or shell words."""
     stage, incoming = unique_paths(nonce)
     if not re.fullmatch(r"[a-f0-9]{64}", expected_helper_sha256):
@@ -77,7 +77,7 @@ if pidof xnuhost xnuhost-gui-bench xnuhost-tasks oneios-display OneiOSDisplay >/
 [ "$(stat -c '%s:%h' "$BASE/data.img")" = {EXPECTED_DATA_BYTES}:1 ] || fail 'original Data size or links changed'
 [ "$(stat -c '%s:%h' "$BASE/unique-chip-id")" = 8:1 ] || fail 'original chip ID size or links changed'
 free=$(df -Pk /data/adb | awk 'END {{print $4}}')
-[ "$free" -ge "$((MIN_AFTER + 10485760))" ] || fail 'less than 30GiB reserve + 10GiB clone budget'
+{('[ "$free" -ge "$((MIN_AFTER + 2097152))" ] || fail "less than reserve + compact copy margin"' if compact else '[ "$free" -ge "$((MIN_AFTER + 10485760))" ] || fail "less than 30GiB reserve + 10GiB clone budget"')}
 orig_data_stat=$(stat -c '%d:%i:%s:%Y:%Z' "$BASE/data.img")
 orig_chip_stat=$(stat -c '%d:%i:%s:%Y:%Z' "$BASE/unique-chip-id")
 orig_data_sha=$(sha256sum "$BASE/data.img" | cut -d ' ' -f1)
@@ -92,7 +92,7 @@ cp "$INCOMING" "$STAGE/bin/copy"
 chmod 700 "$STAGE/bin/copy"
 [ "$(sha256sum "$STAGE/bin/copy" | cut -d ' ' -f1)" = '{expected_helper_sha256}' ] || fail 'helper staged digest mismatch'
 ( set -C; : > "$STAGE/data/data.img" ) || fail 'snapshot destination already exists'
-timeout -s TERM 900 "$STAGE/bin/copy" sparse "$BASE/data.img" "$STAGE/data/data.img" || fail 'bounded sparse copy failed'
+timeout -s TERM 900 "$STAGE/bin/copy" {'compact' if compact else 'sparse'} "$BASE/data.img" "$STAGE/data/data.img" || fail 'bounded Data copy failed (see compact required bytes if present)'
 cp "$BASE/unique-chip-id" "$STAGE/data/unique-chip-id"
 chmod 600 "$STAGE/data/data.img" "$STAGE/data/unique-chip-id"
 snapshot_data_sha=$(sha256sum "$STAGE/data/data.img" | cut -d ' ' -f1)
@@ -162,10 +162,13 @@ def main(argv=None):
     p.add_argument('action', choices=('plan', 'snapshot'))
     p.add_argument('--adb', default=shutil.which('adb') or str(Path.home() / 'Android/Sdk/platform-tools/adb'))
     p.add_argument('--serial')
+    p.add_argument('--compact', action='store_true', help='snapshot only: measure nonzero 4KiB payload before allocating, retain reserve and margin')
     p.add_argument('--expected-data-sha256', help='optional independent off-device Data hash pin')
     p.add_argument('--expected-chip-sha256', help='optional independent off-device chip-ID hash pin')
     p.add_argument('--output', type=Path)
     args = p.parse_args(argv)
+    if args.compact and args.action != 'snapshot':
+        p.error('--compact requires snapshot; ordinary plan retains full logical-size budget')
     out = args.output or ROOT / 'out/sm8850/gpu-acceptance' / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-data-' + args.action + '.json')
     report = {'action': args.action, 'GUEST_RUN_READY': 'BLOCKED',
               'scope': 'isolated Data snapshot only; no iOS guest, Framework takeover or watchdog operations'}
@@ -183,9 +186,15 @@ def main(argv=None):
         inv = readiness.parse_asset_audit(harness.root(adb, readiness.DEVICE_ASSET_AUDIT, seconds=120).stdout)
         assessment = readiness.evaluate_inventory(vals, inv)
         report['readiness'] = assessment
-        required = ('source_complete', 'data_pair_sizes', 'data_pair_single_link', 'projected_clone_space')
+        required = ('source_complete', 'data_pair_sizes', 'data_pair_single_link')
         if not all(assessment.get(k) for k in required):
-            raise ValueError('Data source or 30GiB reserve + clone budget is not qualified')
+            raise ValueError('Data source is not qualified')
+        if args.compact:
+            if assessment['available_kib'] < MIN_AFTER_KIB + readiness.CLONE_MARGIN_KIB:
+                raise ValueError('less than 30GiB reserve + compact copy margin')
+            report['copy_mode'] = 'compact_measured_payload'
+        elif not assessment['projected_clone_space']:
+            raise ValueError('30GiB reserve + clone budget is not qualified')
         print('PREFLIGHT=PASS')
         if args.action == 'plan':
             print('COPY_ADMISSION=PASS; SNAPSHOT_NOT_CREATED')
@@ -201,10 +210,15 @@ def main(argv=None):
             # Phone-side namespace is a nonce-specific *new* path; the original bench is read-only.
             try:
                 harness.run([*adb, 'push', str(helper), incoming], seconds=90)
-                script = device_script(nonce, helper_sha, args.expected_data_sha256, args.expected_chip_sha256)
+                script = device_script(nonce, helper_sha, args.expected_data_sha256, args.expected_chip_sha256,
+                                       compact=args.compact)
                 outcome = harness.root(adb, script, seconds=1800, check=False)
                 report['device_exit'] = outcome.returncode
                 report['device_log_tail'] = outcome.stdout[-6000:]
+                if args.compact:
+                    for line in outcome.stdout.splitlines():
+                        if re.fullmatch(r"COMPACT_(?:NONZERO_BYTES|REQUIRED_FREE_BYTES|WRITTEN_BYTES)=\d+", line):
+                            print(line, flush=True)
                 if outcome.returncode:
                     raise ValueError('device snapshot failed; partial private stage preserved (exit ' + str(outcome.returncode) + ')')
                 report['verification'] = parse_success(outcome.stdout, stage)
