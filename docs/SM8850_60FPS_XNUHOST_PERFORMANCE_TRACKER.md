@@ -54,6 +54,8 @@ Operator receipt, 2026-11-24: complete CachyOS local CI PASS at `08a5b8576e8da8c
 
 ## P1 — CPU and VM improvement after attribution
 
+**P1 CI correction:** first attempt at `f56964b` stopped before compilation because `scripts/ci-local.sh` lost its executable bit in the Git tree edit. Restore mode 100755 (same blob); all other existing tracked modes match `a56a49e`. Baseline binary hash verified and archived. Retry the single full local CI. Native matrix now records read-only Android CPU topology and advertised maximum clocks; both prior placement conditions used only CPUs 0-2, never 6/7. No change to the matrix conditions or production policies.
+
 - [ ] **PERF-P1-01** Improve deferred map/unmap batching and queue contention with correctness proofs and measured p95/p99 benefit.
 - [ ] **PERF-P1-02** Improve vCPU handoff, service-thread scheduling and affinity where matched experiments show benefit.
   - **Native placement A/B receipt:** 3 vCPUs on CPUs 0-2; unpaired beats requested same-core pairing (see native receipt). Do not extrapolate to full bridges or alter default pinning without actual topology/workload evidence.

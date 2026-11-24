@@ -184,13 +184,29 @@ def run(adb, baseline_binary=None):
         require(value("taskset ff sh -c 'grep ^Cpus_allowed_list: /proc/self/status'").split()[-1] == "0-7",
                 "CPUs 0-7 unavailable")
     initial_temp = safe_state()
+    # Read-only sysfs evidence before the experiment. CPU numbering and
+    # reported hardware maxima are properties of this firmware, not guesses.
+    # Unreadable fields stay "unknown"; never elevate privileges for telemetry.
+    topology = value("""for cpu in /sys/devices/system/cpu/cpu[0-9]*; do
+  [ -d "$cpu" ] || continue
+  printf '%s' "${cpu##*/}"
+  for field in cpu_capacity topology/cluster_id topology/core_id cpufreq/related_cpus cpufreq/cpuinfo_max_freq cpufreq/scaling_max_freq; do
+    v=$(cat "$cpu/$field" 2>/dev/null) || v=unknown
+    printf ' %s=[%s]' "${field##*/}" "$v"
+  done
+  printf '\\n'
+done""")
+    print("===== DEVICE CPU TOPOLOGY (frequency in kHz) =====", flush=True)
+    print(topology or "unknown", flush=True)
     out = Path(tempfile.mkdtemp(prefix="oneios-native-placement."))
     print(f"BENCH_DIR={out}", flush=True)
+    (out / "cpu-topology.txt").write_text(topology + "\n")
     remote = value("mktemp -d /data/local/tmp/oneios-p0-placement.XXXXXX")
     require(REMOTE_PATH.fullmatch(remote), "unexpected remote directory")
     manifest = {
         "source": SOURCE, "checkout": head, "oneos": ONEOS,
         "sha256": hashes, "timing_mode": "native_android_arm64",
+        "cpu_topology_file": "cpu-topology.txt",
         "scope": ("3-vCPU synthetic, matched binary/mask experiment with shared test kernel, not production iOS"
                   if baseline_binary is not None else
                   "3-vCPU synthetic, common inherited CPUs 0-2, not production iOS"),
