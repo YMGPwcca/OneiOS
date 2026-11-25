@@ -10,7 +10,7 @@ diff --git a/osfmk/arm64/hosted/hosted_pmap.h b/osfmk/arm64/hosted/hosted_pmap.h
 +/* Opt-in until own-pmap skip rate and correctness are measured. */
 +static TUNABLE(uint32_t, hosted_own_presence, "oneios-own-presence", 0);
  _Static_assert(sizeof(((struct pmap *)0)->hosted_present_tags) / sizeof(uint64_t) == HOSTED_PRESENCE_SETS,
-@@ -124,6 +127,10 @@
+@@ -124,9 +127,13 @@
  static uint64_t hosted_fanout_counts[3][6];
 +/* 0082: only candidate-enabled requests for pmaps with a host task.
 + * Each request increments either issued or skipped, not both. */
@@ -21,6 +21,9 @@ diff --git a/osfmk/arm64/hosted/hosted_pmap.h b/osfmk/arm64/hosted/hosted_pmap.h
  {
  	static uint64_t last[3][6];
 +	static uint64_t own_last[2];
+ 	static const char *const kind[3] = { "nested", "commpage", "other" };
+ 	for (unsigned i = 0; i < 3; i++) {
+ 		uint64_t d[6];
 @@ -140,6 +147,16 @@
  		printf("oneios-fanout: presence=%u type=%s flushes=%llu pages=%llu targets=%llu legacy_skip=%llu presence_skip=%llu issued=%llu\n",
  		    hosted_fanout_presence, kind[i], d[0], d[1], d[2], d[3], d[4], d[5]);
