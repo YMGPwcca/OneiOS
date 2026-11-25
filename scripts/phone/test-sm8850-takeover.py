@@ -19,7 +19,7 @@ SPEC.loader.exec_module(TAKEOVER)
 
 class TakeoverTest(unittest.TestCase):
     def test_change_requires_opt_in_before_contacting_a_device(self):
-        for action in ("--recovery-smoke", "--reboot-stage-check", "--reboot-smoke", "--run", "--storage-probe", "--prepare"):
+        for action in ("--recovery-smoke", "--reboot-stage-check", "--reboot-smoke", "--run", "--storage-probe", "--prepare", "--upgrade-kernel"):
             with self.subTest(action=action), patch.object(TAKEOVER, "Phone") as phone, \
                     patch("sys.argv", ["sm8850-takeover.py", action]), \
                     contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:

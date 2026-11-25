@@ -794,7 +794,7 @@ mkdir launches/{token}
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for mode in ("dry-run", "reboot-audit", "readiness", "recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "return", "status", "storage-probe", "prepare", "rearm-data", "upgrade-runtime", "collect"):
+    for mode in ("dry-run", "reboot-audit", "readiness", "recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "return", "status", "storage-probe", "prepare", "rearm-data", "upgrade-runtime", "upgrade-kernel", "collect"):
         modes.add_argument(f"--{mode}", dest="mode", action="store_const", const=mode)
     parser.add_argument("--confirm", action="store_true", help="Explicitly opt in to the requested device changes")
     parser.add_argument("--accept-legacy-watchdog-risk", action="store_true",
@@ -811,9 +811,15 @@ def main():
                         help="full run only: experimental topology-aware CPU placement; default unchanged")
     parser.add_argument("--gpu", choices=["3d"])
     parser.add_argument("--bench-manifest", type=Path)
+    parser.add_argument("--kernel-collection", type=Path)
+    parser.add_argument("--kernel-record", type=Path)
+    parser.add_argument("--expected-old-kernel")
+    parser.add_argument("--expected-new-kernel")
+    parser.add_argument("--expected-addon")
+    parser.add_argument("--expected-trustcache")
     parser.add_argument("--output", type=Path, help="New local evidence directory")
     args = parser.parse_args()
-    if args.mode in {"recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "storage-probe", "prepare", "rearm-data", "upgrade-runtime"} and not args.confirm:
+    if args.mode in {"recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "storage-probe", "prepare", "rearm-data", "upgrade-runtime", "upgrade-kernel"} and not args.confirm:
         parser.error(f"--{args.mode} requires --confirm")
     if args.mode in {"reboot-smoke", "run"} and not args.accept_legacy_watchdog_risk:
         parser.error(f"--{args.mode} requires separate --accept-legacy-watchdog-risk consent")
@@ -831,6 +837,18 @@ def main():
     if (args.mode == "prepare") != bool(args.bench_manifest):
         parser.error("--prepare requires --bench-manifest with an independently verified benchmark SHA-256 list")
     manifest = manifest_bytes(args.bench_manifest) if args.bench_manifest else None
+    kernel_args = (args.kernel_collection, args.kernel_record, args.expected_old_kernel,
+                   args.expected_new_kernel, args.expected_addon, args.expected_trustcache)
+    if args.mode == "upgrade-kernel":
+        if not all(kernel_args):
+            parser.error("--upgrade-kernel requires collection, record and all four SHA-256 pins")
+        from sm8850_kernel_upgrade import validate_candidate, upgrade_kernel
+        candidate = validate_candidate(args.kernel_collection, args.kernel_record, args.expected_new_kernel)
+        pins = {"kernel.kc": args.expected_old_kernel, "kernel.kc.gpuaddon": args.expected_addon,
+                "kernel.kc.trustcache": args.expected_trustcache}
+        return upgrade_kernel(Phone(args.adb, args.serial), candidate, pins, HERE / "framework-stage.sh")
+    if any(value is not None for value in kernel_args):
+        parser.error("kernel upgrade options require --upgrade-kernel")
     phone = Phone(args.adb, args.serial)
     if args.mode == "dry-run":
         return audit(phone)

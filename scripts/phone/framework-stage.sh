@@ -164,7 +164,7 @@ install_stage() {
 
 case "$operation" in
     install|upgrade) install_stage; exit ;;
-    probe|prepare|rearm-data|upgrade-runtime) ;;
+    probe|prepare|rearm-data|upgrade-runtime|upgrade-kernel) ;;
     *) fail "unknown staging operation" ;;
 esac
 
@@ -255,6 +255,128 @@ upgrade_native_runtime() {
 # END SM8850_NATIVE_RUNTIME_UPGRADE
 if [ "$operation" = upgrade-runtime ]; then
     upgrade_native_runtime
+    exit 0
+fi
+# BEGIN SM8850_KERNEL_UPGRADE
+# Do not call install_stage: this transaction never refreshes recovery scripts,
+# thermal manifests, native runtime or the consumed APFS Data.
+upgrade_guest_kernel() {
+    private_kernel_file() {
+        [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c '%u:%a:%h' "$1")" = 0:600:1 ]
+    }
+    root_dir "$stage" && root_dir "$stage/image" || fail "untrusted image stage"
+    [ ! -L "$stage/start.lock" ] || fail "untrusted start lock"
+    exec 8>>"$stage/start.lock"
+    flock -n 0 0<&8 || fail "a switch or stage operation is starting"
+    state=$(cat "$stage/control/state" 2>/dev/null || :)
+    case "$state" in
+        starting|running|returning)
+            [ -s "$stage/control/boot" ] &&
+                [ "$(cat "$stage/control/boot")" != "$(cat /proc/sys/kernel/random/boot_id)" ] ||
+                fail "experimental session still open on this boot" ;;
+    esac
+    if pidof xnuhost xnuhost-gui-bench xnuhost-tasks OneiOSDisplay oneios-display >/dev/null 2>&1; then
+        fail "guest or display helper active during kernel upgrade"
+    fi
+    [ "$(getprop init.svc.zygote)" = running ] && pidof system_server >/dev/null 2>&1 ||
+        fail "Framework unavailable"
+    private_kernel_file "$stage/data.consumed" || fail "kernel upgrade requires consumed Data; rearm separately"
+    private_kernel_file "$stage/image.ready" &&
+        [ "$(cat "$stage/image.ready")" = sm8850-ios27-3d-8cpu-600s ] ||
+        fail "kernel upgrade requires finalized image"
+    for pending in "$stage"/image.ready.*-pending; do
+        [ ! -e "$pending" ] && [ ! -L "$pending" ] || fail "interrupted stage transaction: $pending"
+    done
+    grep -qx 'format=1' "$stage/image.conf" && grep -qx 'build=24A446' "$stage/image.conf" &&
+        grep -qx 'xnuhost=bin/xnuhost' "$stage/runtime.conf" ||
+        fail "unexpected image or runtime profile"
+    for name in image.sha256 image.ids; do
+        private_kernel_file "$stage/$name" &&
+            cmp -s "$stage/$name" "$incoming/old.$name" ||
+            fail "stage inventory changed during host preparation: $name"
+    done
+    cmp -s "$stage/image/manifest.json" "$incoming/old.manifest.json" ||
+        fail "manifest changed during host preparation"
+    # Recheck EVERY stored inode/size/mtime without rereading the giant APFS
+    # volumes. For the three replaced files and both sidecars, hash the bytes.
+    while read -r identity name; do
+        case "$name" in ''|/*|*..*|*[!a-zA-Z0-9._/+-]*) fail "unsafe image identity path" ;; esac
+        old="$stage/image/$name"
+        [ "$(realpath "$old")" = "$old" ] && private_kernel_file "$old" &&
+            [ "$(stat -c '%d:%i:%s:%Y' "$old")" = "$identity" ] ||
+            fail "installed image identity mismatch: $name"
+    done < "$stage/image.ids"
+    for name in kernel.kc kernel.kc.hashes manifest.json kernel.kc.gpuaddon kernel.kc.trustcache; do
+        expected=$(awk -v n="$name" '$2==n && length($1)==64 {print $1}' "$stage/image.sha256")
+        [ "$expected" = "$(hash_of "$stage/image/$name")" ] ||
+            fail "installed kernel or sidecar hash mismatch: $name"
+    done
+    [ "$(wc -l < "$incoming/next.sha256")" -eq 3 ] || fail "expected exactly three replacement hashes"
+    : > "$incoming/next.ids"
+    for name in kernel.kc kernel.kc.hashes manifest.json; do
+        new="$incoming/new/$name"
+        expected=$(awk -v n="$name" '$2==n && length($1)==64 {print $1}' "$incoming/next.sha256")
+        case "$expected" in ''|*[!0-9a-f]*) fail "invalid replacement digest: $name" ;; esac
+        [ "$expected" = "$(hash_of "$new")" ] && private_kernel_file "$new" ||
+            fail "replacement hash or identity mismatch: $name"
+        [ "$(stat -c %d "$new")" = "$(stat -c %d "$stage/image")" ] ||
+            fail "replacement is not on the image filesystem"
+        printf '%s  %s\n' "$(stat -c '%d:%i:%s:%Y' "$new")" "$name" >> "$incoming/next.ids"
+    done
+    # Rewrite only three rows; all other stage hash and identity rows stay intact.
+    for kind in sha256 ids; do
+        awk 'NR==FNR { nextval[$2]=$1; next }
+             $2 in nextval { print nextval[$2] "  " $2; next }
+             { print }' "$incoming/next.$kind" "$stage/image.$kind" > "$incoming/image.$kind"
+        [ "$(wc -l < "$incoming/image.$kind")" = "$(wc -l < "$stage/image.$kind")" ] ||
+            fail "replacement inventory length changed"
+    done
+    [ "$(df -Pk "$stage" | awk 'NR==2 {print $4}')" -ge "$((MIN_FREE + 65536))" ] ||
+        fail "kernel upgrade would cross storage reserve"
+    [ ! -L "$stage/.rollback" ] || fail "untrusted rollback folder"
+    [ -d "$stage/.rollback" ] || mkdir -m 700 "$stage/.rollback"
+    root_dir "$stage/.rollback" || fail "untrusted rollback folder"
+    archive=$(mktemp -d "$stage/.rollback/kernel.XXXXXXXX") || fail "cannot allocate kernel rollback"
+    mkdir -m 700 "$archive/image"
+    cp -p "$stage/image.ready" "$archive/image.ready"
+    cp -p "$incoming/new-kernel-record.json" "$archive/new-kernel-record.json"
+    cp -p "$incoming/next.sha256" "$archive/next.sha256"
+    echo "KERNEL_ROLLBACK_ARCHIVE=$archive"
+    # Revoke admission before the first rename. Every interrupted publication
+    # remains disarmed; the old inodes are preserved in the archive or stage.
+    mv "$stage/image.ready" "$stage/image.ready.kernel-pending"
+    sync
+    for name in kernel.kc kernel.kc.hashes manifest.json; do
+        mv "$stage/image/$name" "$archive/image/$name"
+    done
+    for name in image.sha256 image.ids; do
+        mv "$stage/$name" "$archive/$name"
+    done
+    for name in kernel.kc kernel.kc.hashes manifest.json; do
+        mv "$incoming/new/$name" "$stage/image/$name"
+    done
+    for name in image.sha256 image.ids; do
+        mv "$incoming/$name" "$stage/$name"
+    done
+    for name in kernel.kc kernel.kc.hashes manifest.json; do
+        expected=$(awk -v n="$name" '$2==n {print $1}' "$stage/image.sha256")
+        identity=$(awk -v n="$name" '$2==n {print $1}' "$stage/image.ids")
+        [ "$expected" = "$(hash_of "$stage/image/$name")" ] &&
+            [ "$identity" = "$(stat -c '%d:%i:%s:%Y' "$stage/image/$name")" ] ||
+            fail "published kernel inventory mismatch: $name"
+    done
+    sync
+    mv "$stage/image.ready.kernel-pending" "$stage/image.ready"
+    sync
+    echo "KERNEL_UPGRADE=PASS_BACKUP_PRESERVED:$archive"
+    echo "KERNEL_SHA256=$(hash_of "$stage/image/kernel.kc")"
+    echo "GPU_ADDON_AND_TRUSTCACHE=UNCHANGED_RUNTIME_COMPATIBILITY_UNTESTED"
+    echo "APFS_DATA=CONSUMED_STILL_REQUIRES_SEPARATE_REARM"
+    echo "LIVE_FRAMEWORK_STOP=NO"
+}
+# END SM8850_KERNEL_UPGRADE
+if [ "$operation" = upgrade-kernel ]; then
+    upgrade_guest_kernel
     exit 0
 fi
 chmod 700 "$incoming/image-copy"
