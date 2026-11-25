@@ -15,6 +15,7 @@
 #include "../stub/stub_abi.h"
 #include "task_order_diag.h"
 #include "task_profile.h"
+#include "task_timing_totals.h"
 #include <errno.h>
 #include <dirent.h>
 #include <stdio.h>
@@ -145,7 +146,7 @@ static struct {
   bool available, seccomp;
   bool map_defer;                            // map-defer (default on)
   bool profile_tasks;                        // perf-task=1: opt-in task-process telemetry, never enabled implicitly
-  xh_task_timing_profile timing_total;       // process-lifetime samples, including tasks that have exited
+  xh_task_timing_totals timing_total;        // sharded process-lifetime samples, including exited tasks
   uint64_t spin_host, spin_task;             // counter ticks: spin-host, spin-task
   uint64_t base;                             // of the stub region = the first address tasks may not use
   int trap_fd, sock;
@@ -390,7 +391,8 @@ static inline void profile_timing(task *t, enum xh_tt_stage stage, bool ack,
   const bool valid = ack && end >= start;
   const uint64_t ns = valid ? xh_ticks_ns(end - start) : 0;
   xh_tt_record(&t->profile.timing, stage, valid, ns);
-  xh_tt_record(&T.timing_total, stage, valid, ns);
+  xh_vcpu *v = xh_cpu_self();
+  xh_tt_total_record(&T.timing_total, v ? v->cpu.index : XH_TP_HOST_BUCKET, stage, valid, ns);
 }
 
 // ---- orders to a task's service thread ----------------------------------------------------------
@@ -671,7 +673,7 @@ void xh_task_perf_log(void)
   // The process total retains samples even after a task has been destroyed;
   // it is available even if the active task table is empty or busy.
   xh_task_timing_profile total;
-  xh_tt_snapshot(&total, &T.timing_total);
+  xh_tt_total_snapshot(&total, &T.timing_total);
   log_task_timing(0, &total);
   if (pthread_mutex_trylock(&T.lock)) {
     LOGI("perf-task: snapshot skipped: task table busy");
