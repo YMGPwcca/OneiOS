@@ -266,3 +266,5 @@
 # perf G2.1: conservative bounded per-page presence at user pmap boundary, separate fanout counters.
 # Collision/large-range fallback stays conservative; oneios-fanout-presence=0 restores 0045 fanout.
 0081-fanout-presence.patch
+# G2.2b1: own-pmap conservative presence candidate, opt-in (oneios-own-presence=1).
+0082-own-pmap-presence.patch

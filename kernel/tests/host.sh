@@ -37,6 +37,9 @@ ok "pins are full commits"
 python3 kernel/tests/test-fanout-presence.py || fail "0081 conservative presence model"
 ok "0081 conservative presence model"
 
+python3 kernel/tests/test-own-presence.py || fail "0082 conservative own-pmap model"
+ok "0082 conservative own-pmap model"
+
 # The series and profile checks are `oneios-tool kernel series-check` (kernel/tests/series-check.py until 2026-11-13),
 # and the build record writer is `oneios-tool kernel build-record` (kernel/build-record.py until then). Both run
 # here when the tool is built (CI builds it first); `cargo test` in tools/oneios-tool runs the record's checks and

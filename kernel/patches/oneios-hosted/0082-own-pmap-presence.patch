@@ -1,0 +1,108 @@
+diff --git a/osfmk/arm64/hosted/hosted_pmap.h b/osfmk/arm64/hosted/hosted_pmap.h
+--- a/osfmk/arm64/hosted/hosted_pmap.h
++++ b/osfmk/arm64/hosted/hosted_pmap.h
+@@ -112,5 +112,8 @@
+ #include <arm64/hosted/hosted_presence.h>
++#include <arm64/hosted/hosted_own_presence.h>
+ 
+ /* Candidate off switch for correctness comparisons; counters remain on. */
+ static TUNABLE(uint32_t, hosted_fanout_presence, "oneios-fanout-presence", 1);
++/* Opt-in until own-pmap skip rate and correctness are measured. */
++static TUNABLE(uint32_t, hosted_own_presence, "oneios-own-presence", 0);
+ _Static_assert(sizeof(((struct pmap *)0)->hosted_present_tags) / sizeof(uint64_t) == HOSTED_PRESENCE_SETS,
+@@ -124,6 +127,10 @@
+ static uint64_t hosted_fanout_counts[3][6];
++/* 0082: only candidate-enabled requests for pmaps with a host task.
++ * Each request increments either issued or skipped, not both. */
++static uint64_t hosted_own_counts[2];
+ void hosted_fanout_report(void);
+ void
+ hosted_fanout_report(void)
+ {
+ 	static uint64_t last[3][6];
++	static uint64_t own_last[2];
+@@ -140,6 +147,16 @@
+ 		printf("oneios-fanout: presence=%u type=%s flushes=%llu pages=%llu targets=%llu legacy_skip=%llu presence_skip=%llu issued=%llu\n",
+ 		    hosted_fanout_presence, kind[i], d[0], d[1], d[2], d[3], d[4], d[5]);
+ 	}
++	if (hosted_own_presence != 0) {
++		uint64_t d[2];
++		for (unsigned i = 0; i < 2; i++) {
++			uint64_t now = os_atomic_load(&hosted_own_counts[i], relaxed);
++			d[i] = now - own_last[i];
++			own_last[i] = now;
++		}
++		printf("oneios-own-presence: enabled=%u history=%u requests=%llu skipped=%llu issued=%llu\n",
++		    hosted_own_presence, hosted_fanout_presence, d[0] + d[1], d[0], d[1]);
++	}
+ }
+ 
+ /* 0045: the nested region's 32 MiB blocks a user pmap filled pages in (pmap->hosted_nested_seen). Its TLB word held. */
+@@ -967,9 +984,20 @@
+ static void
+-hosted_task_unmap_locked(pmap_t pmap, uint64_t va, uint64_t size)
++hosted_task_unmap_locked(pmap_t pmap, uint64_t va, uint64_t size, bool own)
+ {
+ 	if (pmap->hosted_task != 0) {
+-		(void)HPC(task_unmap, pmap->hosted_task, va, size, 0, 0);
+-		os_atomic_inc(&hosted_pmap_stats.user_unmaps, relaxed);
++		bool skip = false;
++		if (own && hosted_own_presence != 0) {
++			skip = hosted_own_presence_skip(true, hosted_fanout_presence != 0,
++			    pmap->hosted_present_tags, pmap->hosted_present_bits,
++			    va, size, ARM_PGBYTES);
++			os_atomic_inc(&hosted_own_counts[skip ? 0 : 1], relaxed);
++		}
++		if (!skip) {
++			(void)HPC(task_unmap, pmap->hosted_task, va, size, 0, 0);
++			os_atomic_inc(&hosted_pmap_stats.user_unmaps, relaxed);
++		}
++		/* Keep logical flush attribution, mapcheck and fault-around invalidation
++		 * even when host presence proves that no syscall is needed. */
+ 		hosted_top_note_unmap(pmap);    /* 0080: oneios-top's "own unmaps" (hosted_user.c) */
+ 		hosted_check_unmapped(pmap, va, size);
+ 		/* 0050: the fault-around windows the flush touches are to be done again */
+@@ -1016,6 +1045,6 @@
+ 	if (pmap->type == PMAP_TYPE_USER) {
+ 		uint32_t old = hosted_utlb_lock(pmap);
+-		hosted_task_unmap_locked(pmap, va, end - va);
++		hosted_task_unmap_locked(pmap, va, end - va, true);
+ 		os_atomic_inc(&hosted_unmap_stats.own, relaxed);
+ 		hosted_utlb_unlock(pmap, old);
+ 		return;
+@@ -1038,5 +1067,5 @@
+ 			} else {
+-				hosted_task_unmap_locked(user, va, end - va);
++				hosted_task_unmap_locked(user, va, end - va, false);
+ 				issued++;
+ 				os_atomic_inc(&hosted_unmap_stats.fanned, relaxed);
+ 			}
+diff --git a/osfmk/arm64/hosted/hosted_own_presence.h b/osfmk/arm64/hosted/hosted_own_presence.h
+new file mode 100644
+--- /dev/null
++++ b/osfmk/arm64/hosted/hosted_own_presence.h
+@@ -0,0 +1,24 @@
++/* 0082: skip only an own-pmap host unmap proved unnecessary by 0081. */
++#ifndef ONEIOS_HOSTED_OWN_PRESENCE_H
++#define ONEIOS_HOSTED_OWN_PRESENCE_H
++
++#include "hosted_presence.h"
++
++static inline bool
++hosted_own_presence_skip(bool enabled, bool history_enabled,
++    const uint64_t *tags, const uint64_t *bits, uint64_t va,
++    uint64_t size, uint64_t page_size)
++{
++	/* History is collected only when the 0081 boot tunable is on.
++	 * Unknown, malformed and wide ranges always use the original path. */
++	if (!enabled || !history_enabled || !size || !page_size ||
++	    (page_size & (page_size - 1)) != 0 ||
++	    ((va | size) & (page_size - 1)) != 0 ||
++	    size > ~(uint64_t)0 - va) {
++		return false;
++	}
++	return !hosted_presence_maybe(tags, bits, va / page_size,
++	    (va + size) / page_size);
++}
++
++#endif
