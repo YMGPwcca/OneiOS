@@ -20,7 +20,9 @@ static void mark(uint64_t page) {
     hosted_presence_mark(tags,bits,page); mapped[page]=1;
 }
 static void forget(uint64_t first,uint64_t end) {
-    hosted_presence_forget(tags,bits,first,end); memset(mapped+first,0,(size_t)(end-first));
+    /* Even an accepted unmap may fail later: production history never clears.
+     * Only the reference model tracks a successfully removed mapping. */
+    memset(mapped+first,0,(size_t)(end-first));
 }
 static void verify(uint64_t first,uint64_t end) {
     bool maybe=hosted_presence_maybe(tags,bits,first,end);
@@ -34,10 +36,10 @@ int main(void) {
     assert(!hosted_presence_maybe(tags,bits,4,5));
     mark(63); mark(64); mark(65);
     forget(63,65);
-    assert(!hosted_presence_maybe(tags,bits,63,65));
+    assert(hosted_presence_maybe(tags,bits,63,65)); /* sticky history */
     assert(hosted_presence_maybe(tags,bits,65,66));
-    /* Accepted unmap, then a later queued map before the host runs the queue. */
-    forget(3,4); assert(!hosted_presence_maybe(tags,bits,3,4));
+    /* Deferred unmap acceptance or late failure cannot erase presence. */
+    forget(3,4); assert(hosted_presence_maybe(tags,bits,3,4));
     mark(3); assert(hosted_presence_maybe(tags,bits,3,4));
     reset();
     unsigned coll=1; while(hosted_presence_index(coll)!=hosted_presence_index(0)) coll++;

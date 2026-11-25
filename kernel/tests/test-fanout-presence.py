@@ -24,7 +24,8 @@ def audit_tree(root):
     assert len(sites) == 2, f"unexpected map publication sites: {sites}"
     pmap = (root / "osfmk/arm64/hosted/hosted_pmap.h").read_text()
     assert "hosted_presence_mark(pmap->hosted_present_tags" in pmap
-    assert "hosted_fanout_presence != 0 && rc == 0" in pmap
+    assert "hosted_presence_forget(" not in pmap
+    assert "bzero(pmap->hosted_present_" not in pmap
     assert "hosted_presence_maybe(user->hosted_present_tags" in pmap
     print("G2_PATCHED_XNU_MAP_SITES=PASS (normal and fault-around)")
 
@@ -36,7 +37,8 @@ def main():
     section = text.split("+++ b/" + NAME + "\n", 1)[1].split("\ndiff --git ",1)[0]
     lines = section.splitlines()
     header = "\n".join(line[1:] for line in lines if line.startswith("+")) + "\n"
-    assert "hosted_presence_forget" in header and "hosted_presence_maybe" in header
+    assert "hosted_presence_mark" in header and "hosted_presence_maybe" in header
+    assert "hosted_presence_forget" not in header
     with tempfile.TemporaryDirectory(prefix="oneios-g2-presence-") as folder:
         folder = pathlib.Path(folder)
         (folder / "hosted_presence.h").write_text(header)

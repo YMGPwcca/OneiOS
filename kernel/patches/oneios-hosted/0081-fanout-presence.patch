@@ -81,30 +81,7 @@ diff --git a/osfmk/arm64/hosted/hosted_pmap.h b/osfmk/arm64/hosted/hosted_pmap.h
  	if (nested == NULL || va < nested->nested_region_addr || va - nested->nested_region_addr >= nested->nested_region_size) {
  		return;
  	}
-@@ -930,8 +930,21 @@
- static void
- hosted_task_unmap_locked(pmap_t pmap, uint64_t va, uint64_t size)
- {
- 	if (pmap->hosted_task != 0) {
--		(void)HPC(task_unmap, pmap->hosted_task, va, size, 0, 0);
-+		int64_t rc = HPC(task_unmap, pmap->hosted_task, va, size, 0, 0);
-+		/* Accepted deferred orders are also safe: the existing runtime blocks
-+		 * every release until older unmaps are complete. A subsequent fill
-+		 * marks before it queues under this same word. On failure keep history.
-+		 */
-+		if (hosted_fanout_presence != 0 && rc == 0) {
-+			if (va == 0 && size >= hosted_info.user_va_limit) {
-+				bzero(pmap->hosted_present_tags, sizeof(pmap->hosted_present_tags));
-+				bzero(pmap->hosted_present_bits, sizeof(pmap->hosted_present_bits));
-+			} else {
-+				hosted_presence_forget(pmap->hosted_present_tags, pmap->hosted_present_bits,
-+				    va / ARM_PGBYTES, (va + size) / ARM_PGBYTES);
-+			}
-+		}
- 		os_atomic_inc(&hosted_pmap_stats.user_unmaps, relaxed);
- 		hosted_top_note_unmap(pmap);    /* 0080: oneios-top's "own unmaps" (hosted_user.c) */
- 		hosted_check_unmapped(pmap, va, size);
-@@ -983,18 +983,34 @@
+@@ -983,18 +1022,34 @@
  	os_atomic_inc(&hosted_unmap_stats.nested_flushes, relaxed);
 -	pmap_simple_lock(&pmaps_lock);
 -	pmap_t user;
@@ -165,7 +142,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  static struct hosted_top_slot hosted_top_copy[HOSTED_TOP_SLOTS];
  extern struct proc *proc_find(int);
  extern int proc_rele(struct proc *);
-@@ -1238,5 +1238,6 @@
+@@ -1238,5 +1239,6 @@
  		hosted_perf_kernel_threads(wall_us);    /* 0051 */
  		hosted_top_report(wall_us);             /* 0080 */
 +		hosted_fanout_report();                 /* 0081 */
@@ -176,15 +153,15 @@ diff --git a/osfmk/arm64/hosted/hosted_presence.h b/osfmk/arm64/hosted/hosted_pr
 new file mode 100644
 --- /dev/null
 +++ b/osfmk/arm64/hosted/hosted_presence.h
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,80 @@
 +/* 0081: conservative user mapping presence, protected by the pmap's TLB word.
 + * Page numbers, not physical addresses. A slot is empty, exact (tag+bitmap),
-+ * or unknown after a collision. Unknown is sticky until a complete accepted
-+ * address-space unmap. False positives cost work; false negatives are forbidden.
-+ * This header is also compiled by the host tests. No allocation on the fault
-+ * or invalidation path. The caller marks BEFORE publishing any task_map, and
-+ * forgets only after task_unmap has accepted the order (including deferred
-+ * orders protected by the existing release protocol).
++ * or unknown after a collision. History is sticky until pmap creation.
++ * False positives cost work; false negatives are forbidden. This header is
++ * also compiled by the host tests. No allocation in the fault/flush path.
++ * The caller marks BEFORE publishing any task_map. Never clear on an unmap:
++ * task_unmap can report queue acceptance before the actual munmap, and the
++ * existing runtime logs late failures without reporting them to this pmap.
 + */
 +#ifndef ONEIOS_HOSTED_PRESENCE_H
 +#define ONEIOS_HOSTED_PRESENCE_H
@@ -256,27 +233,4 @@ new file mode 100644
 +	return false;
 +}
 +
-+/* A successful unmap proves exact bits absent, but cannot resolve a collision.
-+ * Large non-full unmaps deliberately retain history rather than walk it.
-+ */
-+static inline void
-+hosted_presence_forget(uint64_t *tags, uint64_t *bits, uint64_t first, uint64_t end)
-+{
-+	if (!hosted_presence_bounded(first, end)) {
-+		return;
-+	}
-+	while (first < end) {
-+		uint64_t block = first >> 6;
-+		uint64_t n = 64 - (first & 63);
-+		uint64_t next = end - first < n ? end : first + n;
-+		unsigned i = hosted_presence_index(block);
-+		if (tags[i] == block + 1) {
-+			bits[i] &= ~hosted_presence_mask(first, next);
-+			if (bits[i] == 0) {
-+				tags[i] = 0;
-+			}
-+		}
-+		first = next;
-+	}
-+}
 +#endif
