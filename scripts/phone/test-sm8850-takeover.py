@@ -102,6 +102,17 @@ class TakeoverTest(unittest.TestCase):
             self.assertIn("--framework-check run 180 I_ACCEPT_SOFT_GUARD_OFF_180S", commands[0])
             self.assertFalse(any("--framework-session" in command for command in commands))
 
+    def test_guarded_run_rejects_missing_75c_policy_marker(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(TAKEOVER, "audit", return_value=0), \
+             patch.object(TAKEOVER, "upload", return_value=0):
+            device = unittest.mock.Mock()
+            device.root.return_value = subprocess.CompletedProcess([], 0, b"PREFLIGHT OK\n")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = TAKEOVER.launch(device, "run", Path(folder), duration=180)
+            self.assertEqual(2, rc)
+            self.assertEqual(1, device.root.call_count)
+
     def test_detached_run_carries_explicit_no_guard_profile_token(self):
         with tempfile.TemporaryDirectory() as folder, \
              patch.object(TAKEOVER, "audit", return_value=0), \

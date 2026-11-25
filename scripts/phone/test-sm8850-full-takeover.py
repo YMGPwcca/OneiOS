@@ -116,11 +116,11 @@ class FullTakeoverOfflineTest(unittest.TestCase):
                        "feat/sm8850-guarded-duration-tracing"):
             for duration in (180, 600):
                 with self.subTest(branch=branch, duration=duration):
-                    env = {}
+                    env = {key: token}
                     runner.configure_performance_thermal_profile(branch, duration, env)
-                    expected = {key: token} if (
+                    expected = {} if (
                         branch == "feat/sm8850-xnuhost-perf-p0" and duration == 180
-                    ) else {}
+                    ) else {key: token}
                     self.assertEqual(expected, env)
         source = path.read_text()
         self.assertLess(source.index("configure_performance_thermal_profile(branch, args.duration, os.environ)"),
@@ -128,7 +128,9 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         wrapper = WRAPPER.read_text()
         self.assertIn('if [ "$BRANCH" = feat/sm8850-xnuhost-perf-p0 ] &&', wrapper)
         self.assertLess(wrapper.index('[ "$duration_explicit" = 1 ] && [ "$duration" = 180 ]'),
-                        wrapper.index("export " + key + "=" + token))
+                        wrapper.index("unset " + key))
+        self.assertIn("SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC", source)
+        self.assertIn("SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC", TAKEOVER_SOURCE.read_text())
         self.assertIn('--duration "$duration" --preflight-only', wrapper)
         self.assertIn("extra+=(--no-userspace-thermal-180)", wrapper)
 

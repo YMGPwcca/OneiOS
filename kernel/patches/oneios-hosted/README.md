@@ -1292,3 +1292,7 @@ kernel's recorded compile command with `-fsyntax-only`; built on the Linux PC (2
 7632e390). Not booted; the
 PC cannot press a phone's power key into a lit display. Whether backboardd calls it at the lock in this guest is [U] until a phone boot's
 log shows the line.
+
+### 0081 — Conservative fanout presence (G2.1)
+
+The hosted user TLB word protects a 128-set table of absolute user VA page blocks (64 pages each, 2 KiB per pmap). Empty/exact/unknown tags avoid false negatives: normal and fault-around fills mark before the hypercall, an accepted unmap may clear only exact covered bits, and collisions remain unknown until a full accepted address-space unmap. Large ranges retain history and use the legacy fanout path. The old 32 MiB nested filter remains. Only nested/commpage fanout candidates proven absent are skipped; no protection changes, no new ACK semantics, no deferred-order reordering. Set `oneios-fanout-presence=0` for the old behavior with new attribution. Each 30 s `oneios-fanout:` report separates nested/commpage/other range-page counts, targets, legacy/presence skips, and issued unmaps. The old aggregate skipped label also includes accepted unmap-cleared mappings. Local `python3 kernel/tests/test-fanout-presence.py` compiles the patch's actual helper; run it with `--xnu-dir PATH` on the patched source before staging. The source is a candidate, not a measured speedup or native-qualified kernel.

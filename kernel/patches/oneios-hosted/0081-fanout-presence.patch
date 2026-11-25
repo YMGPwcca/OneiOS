@@ -1,0 +1,282 @@
+diff --git a/osfmk/arm/pmap/pmap.h b/osfmk/arm/pmap/pmap.h
+--- a/osfmk/arm/pmap/pmap.h
++++ b/osfmk/arm/pmap/pmap.h
+@@ -506,6 +506,9 @@
+ 	uint32_t hosted_tlb_word;
+ 	uint64_t hosted_nested_seen[8];
+ 	/* 0050: the fault-around windows done since the task's last flush of them (base | 1; 16 slots by the base's bits) */
+ 	uint64_t hosted_around[16];
++	/* 0081: bounded conservative page presence across the whole hosted user VA. */
++	uint64_t hosted_present_tags[128];
++	uint64_t hosted_present_bits[128];
+ #endif /* XNU_HOSTED */
+ };
+diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -3150,5 +3150,7 @@
+ 	p->hosted_tlb_word = 0;
+ 	bzero(p->hosted_nested_seen, sizeof(p->hosted_nested_seen));
+ 	bzero(p->hosted_around, sizeof(p->hosted_around));            /* 0050 */
++	bzero(p->hosted_present_tags, sizeof(p->hosted_present_tags));
++	bzero(p->hosted_present_bits, sizeof(p->hosted_present_bits));
+ #endif
+ 	p->type = PMAP_TYPE_USER;
+diff --git a/osfmk/arm64/hosted/hosted_pmap.h b/osfmk/arm64/hosted/hosted_pmap.h
+--- a/osfmk/arm64/hosted/hosted_pmap.h
++++ b/osfmk/arm64/hosted/hosted_pmap.h
+@@ -113,10 +113,49 @@
+-/* 0045: the nested region's 32 MiB blocks a user pmap filled pages in (pmap->hosted_nested_seen). Its TLB word held. */
+-#define HOSTED_NESTED_BLOCK_SHIFT 25
+-#define HOSTED_NESTED_BITS        512
+-static inline void
+-hosted_nested_mark(pmap_t pmap, uint64_t va)
+-{
++#include <arm64/hosted/hosted_presence.h>
++
++/* Candidate off switch for correctness comparisons; counters remain on. */
++static TUNABLE(uint32_t, hosted_fanout_presence, "oneios-fanout-presence", 1);
++_Static_assert(sizeof(((struct pmap *)0)->hosted_present_tags) / sizeof(uint64_t) == HOSTED_PRESENCE_SETS,
++    "hosted presence tag size");
++_Static_assert(sizeof(((struct pmap *)0)->hosted_present_bits) / sizeof(uint64_t) == HOSTED_PRESENCE_SETS,
++    "hosted presence bitmap size");
++
++/* 0081: separate nested/commpage/other invalidation, ranges and target decisions.
++ * Accumulate once per source flush, outside pmaps_lock. Relaxed snapshots are
++ * diagnostic (windows are not transactional), never used as correctness state.
++ */
++static uint64_t hosted_fanout_counts[3][6];
++void hosted_fanout_report(void);
++void
++hosted_fanout_report(void)
++{
++	static uint64_t last[3][6];
++	static const char *const kind[3] = { "nested", "commpage", "other" };
++	for (unsigned i = 0; i < 3; i++) {
++		uint64_t d[6];
++		for (unsigned j = 0; j < 6; j++) {
++			uint64_t now = os_atomic_load(&hosted_fanout_counts[i][j], relaxed);
++			d[j] = now - last[i][j];
++			last[i][j] = now;
++		}
++		printf("oneios-fanout: presence=%u type=%s flushes=%llu pages=%llu targets=%llu legacy_skip=%llu presence_skip=%llu issued=%llu\n",
++		    hosted_fanout_presence, kind[i], d[0], d[1], d[2], d[3], d[4], d[5]);
++	}
++}
++
++/* 0045: the nested region's 32 MiB blocks a user pmap filled pages in (pmap->hosted_nested_seen). Its TLB word held. */
++#define HOSTED_NESTED_BLOCK_SHIFT 25
++#define HOSTED_NESTED_BITS        512
++static inline void
++hosted_nested_mark(pmap_t pmap, uint64_t va)
++{
++	/* Both normal fill and fault-around call this before submitting task_map.
++	 * Track all user VAs, even when the current nested pointer is absent or
++	 * changes later. The same TLB word orders publication and invalidation.
++	 */
++	if (hosted_fanout_presence != 0) {
++		hosted_presence_mark(pmap->hosted_present_tags, pmap->hosted_present_bits, va / ARM_PGBYTES);
++	}
+ 	pmap_t nested = pmap->nested_pmap;
+ 	if (nested == NULL || va < nested->nested_region_addr || va - nested->nested_region_addr >= nested->nested_region_size) {
+ 		return;
+ 	}
+@@ -930,8 +930,21 @@
+ static void
+ hosted_task_unmap_locked(pmap_t pmap, uint64_t va, uint64_t size)
+ {
+ 	if (pmap->hosted_task != 0) {
+-		(void)HPC(task_unmap, pmap->hosted_task, va, size, 0, 0);
++		int64_t rc = HPC(task_unmap, pmap->hosted_task, va, size, 0, 0);
++		/* Accepted deferred orders are also safe: the existing runtime blocks
++		 * every release until older unmaps are complete. A subsequent fill
++		 * marks before it queues under this same word. On failure keep history.
++		 */
++		if (hosted_fanout_presence != 0 && rc == 0) {
++			if (va == 0 && size >= hosted_info.user_va_limit) {
++				bzero(pmap->hosted_present_tags, sizeof(pmap->hosted_present_tags));
++				bzero(pmap->hosted_present_bits, sizeof(pmap->hosted_present_bits));
++			} else {
++				hosted_presence_forget(pmap->hosted_present_tags, pmap->hosted_present_bits,
++				    va / ARM_PGBYTES, (va + size) / ARM_PGBYTES);
++			}
++		}
+ 		os_atomic_inc(&hosted_pmap_stats.user_unmaps, relaxed);
+ 		hosted_top_note_unmap(pmap);    /* 0080: oneios-top's "own unmaps" (hosted_user.c) */
+ 		hosted_check_unmapped(pmap, va, size);
+@@ -983,18 +983,34 @@
+ 	os_atomic_inc(&hosted_unmap_stats.nested_flushes, relaxed);
+-	pmap_simple_lock(&pmaps_lock);
+-	pmap_t user;
+-	queue_iterate(&map_pmap_list, user, pmap_t, pmaps) {
+-		if (user->type == PMAP_TYPE_USER && user->hosted_task != 0 &&
+-		    (pmap->type != PMAP_TYPE_NESTED || user->nested_pmap == pmap)) {
+-			uint32_t old = hosted_utlb_lock(user);
+-			if (pmap->type != PMAP_TYPE_NESTED || hosted_nested_seen(user, pmap, va, end)) {
+-				hosted_task_unmap_locked(user, va, end - va);
+-				os_atomic_inc(&hosted_unmap_stats.fanned, relaxed);
+-			} else {
+-				os_atomic_inc(&hosted_unmap_stats.skipped, relaxed);
+-			}
+-			hosted_utlb_unlock(user, old);
+-		}
+-	}
+-	pmap_simple_unlock(&pmaps_lock);
++	unsigned source = pmap->type == PMAP_TYPE_NESTED ? 0 : (pmap->type == PMAP_TYPE_COMMPAGE ? 1 : 2);
++	uint64_t targets = 0, legacy_skip = 0, presence_skip = 0, issued = 0;
++	pmap_simple_lock(&pmaps_lock);
++	pmap_t user;
++	queue_iterate(&map_pmap_list, user, pmap_t, pmaps) {
++		if (user->type == PMAP_TYPE_USER && user->hosted_task != 0 &&
++		    (pmap->type != PMAP_TYPE_NESTED || user->nested_pmap == pmap)) {
++			uint32_t old = hosted_utlb_lock(user);
++			targets++;
++			if (pmap->type == PMAP_TYPE_NESTED && !hosted_nested_seen(user, pmap, va, end)) {
++				legacy_skip++;
++				os_atomic_inc(&hosted_unmap_stats.skipped, relaxed);
++			} else if (source < 2 && hosted_fanout_presence != 0 &&
++			    !hosted_presence_maybe(user->hosted_present_tags, user->hosted_present_bits,
++			    va / ARM_PGBYTES, end / ARM_PGBYTES)) {
++				presence_skip++;
++				os_atomic_inc(&hosted_unmap_stats.skipped, relaxed);
++			} else {
++				hosted_task_unmap_locked(user, va, end - va);
++				issued++;
++				os_atomic_inc(&hosted_unmap_stats.fanned, relaxed);
++			}
++			hosted_utlb_unlock(user, old);
++		}
++	}
++	pmap_simple_unlock(&pmaps_lock);
++	os_atomic_inc(&hosted_fanout_counts[source][0], relaxed);
++	os_atomic_add(&hosted_fanout_counts[source][1], (end - va) / ARM_PGBYTES, relaxed);
++	os_atomic_add(&hosted_fanout_counts[source][2], targets, relaxed);
++	os_atomic_add(&hosted_fanout_counts[source][3], legacy_skip, relaxed);
++	os_atomic_add(&hosted_fanout_counts[source][4], presence_skip, relaxed);
++	os_atomic_add(&hosted_fanout_counts[source][5], issued, relaxed);
+ }
+diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
+--- a/osfmk/arm64/hosted/hosted_user.c
++++ b/osfmk/arm64/hosted/hosted_user.c
+@@ -1085,5 +1085,6 @@
+ /* 0080: the processes of the period by the kernel's time on their traps (oneios-top), and the shared region's line */
+ extern void hosted_pmap_protect_stats(uint64_t out[2]);
++extern void hosted_fanout_report(void);
+ static struct hosted_top_slot hosted_top_copy[HOSTED_TOP_SLOTS];
+ extern struct proc *proc_find(int);
+ extern int proc_rele(struct proc *);
+@@ -1238,5 +1238,6 @@
+ 		hosted_perf_kernel_threads(wall_us);    /* 0051 */
+ 		hosted_top_report(wall_us);             /* 0080 */
++		hosted_fanout_report();                 /* 0081 */
+ 		hosted_perf_last = c;
+ 		user_last = u;
+ 		for (unsigned i = 0; i < 18; i++) {
+diff --git a/osfmk/arm64/hosted/hosted_presence.h b/osfmk/arm64/hosted/hosted_presence.h
+new file mode 100644
+--- /dev/null
++++ b/osfmk/arm64/hosted/hosted_presence.h
+@@ -0,0 +1,103 @@
++/* 0081: conservative user mapping presence, protected by the pmap's TLB word.
++ * Page numbers, not physical addresses. A slot is empty, exact (tag+bitmap),
++ * or unknown after a collision. Unknown is sticky until a complete accepted
++ * address-space unmap. False positives cost work; false negatives are forbidden.
++ * This header is also compiled by the host tests. No allocation on the fault
++ * or invalidation path. The caller marks BEFORE publishing any task_map, and
++ * forgets only after task_unmap has accepted the order (including deferred
++ * orders protected by the existing release protocol).
++ */
++#ifndef ONEIOS_HOSTED_PRESENCE_H
++#define ONEIOS_HOSTED_PRESENCE_H
++
++#define HOSTED_PRESENCE_SETS 128u
++#define HOSTED_PRESENCE_UNKNOWN (~(uint64_t)0)
++#define HOSTED_PRESENCE_MAX_BLOCKS 64u
++
++static inline unsigned
++hosted_presence_index(uint64_t block)
++{
++	return (unsigned)((block ^ (block >> 7) ^ (block >> 14) ^
++	    (block >> 21) ^ (block >> 28)) & (HOSTED_PRESENCE_SETS - 1));
++}
++
++static inline void
++hosted_presence_mark(uint64_t *tags, uint64_t *bits, uint64_t page)
++{
++	uint64_t block = page >> 6, tag = block + 1;
++	unsigned i = hosted_presence_index(block);
++	if (tags[i] == HOSTED_PRESENCE_UNKNOWN) {
++		return;
++	}
++	if (tags[i] != 0 && tags[i] != tag) {
++		tags[i] = HOSTED_PRESENCE_UNKNOWN;
++		bits[i] = 0;
++		return;
++	}
++	tags[i] = tag;
++	bits[i] |= 1ULL << (page & 63);
++}
++
++/* One nonempty intersection of [first,end) with the current 64-page block. */
++static inline uint64_t
++hosted_presence_mask(uint64_t first, uint64_t end)
++{
++	unsigned off = (unsigned)(first & 63);
++	uint64_t len = end - first;
++	return len == 64 ? ~(uint64_t)0 : ((1ULL << len) - 1) << off;
++}
++
++static inline bool
++hosted_presence_bounded(uint64_t first, uint64_t end)
++{
++	return first < end &&
++	    ((end - 1) >> 6) - (first >> 6) < HOSTED_PRESENCE_MAX_BLOCKS;
++}
++
++/* A false result proves no possible map in the range; unknown/large => true. */
++static inline bool
++hosted_presence_maybe(const uint64_t *tags, const uint64_t *bits,
++    uint64_t first, uint64_t end)
++{
++	if (!hosted_presence_bounded(first, end)) {
++		return true;
++	}
++	while (first < end) {
++		uint64_t block = first >> 6;
++		uint64_t n = 64 - (first & 63);
++		uint64_t next = end - first < n ? end : first + n;
++		unsigned i = hosted_presence_index(block);
++		if (tags[i] == HOSTED_PRESENCE_UNKNOWN ||
++		    (tags[i] == block + 1 &&
++		    (bits[i] & hosted_presence_mask(first, next)) != 0)) {
++			return true;
++		}
++		first = next;
++	}
++	return false;
++}
++
++/* A successful unmap proves exact bits absent, but cannot resolve a collision.
++ * Large non-full unmaps deliberately retain history rather than walk it.
++ */
++static inline void
++hosted_presence_forget(uint64_t *tags, uint64_t *bits, uint64_t first, uint64_t end)
++{
++	if (!hosted_presence_bounded(first, end)) {
++		return;
++	}
++	while (first < end) {
++		uint64_t block = first >> 6;
++		uint64_t n = 64 - (first & 63);
++		uint64_t next = end - first < n ? end : first + n;
++		unsigned i = hosted_presence_index(block);
++		if (tags[i] == block + 1) {
++			bits[i] &= ~hosted_presence_mask(first, next);
++			if (bits[i] == 0) {
++				tags[i] = 0;
++			}
++		}
++		first = next;
++	}
++}
++#endif

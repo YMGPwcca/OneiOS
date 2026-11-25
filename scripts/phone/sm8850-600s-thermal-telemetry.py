@@ -3,10 +3,10 @@
 
 Uses the existing OneiOS full-takeover wrapper and its bounded DEVICE-SIDE
 framework deadline. Telemetry is read-only. On the dedicated SM8850 performance
-branch, the existing 180-second passive experiment is the fixed profile: no
-additional OneOS root thermal monitor or CPU cap worker. Other branches keep
-their existing profile selection. Android kernel/firmware protection, watchdog
-and deadline are unchanged. This is not safety certification.
+branch, the independently prearmed guarded 75C throttle policy is the fixed
+profile. Other branches keep their existing profile selection. Android
+kernel/firmware protection, emergency guard, watchdog and deadline remain.
+This is not safety certification.
 """
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ RISK = "--i-accept-10-minute-legacy-watchdog-risk"
 
 
 def configure_performance_thermal_profile(branch, duration, env):
-    """Select the existing passive profile for the dedicated 180s experiment."""
+    """Guarded performance branch; never inherit the historical passive mode."""
     if branch == "feat/sm8850-xnuhost-perf-p0" and duration == 180:
-        env["ONEIOS_SM8850_SOFT_THERMAL_OFF"] = "I_ACCEPT_SOFT_GUARD_OFF_180S"
+        env.pop("ONEIOS_SM8850_SOFT_THERMAL_OFF", None)
 
 # A minimal, read-only probe. It runs in Android's init namespace (not inside
 # xnuhost's /data bind mount). Both process markers are in current xnuhost.log.
@@ -42,7 +42,7 @@ meta() { printf 'M\t%s\t%s\n' "$1" "$2"; }
 val() { [ ! -r "$1" ] || meta "$2" "$(cat "$1" 2>/dev/null)"; }
 val /proc/sys/kernel/random/boot_id boot_id
 meta uptime "$(cut -d' ' -f1 /proc/uptime)"
-for k in boot state framework.launch framework.mode framework.duration framework.perf-profile framework.cpu-profile framework.deadline framework.takeover-confirmed watchdog.phase; do
+for k in boot state framework.launch framework.mode framework.duration framework.perf-profile framework.cpu-profile framework.deadline framework.takeover-confirmed watchdog.phase thermal.guard.heartbeat thermal.cap.heartbeat thermal.guard.fault thermal.cap.fault; do
     val "$ST/control/$k" "ctl/$k"
 done
 # The previous session's stage is intentionally retained across a reboot.
@@ -396,6 +396,8 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
     if os.environ.get("ONEIOS_SM8850_SOFT_THERMAL_OFF") == "I_ACCEPT_SOFT_GUARD_OFF_180S":
         console.say("SOFTWARE_THERMAL_GUARD=OFF_NO_ON_DEVICE_PROCESS; WARNING=NO_USERSPACE_TEMP_CUTOFF")
         console.say("CPU_UNDERCLOCK=OFF_NO_ROOT_CAP_WORKER; KERNEL_FIRMWARE_THERMAL_UNCHANGED")
+    else:
+        console.say("SOFTWARE_THERMAL_GUARD=REQUIRED; CPU_TARGET_30_70C; 75C_THROTTLE_NOT_RETURN; 90C_EMERGENCY_RETURN")
     console.say("GPU_3D=REQUIRED_NO_2D_FALLBACK; BACKEND_PROOF=CHECK_XNUHOST_KGSL_LOG")
     duration = args.duration
     console.say(f"RECOVERY=DEVICE_SIDE_DEADLINE_{duration}S_FROM_FRAMEWORK_STOP_MAX_600S")
@@ -602,9 +604,10 @@ def main() -> int:
         for branch, duration in (("feat/sm8850-xnuhost-perf-p0", 180),
                                  ("feat/sm8850-xnuhost-perf-p0", 600),
                                  ("feat/oneios-sm8850-m3q", 180)):
-            env = {}
+            key = "ONEIOS_SM8850_SOFT_THERMAL_OFF"
+            env = {key: "I_ACCEPT_SOFT_GUARD_OFF_180S"}
             configure_performance_thermal_profile(branch, duration, env)
-            assert bool(env) == (branch == "feat/sm8850-xnuhost-perf-p0" and duration == 180)
+            assert (key not in env) == (branch == "feat/sm8850-xnuhost-perf-p0" and duration == 180)
         print("SELF_TEST=PASS NO_DEVICE_ACCESS")
         return 0
     if not args.preflight_only and not args.i_accept_10_minute_legacy_watchdog_risk:
@@ -652,6 +655,8 @@ def main() -> int:
         cap_disabled = "SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER" in result
         if no_guard != cap_disabled:
             raise RuntimeError("root preflight CPU cap profile mismatch; no Framework stop or data consumption")
+        if not no_guard and "SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC" not in result.splitlines():
+            raise RuntimeError("guarded 75C policy marker missing; no Framework stop or data consumption")
         profiles = [line.split("=", 1)[1] for line in result.splitlines()
                     if line.startswith("SM8850_PERF_PROFILE=")]
         if (profiles and profiles != [args.perf_profile]) or (args.perf_profile != "off" and not profiles):

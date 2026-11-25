@@ -263,3 +263,6 @@
 # waits for the first completed shared region; the phone boots, newfs_apfs succeeds and session/ready arrives. The
 # pmap entries-kept path works; the shared-region no-op count was still 0, so that optimization and typing A/B stay open.
 0080-shared-region-protect.patch
+# perf G2.1: conservative bounded per-page presence at user pmap boundary, separate fanout counters.
+# Collision/large-range fallback stays conservative; oneios-fanout-presence=0 restores 0045 fanout.
+0081-fanout-presence.patch

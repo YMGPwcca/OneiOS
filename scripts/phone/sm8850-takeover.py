@@ -568,6 +568,10 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
               file=sys.stderr, flush=True)
         return 2
     if mode == "run":
+        if not passive_soft_thermal and "SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC" not in check_output.splitlines():
+            print("BLOCKED: guarded 75C CPU policy marker missing; nothing was launched",
+                  file=sys.stderr, flush=True)
+            return 2
         profiles = [line.split("=", 1)[1] for line in check_output.splitlines()
                     if line.startswith("SM8850_PERF_PROFILE=")]
         if (profiles and profiles != [perf_profile]) or (perf_profile != "off" and not profiles):
@@ -594,6 +598,7 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
             "session_id": token, "requested_profile": perf_profile,
             "preflight_profile": profiles[0] if profiles else None,
             "requested_cpu_profile": cpu_profile,
+            "thermal_policy": "historical_no_guard" if passive_soft_thermal else "guarded_75c_monotonic",
             "preflight_cpu_profile": cpu_profiles[0] if cpu_profiles else None,
             "frame_trace_requested": perf_profile in ("frame", "frame-task"),
             "task_profile_requested": perf_profile in ("task", "frame-task"),
@@ -624,7 +629,7 @@ mkdir launches/{token}
                 print("CPU_UNDERCLOCK=OFF_NO_ROOT_CAP_WORKER", flush=True)
                 print("WARNING=CAP_FAILURE_NO_SOFTWARE_REBOOT_AND_VENDOR_MINIMUM_MAY_OVERRIDE_CAP", flush=True)
             else:
-                print("SM8850_SOFT_THERMAL_GUARD=DEFAULT_FAIL_CLOSED", flush=True)
+                print("SM8850_SOFT_THERMAL_GUARD=DEFAULT_FAIL_CLOSED; CPU_TARGET_30_70C; 75C_THROTTLE_NOT_RETURN", flush=True)
             print("BRIDGES=1; CPU_PIN=1; CPU_AFFINITY_BENCH=0; GPU=3D_REQUIRED", flush=True)
             print("THERMAL_KERNEL_FIRMWARE_GUARDS=STILL_PRESENT_NOT_INDEPENDENTLY_VERIFIED", flush=True)
             print(f"DEADLINE_RETURN={duration}_SECONDS_AFTER_FRAMEWORK_STOP", flush=True)
