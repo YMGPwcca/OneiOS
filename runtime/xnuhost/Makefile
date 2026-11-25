@@ -193,19 +193,18 @@ $(A)/testimage/kernel.kc: $(A)/testkernel.elf $(H)/mkkernel
 	$(H)/mkkernel $(A)/testkernel.elf $@ $(A)/testimage/os.img
 
 check-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
+	python3 tests/check_ramauto_log.py --self-test
 	@if [ -z "$(ARM64_NATIVE)$(QEMU)" ]; then echo "check-arm64: qemu-aarch64 not installed: skipped"; else \
 	  rm -f $(A)/testdata/data.img; \
 	  echo "check-arm64: booting the test kernel under $(or $(ARM64_RUN),this arm64 Linux kernel)"; \
 	  timeout 30 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 3 --ram 256M --set ram-giveback=1 \
 	     --display none --no-input --width 64 --height 64 2>&1 | tee $(A)/check.log; \
 	  grep -q 'TESTKERNEL: all passed' $(A)/check.log && \
-	  echo "check-arm64: ram=auto on a host of 4 GiB, 2.5 GiB available (ram-meminfo): the guest gets what fits, 1024 MiB (1280 where the lock can work: a smaller headroom), held fixed and locked by default (ram-giveback=0; where mlock fails, a clean fallback)" && \
+	  echo "check-arm64: ram=auto on a host of 4 GiB, 2.5 GiB available (ram-meminfo): the guest gets what fits, 1024 MiB (1280 where the lock can work: a smaller headroom), held fixed (ram-giveback=0; full, partial or zero lock depending on host budget)" && \
 	  printf 'MemTotal:        4194304 kB\nMemAvailable:    2621440 kB\n' > $(A)/meminfo-3g && rm -f $(A)/testdata/data.img && \
 	  { timeout 30 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 3 --set ram-meminfo=$(A)/meminfo-3g \
-	     --display none --no-input --width 64 --height 64 > $(A)/ramauto.log 2>&1; \
-	    grep -Eq 'ram=auto: host MemTotal 4096 MiB, MemAvailable 2560 MiB; the guest gets (1024|1280) MiB' $(A)/ramauto.log && grep -Eq 'memory: the guest.s RAM is held for the session: (1024|1280) MiB, prefaulted' $(A)/ramauto.log && \
-	    grep -Eq 'memory: the guest.s RAM is held: [0-9]+ MiB prefaulted in [0-9]+ ms, (locked \(mlock|not locked \(mlock: .*so not prefaulted)' $(A)/ramauto.log && \
-	    grep -q 'TESTKERNEL: all passed' $(A)/ramauto.log || { grep -E 'memory|FAIL|TESTKERNEL' $(A)/ramauto.log | tail -8; echo "check-arm64: ram=auto failed"; false; }; } && \
+	     --display none --no-input --width 64 --height 64 > $(A)/ramauto.log 2>&1 && \
+	    python3 tests/check_ramauto_log.py $(A)/ramauto.log || { grep -E 'memory|FAIL|TESTKERNEL|exit ' $(A)/ramauto.log | tail -15; echo "check-arm64: ram=auto failed"; false; }; } && \
 	  echo "check-arm64: a guest that keeps restarting: xnuhost starts again in place 8 times, then exit 3" && \
 	  { XNUHOST_RUNNER="$(ARM64_RUN)" timeout 60 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 1 --ram 256M \
 	     --display none --no-input --width 64 --height 64 --boot-args testkernel-restart > $(A)/restart.log 2>&1; code=$$?; \
