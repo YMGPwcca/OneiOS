@@ -14,6 +14,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 TELEMETRY = ROOT / "scripts/phone/sm8850-600s-thermal-telemetry.py"
 REPORT = ROOT / "scripts/phone/sm8850-frame-stall-report.py"
+PERF_BRANCH = "feat/sm8850-xnuhost-perf-p0"
+LEGACY_BRANCH = "feat/oneios-sm8850-m3q"
+OFF_TOKEN = "I_ACCEPT_SOFT_GUARD_OFF_180S"
+GUARDED_MARKER = "SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC"
 
 
 def load(name, path):
@@ -40,7 +44,7 @@ class BoundedTimingTest(unittest.TestCase):
                                capture_output=True, text=True, timeout=10)
             self.assertEqual(2, p.returncode)
 
-    def test_preflight_only_never_invokes_takeover_or_rearm(self):
+    def preflight_fixture(self, branch, env_value, result, error=None):
         mod = load("sm8850_tel_preflight_test", TELEMETRY)
         with tempfile.TemporaryDirectory() as td:
             adb = Path(td) / "fake-adb"
@@ -48,14 +52,54 @@ class BoundedTimingTest(unittest.TestCase):
             argv = ["sm8850-600s-thermal-telemetry.py", "--repo", str(ROOT),
                     "--adb", str(adb), "--preflight-only", "--duration", "180"]
             with patch("sys.argv", argv), \
-                 patch.dict(mod.os.environ, {"ONEIOS_SM8850_SOFT_THERMAL_OFF": ""}), \
-                 patch.object(mod, "stock_identity", return_value={"boot_id": "test"}), \
-                 patch.object(mod, "adb_shell", return_value="PREFLIGHT OK\\n") as root, \
-                 patch.object(mod, "run_monitor", side_effect=AssertionError("live call")):
-                with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                 patch.dict(mod.os.environ, {"ONEIOS_SM8850_SOFT_THERMAL_OFF": env_value}), \
+                 patch.object(mod.subprocess, "check_output", return_value=branch) as git, \
+                 patch.object(mod, "stock_identity", return_value={"boot_id": "test"}) as identity, \
+                 patch.object(mod, "adb_shell", return_value=result) as root, \
+                 patch.object(mod, "run_monitor", side_effect=AssertionError("live call")) as monitor, \
+                 contextlib.redirect_stdout(io.StringIO()) as stdout:
+                if error is None:
                     self.assertEqual(0, mod.main())
-            self.assertIn("NO_FRAMEWORK_STOP", stdout.getvalue())
-            self.assertIn("--framework-check run 180", root.call_args.args[2])
+                    self.assertIn("NO_FRAMEWORK_STOP_NO_DATA_CONSUMPTION", stdout.getvalue())
+                    self.assertIn("PHYSICAL_THERMAL_WATCHDOG_QUALIFICATION=NOT_VERIFIED",
+                                  stdout.getvalue())
+                else:
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        mod.main()
+                git.assert_called_once_with(
+                    ["git", "-C", str(ROOT.resolve()), "branch", "--show-current"],
+                    text=True, timeout=10)
+                identity.assert_called_once()
+                root.assert_called_once()
+                self.assertTrue(root.call_args.kwargs["root"])
+                monitor.assert_not_called()
+                return root.call_args.args[2]
+
+    def test_preflight_only_never_invokes_takeover_or_rearm(self):
+        command = self.preflight_fixture(
+            PERF_BRANCH, "", "PREFLIGHT OK\n" + GUARDED_MARKER + "\n")
+        self.assertIn("--framework-check run 180", command)
+        self.assertNotIn(OFF_TOKEN, command)
+
+    def test_performance_branch_discards_inherited_no_guard_token(self):
+        command = self.preflight_fixture(
+            PERF_BRANCH, OFF_TOKEN, "PREFLIGHT OK\n" + GUARDED_MARKER + "\n")
+        self.assertIn("--framework-check run 180", command)
+        self.assertNotIn(OFF_TOKEN, command)
+
+    def test_guarded_preflight_refuses_missing_75c_policy_marker(self):
+        command = self.preflight_fixture(
+            PERF_BRANCH, "", "PREFLIGHT OK\n", "guarded 75C policy marker missing")
+        self.assertIn("--framework-check run 180", command)
+        self.assertNotIn(OFF_TOKEN, command)
+
+    def test_performance_branch_refuses_unexpected_unguarded_ack(self):
+        command = self.preflight_fixture(
+            PERF_BRANCH, OFF_TOKEN,
+            "SM8850_SOFT_THERMAL_GUARD=OFF_NOT_SPAWNED\n"
+            "SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER\n",
+            "thermal profile mismatch")
+        self.assertNotIn(OFF_TOKEN, command)
 
     def test_full_bridges_rejects_300_before_device_access(self):
         mod = load("sm8850_tel_reject_300", TELEMETRY)
@@ -89,21 +133,23 @@ class BoundedTimingTest(unittest.TestCase):
         adb.assert_not_called()
 
     def test_explicit_off_mode_preflight_rejects_wrong_effective_mode(self):
-        mod = load("sm8850_tel_mode_check", TELEMETRY)
-        with tempfile.TemporaryDirectory() as td:
-            adb = Path(td) / "fake-adb"
-            adb.write_text("no executable needed")
-            argv = ["sm8850-600s-thermal-telemetry.py", "--repo", str(ROOT),
-                    "--adb", str(adb), "--preflight-only", "--duration", "180"]
-            with patch("sys.argv", argv), \
-                 patch.dict(mod.os.environ,
-                            {"ONEIOS_SM8850_SOFT_THERMAL_OFF": "I_ACCEPT_SOFT_GUARD_OFF_180S"}), \
-                 patch.object(mod, "stock_identity", return_value={"boot_id": "test"}), \
-                 patch.object(mod, "adb_shell", return_value="PREFLIGHT OK\n") as root:
-                with self.assertRaisesRegex(RuntimeError, "thermal profile mismatch"):
-                    mod.main()
-            self.assertIn("--framework-check run 180 I_ACCEPT_SOFT_GUARD_OFF_180S",
-                          root.call_args.args[2])
+        # Explicit legacy no-guard admission is NOT the guarded performance branch.
+        command = self.preflight_fixture(
+            LEGACY_BRANCH, OFF_TOKEN, "PREFLIGHT OK\n", "thermal profile mismatch")
+        self.assertIn("--framework-check run 180 " + OFF_TOKEN, command)
+
+    def test_explicit_legacy_off_mode_requires_cpu_cap_ack(self):
+        command = self.preflight_fixture(
+            LEGACY_BRANCH, OFF_TOKEN, "SM8850_SOFT_THERMAL_GUARD=OFF_NOT_SPAWNED\n",
+            "CPU cap profile mismatch")
+        self.assertIn("--framework-check run 180 " + OFF_TOKEN, command)
+
+    def test_explicit_legacy_off_mode_accepts_matching_acks(self):
+        command = self.preflight_fixture(
+            LEGACY_BRANCH, OFF_TOKEN,
+            "SM8850_SOFT_THERMAL_GUARD=OFF_NOT_SPAWNED\n"
+            "SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER\n")
+        self.assertIn("--framework-check run 180 " + OFF_TOKEN, command)
 
     def test_previous_boot_session_markers_are_never_current_boot_proof(self):
         mod = load("sm8850_tel_stale_test", TELEMETRY)
@@ -204,7 +250,7 @@ class StallReportTest(unittest.TestCase):
         self.assertEqual(3.0, result["max_display_copy_ms"])
         self.assertEqual(700, result["peak_guest_cpu_pct_window"])
         self.assertEqual(6000, result["peak_traps_per_s_window"])
-        self.assertEqual("touch-linked candidate",
+        self.assertEqual("all-gap candidate near touch; may include idle; NOT a proven stall",
                          result["candidate_windows"][0]["interpretation"])
 
     def test_idle_gap_not_labeled_as_proven_stall(self):
