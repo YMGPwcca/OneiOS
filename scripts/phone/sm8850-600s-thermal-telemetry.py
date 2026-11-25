@@ -186,15 +186,18 @@ def raw_metric_human(key: str, value: str) -> str:
 
 
 class Console:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, verbose: bool = False):
         self.path = path
+        self.verbose = verbose
         self.file = path.open("w", encoding="utf-8", buffering=1)
         self.lock = threading.Lock()
 
-    def say(self, line: str = "") -> None:
+    def say(self, line: str = "", *, visible: bool = True) -> None:
         with self.lock:
-            print(line, flush=True)
+            # Keep the complete original transcript regardless of terminal verbosity.
             self.file.write(line + "\n")
+            if visible or self.verbose:
+                print(line, flush=True)
 
     def close(self) -> None:
         self.file.close()
@@ -251,6 +254,36 @@ def state_of(meta: dict[str, str]) -> tuple[str, float | None, int | None]:
     return boot, uptime, deadline
 
 
+def snapshot_summary(record: dict) -> str:
+    """Small display-only view; no sensor inference, no change to sampling."""
+    meta, metrics = record["meta"], record["metrics"]
+    guard = meta.get("ctl/thermal.guard.heartbeat", "").split()
+    cap = meta.get("ctl/thermal.cap.heartbeat", "").split()
+    current = meta.get("boot_id")
+    active = bool(current and meta.get("ctl/boot") == current and meta.get("ctl/state") == "running")
+    guard_cpu = guard[8] if active and len(guard) == 14 and guard[:2] == ["v1", current] and guard[7] == "OK" else "NA"
+    cap_pct = cap[9] if active and len(cap) == 10 and cap[:2] == ["v1", current] and cap[7] == "OK" else "NA"
+    cpu0 = metrics.get("/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq", "NA")
+    cpu6 = metrics.get("/sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq", "NA")
+    return (f"SNAPSHOT={record['kind']} T={record['elapsed_from_framework_stop_s']}s "
+            f"guard_cpu_mC={guard_cpu} cap_pct={cap_pct} "
+            f"policy0_max_kHz={cpu0} policy6_max_kHz={cpu6} "
+            f"guest_ready={meta.get('guest_ready', 'unseen')} "
+            f"first_frame={meta.get('first_frame', 'unseen')} "
+            f"springboard_log={meta.get('springboard_log', 'unseen')} "
+            f"backboardd_log={meta.get('backboardd_log', 'unseen')} "
+            f"metrics={len(metrics)}")
+
+
+def guest_milestone_summary(*, ready: bool, first_frame: bool,
+                            springboard: bool, backboardd: bool) -> str:
+    # A posted buffer is not proof of an Apple logo, Lock Screen or usable UI.
+    # Even all four log markers require independent visual observation.
+    return ("GUEST_BOOT_MILESTONES=ALL_LOG_MARKERS_OBSERVED_VISUAL_UNVERIFIED"
+            if all((ready, first_frame, springboard, backboardd))
+            else "GUEST_BOOT_MILESTONES=INCOMPLETE_VISUAL_UNVERIFIED")
+
+
 def sample(adb: str, serial: str, kind: str, out: Path, console: Console,
            jsonl, expected_boot: str, expected_token: str | None,
            duration: int | None = None) -> dict | None:
@@ -285,12 +318,13 @@ def sample(adb: str, serial: str, kind: str, out: Path, console: Console,
               "meta": meta, "metrics": metrics}
     jsonl.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
     jsonl.flush()
-    console.say(f"\n===== SNAPSHOT {kind} UTC={ts} T={elapsed}S COUNT={len(metrics)} =====")
+    console.say(snapshot_summary(record))
+    console.say(f"\n===== SNAPSHOT {kind} UTC={ts} T={elapsed}S COUNT={len(metrics)} =====", visible=False)
     for k in sorted(meta):
-        console.say(f"META {k}={meta[k]}")
+        console.say(f"META {k}={meta[k]}", visible=False)
     for k in sorted(metrics):
-        console.say(f"READ {k} = {raw_metric_human(k, metrics[k])}")
-    console.say(f"===== END SNAPSHOT {kind} =====\n")
+        console.say(f"READ {k} = {raw_metric_human(k, metrics[k])}", visible=False)
+    console.say(f"===== END SNAPSHOT {kind} =====\n", visible=False)
     if kind in {"BASELINE_SPRINGBOARD_BACKBOARDD", "FINAL_NEAR_DEADLINE"}:
         (out / ("baseline.json" if kind.startswith("BASELINE") else "final.json")).write_text(
             json.dumps(record, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"
@@ -330,7 +364,7 @@ def compare(a: dict | None, b: dict | None, console: Console, out: Path) -> None
     text = "\n".join(lines) + "\n"
     (out / "comparison.txt").write_text(text, encoding="utf-8")
     for line in lines:
-        console.say(line)
+        console.say(line, visible=not (line.startswith(("/sys/", "/proc/"))))
 
 
 def stream_subprocess(proc: subprocess.Popen, console: Console, logfile: Path, prefix: str) -> None:
@@ -338,7 +372,14 @@ def stream_subprocess(proc: subprocess.Popen, console: Console, logfile: Path, p
     with logfile.open("w", encoding="utf-8", buffering=1) as f:
         for line in proc.stdout:
             f.write(line)
-            console.say(prefix + line.rstrip("\n"))
+            message = line.rstrip("\n")
+            visible = message.startswith((
+                "WARNING=", "BLOCKED", "ERROR", "PREFLIGHT", "FULL_TAKEOVER_",
+                "IOS_", "ANDROID_", "BOOT_REASON=", "SM8850_FULL_BRIDGES=",
+                "FRAMEWORK_", "RECOVERY=", "PHYSICAL_KEYS=", "LIVE_", "KERNEL_",
+                "EVIDENCE=", "LOG=", "EXIT=", "Local evidence:",
+            ))
+            console.say(prefix + message, visible=visible)
 
 
 def run_existing(repo: Path, command: list[str], console: Console, outfile: Path,
@@ -451,6 +492,8 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
         last_uptime = None
         seen_springboard = False
         seen_backboardd = False
+        seen_guest_ready = False
+        seen_first_frame = False
         seen_kgsl_3d = False
         seen_full_bridges = False
         last_error_report_at = 0.0
@@ -497,6 +540,9 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
             if token and observed_token != token:
                 console.say("SESSION_MISMATCH=CONTROL_TOKEN_CHANGED; STOPPING_TELEMETRY")
                 break
+            if token and meta.get("ctl/boot") == boot and meta.get("ctl/state") == "running":
+                seen_guest_ready |= meta.get("guest_ready") == "1"
+                seen_first_frame |= meta.get("first_frame") == "1"
             if token and meta.get("full_bridges_runtime_log") == "1":
                 if not seen_full_bridges:
                     console.say(f"SM8850_FULL_BRIDGES=ACTIVE_RUNTIME_LOG token={token} boot={boot}")
@@ -554,8 +600,11 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
 
         console.say(f"===== MONITOR FINISHED POST_REBOOT={post_reboot} =====")
         compare(baseline, final, console, out)
-        if baseline is None:
-            console.say(f"SPRINGBOARD_LOG_SEEN={seen_springboard} BACKBOARDD_LOG_SEEN={seen_backboardd}")
+        console.say(f"SPRINGBOARD_LOG_SEEN={seen_springboard} BACKBOARDD_LOG_SEEN={seen_backboardd} "
+                    f"GUEST_READY_MARKER_SEEN={seen_guest_ready} FIRST_FRAME_MARKER_SEEN={seen_first_frame}")
+        console.say(guest_milestone_summary(ready=seen_guest_ready, first_frame=seen_first_frame,
+                                           springboard=seen_springboard, backboardd=seen_backboardd))
+        console.say("VISUAL_BOOT_ACCEPTANCE=NOT_VERIFIED_OPERATOR_OBSERVATION_REQUIRED")
         if final is None:
             console.say("FINAL_NEAR_DEADLINE=NOT_CAPTURED; CHECK_LOGS_FOR_EARLY_RETURN_OR_USB_LOSS")
         console.say(f"GPU_3D_BACKEND_LOG_SEEN={seen_kgsl_3d}; NO_2D_FALLBACK_ENFORCED_BY_ONEOS")
@@ -589,6 +638,8 @@ def main() -> int:
     ap.add_argument("--cpu-profile", choices=("default", "prime-first"), default="default",
                     help="experimental topology-aware placement; no thermal or recovery change")
     ap.add_argument("--no-rearm", action="store_true", help="skip rearm; preflight must still admit a fresh Data clone")
+    ap.add_argument("--verbose", action="store_true",
+                    help="echo all snapshot and wrapper lines to terminal; full files are always retained")
     ap.add_argument("--self-test", action="store_true", help="parse/unit checks only, never connects to a phone")
     ap.add_argument("--preflight-only", action="store_true",
                     help="read-only exact-duration root admission; never rearm or stop Framework")
@@ -608,6 +659,34 @@ def main() -> int:
             env = {key: "I_ACCEPT_SOFT_GUARD_OFF_180S"}
             configure_performance_thermal_profile(branch, duration, env)
             assert (key not in env) == (branch == "feat/sm8850-xnuhost-perf-p0" and duration == 180)
+        import contextlib
+        import io
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            for verbose in (False, True):
+                transcript = Path(directory) / "console.txt"
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    c = Console(transcript, verbose=verbose)
+                    try:
+                        c.say("summary")
+                        c.say("raw detail", visible=False)
+                    finally:
+                        c.close()
+                assert transcript.read_text() == "summary\nraw detail\n"
+                assert stdout.getvalue() == ("summary\nraw detail\n" if verbose else "summary\n")
+        assert "INCOMPLETE" in guest_milestone_summary(ready=False, first_frame=True, springboard=False, backboardd=False)
+        assert "VISUAL_UNVERIFIED" in guest_milestone_summary(ready=True, first_frame=True, springboard=True, backboardd=True)
+        record = {"kind": "FIXTURE", "elapsed_from_framework_stop_s": 30,
+                  "meta": {"boot_id": "a", "ctl/boot": "a", "ctl/state": "running",
+                           "ctl/thermal.guard.heartbeat": "v1 a g 12 34 5 6 OK 41300 39000 39000 296 321 339",
+                           "ctl/thermal.cap.heartbeat": "v1 a g 13 35 5 6 OK 4 18",
+                           "first_frame": "1"},
+                  "metrics": {"/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq": "537600"}}
+        summary = snapshot_summary(record)
+        assert "guard_cpu_mC=41300 cap_pct=18" in summary and "policy0_max_kHz=537600" in summary
+        record["meta"]["ctl/boot"] = "previous"
+        assert "guard_cpu_mC=NA cap_pct=NA" in snapshot_summary(record)
         print("SELF_TEST=PASS NO_DEVICE_ACCESS")
         return 0
     if not args.preflight_only and not args.i_accept_10_minute_legacy_watchdog_risk:
@@ -673,7 +752,7 @@ def main() -> int:
         return 0
     out = repo / "out/sm8850/thermal-bounded" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
     out.mkdir(parents=True, exist_ok=False, mode=0o700)
-    console = Console(out / "console.txt")
+    console = Console(out / "console.txt", verbose=args.verbose)
     try:
         console.say(f"ONEIOS_BOUNDED_TELEMETRY=START duration={args.duration}")
         console.say(f"OUTPUT={out}")
@@ -684,7 +763,7 @@ def main() -> int:
         console.say(f"ONEIOS_BOUNDED_TELEMETRY=ERROR {type(exc).__name__}: {exc}")
         return 2
     finally:
-        console.say(f"COPY_ALL_OUTPUT_FROM={out/'console.txt'}")
+        console.say(f"FULL_CONSOLE_LOG={out/'console.txt'}")
         console.close()
 
 
