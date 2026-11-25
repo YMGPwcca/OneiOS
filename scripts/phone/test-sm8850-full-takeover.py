@@ -257,7 +257,8 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         stage = STAGER.read_text()
         host = TAKEOVER_SOURCE.read_text()
         wrapper = WRAPPER.read_text()
-        self.assertIn('probe|prepare|rearm-data|upgrade-runtime)', stage)
+        self.assertIn('probe|prepare|rearm-data|upgrade-runtime|upgrade-kernel)', stage)
+        self.assertIn('if [ "$operation" = upgrade-kernel ]; then', stage)
         self.assertIn('if [ "$operation" = rearm-data ]; then', stage)
         # A REAL guest may write its one-shot clone; that must not make
         # it impossible to create a NEW isolated clone from the original
