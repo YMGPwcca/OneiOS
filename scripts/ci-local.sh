@@ -117,6 +117,7 @@ python3 scripts/phone/bench-sm8850-task-placement.py --self-test
 python3 scripts/phone/test-sm8850-ios-interactive-perf.py
 python3 scripts/phone/test-sm8850-perf-phase-a.py
 python3 app/tests/test_sm8850_perf_profile.py
+python3 app/tests/test_sm8850_thermal75.py -v
 kernel/tests/host.sh
 # Also exercise driver-side PCM haptics, camera and userland host tests.
 # The runtime suite already covers runtime/; do not run its tests twice.

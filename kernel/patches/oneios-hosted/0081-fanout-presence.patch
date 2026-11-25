@@ -25,7 +25,11 @@ diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
 diff --git a/osfmk/arm64/hosted/hosted_pmap.h b/osfmk/arm64/hosted/hosted_pmap.h
 --- a/osfmk/arm64/hosted/hosted_pmap.h
 +++ b/osfmk/arm64/hosted/hosted_pmap.h
-@@ -113,10 +113,49 @@
+@@ -109,14 +109,53 @@
+ 	__sync_lock_release(&pmap->hosted_tlb_word);
+ 	hosted_irq_restore(old);
+ }
+ 
 -/* 0045: the nested region's 32 MiB blocks a user pmap filled pages in (pmap->hosted_nested_seen). Its TLB word held. */
 -#define HOSTED_NESTED_BLOCK_SHIFT 25
 -#define HOSTED_NESTED_BITS        512

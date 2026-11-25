@@ -1,5 +1,5 @@
 #!/bin/bash
-# Host tests of kernel/ that need no toolchain and no network: script syntax, the pin tables, the patch series
+# Host tests of kernel/ that need only a native C compiler and no network: script syntax, pin tables, patch series
 # files, the profile and the build-record writer. Run by CI and by hand: kernel/tests/host.sh
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -33,6 +33,9 @@ for table in "$PINS_SOURCES" "$PINS_TOOLCHAIN"; do
 done
 [[ $XNU_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "XNU_COMMIT"
 ok "pins are full commits"
+
+python3 kernel/tests/test-fanout-presence.py || fail "0081 conservative presence model"
+ok "0081 conservative presence model"
 
 # The series and profile checks are `oneios-tool kernel series-check` (kernel/tests/series-check.py until 2026-11-13),
 # and the build record writer is `oneios-tool kernel build-record` (kernel/build-record.py until then). Both run
