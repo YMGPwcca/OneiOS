@@ -85,11 +85,9 @@ static void wake(uint32_t *word)
 static inline uint64_t counter(void) { uint64_t v; __asm__ volatile("isb\n mrs %0, cntvct_el0" : "=r"(v) : : "memory"); return v; }
 
 // stub_abi.h, the hand-off: store the word, then wake the other side only if it said it sleeps.
-static void post(uint32_t *word, uint32_t *sleeping)
+static void post(uint32_t *word, uint32_t *sleeping, uint32_t event)
 {
-  __atomic_store_n(word, 1, __ATOMIC_RELEASE);
-  __atomic_thread_fence(__ATOMIC_SEQ_CST);
-  if (__atomic_load_n(sleeping, __ATOMIC_RELAXED)) sys(NR_futex, word, FUTEX_WAKE, 0x7fffffff);
+  if (xs_host_event_publish(word, event, sleeping)) sys(NR_futex, word, FUTEX_WAKE, 0x7fffffff);
 }
 
 // Spins up to `ticks` for *word to become non-zero, then sleeps for it. Returns 1 if it slept.
@@ -194,14 +192,14 @@ void xs_handler(int signo, struct k_siginfo *info, struct k_ucontext *uc)
 
   __atomic_store_n(&tp->to_task, 0, __ATOMIC_RELEASE);
   if (trap->kind == XH_TRAP_BOOT) wake(&tp->to_host);      // thread_create waits for this one in a timed futex
-  else post(&tp->to_host, &tp->host_sleeping);
+  else post(&tp->to_host, &tp->host_sleeping, XS_HOST_TRAPPED);
   tp->slept = await(&tp->to_task, &tp->task_sleeping, tp->spin_ticks);
   tp->t_woken = counter();
   if (tp->command == XS_EXIT) sys(NR_exit, 0);
 
   // Maps, and unmaps given while none of the task's threads ran, that the kernel gave for this task since its last
   // order (task.c, map-defer): carried out here, in their order, before the thread runs again, while xnuhost holds the
-  // task's order lock; then to_host is woken for them.
+  // task's order lock; publish the completed operations on to_host before returning to guest code.
   uint32_t nops = tp->nops;
   if (nops) {
     struct xs_op *ops = (struct xs_op *)((uint8_t *)tp + XS_OPS_OFF);
@@ -211,9 +209,7 @@ void xs_handler(int signo, struct k_siginfo *info, struct k_ucontext *uc)
       ops[i].result = r > 0 ? 0 : r;
     }
     tp->nops = 0;
-    __atomic_store_n(&tp->ops_done, 1, __ATOMIC_RELEASE);
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    if (__atomic_load_n(&tp->host_sleeping, __ATOMIC_RELAXED)) sys(NR_futex, &tp->to_host, FUTEX_WAKE, 0x7fffffff);
+    post(&tp->to_host, &tp->host_sleeping, XS_HOST_MAP_ACK);
   }
 
   if (tp->pac_set) {

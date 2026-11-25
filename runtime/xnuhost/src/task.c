@@ -1001,7 +1001,8 @@ void xh_tasks_dump(void)
     if (!T.threads[s].used) continue;
     task *t = &T.tasks[T.threads[s].task];
     struct xs_trap_page *tp = slot_page(s);
-    bool running = __atomic_load_n(&tp->to_task, __ATOMIC_ACQUIRE) || !__atomic_load_n(&tp->to_host, __ATOMIC_ACQUIRE);
+    bool running = __atomic_load_n(&tp->to_task, __ATOMIC_ACQUIRE) ||
+                   xs_host_event_read(&tp->to_host) != XS_HOST_TRAPPED;
     LOGI("thread %u of task pid %d (tid %u): %s; last trap kind %u far 0x%llx insn 0x%x; pc 0x%llx lr 0x%llx sp 0x%llx x16 0x%llx x0 0x%llx x1 0x%llx x2 0x%llx", s, t->pid,
          tp->tid, t->dead ? "task gone" : running ? "in user code since the state shown" : "stopped in the kernel's hands", tp->trap.kind,
          (unsigned long long)tp->trap.far, tp->trap.insn, (unsigned long long)tp->state.pc, (unsigned long long)tp->state.x[30],
@@ -1117,7 +1118,6 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
       // unmaps_out before npending goes to 0: a release that reads npending 0 from here reads unmaps_out set.
       if (t->nunmaps) { __atomic_store_n(&t->unmaps_out, true, __ATOMIC_SEQ_CST); t->nunmaps = 0; }
       __atomic_store_n(&t->npending, 0, __ATOMIC_SEQ_CST);
-      tp->ops_done = 0;
       tp->nops = nops;
       draining = true;
     }
@@ -1129,7 +1129,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   tp->state = *state;
   tp->command = XS_RUN;
   tp->spin_ticks = T.spin_task;
-  __atomic_store_n(&tp->to_host, 0, __ATOMIC_RELEASE);
+  __atomic_store_n(&tp->to_host, XS_HOST_PENDING, __ATOMIC_RELEASE);
   uint64_t released = xh_counter();
   th->released_at = released;
   // stub_abi.h: store, then wake only a sleeper.
@@ -1140,7 +1140,11 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   uint64_t kicked_at = 0;
   struct timespec step = { 0, 200 * 1000 * 1000 };
   for (;;) {
-    if (draining && __atomic_load_n(&tp->ops_done, __ATOMIC_ACQUIRE)) {
+    // Keep this exact acquire snapshot for FUTEX_WAIT below. The stub
+    // publishes completed ops on the futex word itself, so an ACK arriving
+    // after this load but before enqueue makes the wait return EAGAIN.
+    const uint32_t event = xs_host_event_read(&tp->to_host);
+    if (draining && xs_host_event_has_ack(event)) {
       uint64_t ack = T.profile_tasks ? xh_counter() : 0;
       struct xs_op *ops = (struct xs_op *)((uint8_t *)tp + XS_OPS_OFF);
       for (unsigned i = 0; i < nops; i++) log_map_failure(t, &ops[i], "in the released thread");
@@ -1150,7 +1154,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
       xh_hist_add(&p->h[XP_DRAIN], xh_ticks_ns(xh_counter() - released));
       if (T.profile_tasks) profile_timing(t, XH_TT_RELEASE_ACK, true, released, ack);
     }
-    if (!draining && __atomic_load_n(&tp->to_host, __ATOMIC_ACQUIRE)) break;
+    if (!draining && event == XS_HOST_TRAPPED) break;
     if (t->dead) {
       if (draining) {
         if (T.profile_tasks) profile_timing(t, XH_TT_RELEASE_ACK, false, 0, 0);
@@ -1182,7 +1186,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
     }
     p->host_sleeps++;
     profile_event(t, XH_TP_HOST_FUTEX_WAIT);
-    long wait_rc = futex(&tp->to_host, FUTEX_WAIT, 0, &step);
+    long wait_rc = futex(&tp->to_host, FUTEX_WAIT, event, &step);
     if (T.profile_tasks) xh_detail_futex(&v->detail, false, wait_rc, errno);
   }
   if (sleeping) __atomic_store_n(&tp->host_sleeping, 0, __ATOMIC_RELAXED);

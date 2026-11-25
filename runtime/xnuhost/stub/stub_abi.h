@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include "xnuhost/hostcall.h"
+#include "stub_event.h"
 
 // The region: 1 GiB at the top of what iOS may not use (xh_info.user_va_limit is its base).
 #define XS_REGION_SIZE    0x40000000ull
@@ -48,7 +49,7 @@ struct xs_op {
 // always sees the other's store.
 struct xs_trap_page {
   uint32_t to_task;                    // futex: xnuhost sets 1 to release the thread
-  uint32_t to_host;                    // futex: the stub sets 1 when the thread has trapped (or its maps are done)
+  uint32_t to_host;                    // futex: enum xs_host_event (ACK is not a trap)
   uint32_t tid;                        // Linux thread id; the kernel zeroes it when the thread exits
   uint32_t command;                    // XS_RUN or XS_EXIT, read by the stub when released
   uint32_t pac_set, pac_enabled;       // apply PR_PAC_SET_ENABLED_KEYS before running
@@ -57,7 +58,7 @@ struct xs_trap_page {
   uint32_t task_sleeping;              // the stub waits for to_task in a futex
   uint32_t slept;                      // the stub: its last wait for a release ended in a futex sleep
   uint32_t nops;                       // xnuhost: maps the released thread carries out before it runs (XS_OPS_OFF)
-  uint32_t ops_done;                   // the stub: set when they are done (results in each op), then to_host is woken
+  uint32_t reserved_ops_done;          // preserve slot layout; ACK is now published on to_host
   uint32_t reserved2;
   uint64_t spin_ticks;                 // xnuhost: counter ticks the stub spins for its release before it sleeps
   uint64_t t_enter, t_woken;           // the stub: CNTVCT_EL0 when its handler began, when it saw its release

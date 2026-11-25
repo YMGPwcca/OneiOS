@@ -145,6 +145,11 @@ $(H)/test_task_order_diag: tests/test_task_order_diag.c src/task_order_diag.h st
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_task_order_diag.c -o $@
 
+# Real process-shared futex regression for the stub ACK/trap protocol.
+$(H)/test_stub_event: tests/test_stub_event.c stub/stub_event.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O2 -g $(WARN) -Istub -fsanitize=undefined tests/test_stub_event.c -o $@
+
 $(H)/test_stub_copy: tests/test_stub_copy.c stub/stub_copy.h
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O2 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_stub_copy.c -o $@
@@ -265,8 +270,9 @@ parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
 
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
+test: $(H)/test_stub_event $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
 	$(H)/test_sm8850_stage_admission
+	$(H)/test_stub_event
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_stub_copy
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_task_order_diag
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_task_profile
