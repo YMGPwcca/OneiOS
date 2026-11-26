@@ -484,3 +484,21 @@ frequency votes. See [OneOS adaptive thermal design](../app/docs/SM8850_ADAPTIVE
 No new device test or recovery audit is requested.
 No stage, rearm or live device operation is authorized by this receipt.
 Thermal redesign admission block remains intact.
+
+
+### G24.1 native owned-group actuator (source candidate; 2026-11-26)
+
+OneOS `7fa70488c1681679386d80c6cc6359fd6d5b5f6a` implements native private v1 CPU quota
+and v2 freezer primitives (`switcher/native/sm8850_owned_groups.{c,h}`).
+Use creator-pinned token/group identities and FD-scoped I/O; no shared
+frequency writes. Bounded frozen-event polling, fault latch, explicit
+verified thaw, no automatic thaw on close; fixture regressions cover
+quota 10–100%, drift/replaced groups, nested group refusal, freeze and
+thaw ACK/timeout. The production code is not a fixture-only model, but
+is not integrated into the phone lifecycle and cannot prove GPU/IO drain.
+Local compile and new fixture tests pending; no device access or
+existing CI repeat. See [adaptive design](../app/docs/SM8850_ADAPTIVE_THERMAL.md).
+Independent reversible frequency provider, session ownership/membership,
+sensor supervisor and GPU quiescence integration remain blockers.
+The existing legacy admission block remains intact. No kernel/module,
+watchdog qualification or physical benchmark is requested.
