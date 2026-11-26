@@ -461,5 +461,17 @@ Move empty-queue check before the slot event; preserve <=128 bound,
 release on partial abort, existing timing and completion contracts.
 Add native mock VirtIO replay of all 30 gestures, including observed
 backlog=1 after slot and refusal of actual pending data at next start.
-Local native CI remains pending; no live device operation. Thermal
-redesign admission block from the current status above remains intact.
+Local native CI completed on WSL (operator log, 2026-11-26) at
+OneiOS `143361dbc1c3f3e332df92d57cadc798e2080377`, pinned OneOS
+`42478a784a0e26df88951066a1f36d3ab0ae1502`.
+`make -C runtime/xnuhost -j8 test` completed in 26.160s, XNUHost
+19,742 checks / 0 failed, SM8850 native admission 22 / 0, GPU policy
+166 / 0, task profile 67 / 0, GPU fence 29 / 0, stub copy 11,051 / 0,
+display mode and image-set suites passed. Android ARM64 runtime built;
+QEMU synthetic test kernel reported all passed, including task profiler.
+Real udmabuf imports/leak scenarios and unsupported QEMU process_vm cases
+skipped, not certified. The new mock VirtIO gesture replay is in the
+passing XNUHost suite; no physical gesture replay has been performed.
+The new Python admission/model regressions still require a local run.
+No stage, rearm or live device operation is authorized by this receipt.
+Thermal redesign admission block remains intact.
