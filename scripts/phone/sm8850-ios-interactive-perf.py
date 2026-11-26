@@ -101,6 +101,25 @@ def post_lock_drain_summary(windows):
     }
 
 
+def own_presence_summary(host):
+    """0082 delta windows; missing telemetry is unknown, not zero skips."""
+    pattern = (r"oneios-own-presence: enabled=(\d+) history=(\d+) "
+               r"requests=(\d+) skipped=(\d+) issued=(\d+)")
+    rows = [dict(zip(("enabled", "history", "requests", "skipped", "issued"), map(int, m)))
+            for m in re.findall(pattern, host)]
+    valid = [r for r in rows if r["enabled"] == 1 and r["history"] == 1
+             and r["requests"] == r["skipped"] + r["issued"]]
+    requests = sum(r["requests"] for r in valid)
+    skipped = sum(r["skipped"] for r in valid)
+    return {"windows": rows, "valid_windows": len(valid),
+            "invalid_windows": len(rows) - len(valid),
+            "requests": requests if valid else None,
+            "skipped": skipped if valid else None,
+            "issued": sum(r["issued"] for r in valid) if valid else None,
+            "skip_percent": 100 * skipped / requests if requests else None,
+            "scope": "observed delta windows only; not whole-session or correctness proof"}
+
+
 def analyze_logs(host, display):
     """Return descriptive evidence only: no inferred root cause or fake FPS."""
     windows = []
@@ -150,6 +169,7 @@ def analyze_logs(host, display):
         "frame_trace": trace_windows(host, display, windows),
         "active_post_summary": active_post_summary(windows),
         "cpu_placement": placement_evidence(host),
+        "own_presence": own_presence_summary(host),
         "touch": {"next_frame_latency_ms": host_gaps,
                   "max_next_frame_ms": max(host_gaps, default=None),
                   "no_subsequent_guest_frame": no_frame},
@@ -255,6 +275,10 @@ def _show(report):
                 "max_window_active_p95_bucket_bound_us", "max_window_active_p99_bucket_bound_us",
                 "max_active_gap_us"):
         print("ACTIVE_POST_" + key.upper() + "=" + str(summary[key]))
+    own = report["own_presence"]
+    print(f"OWN_PRESENCE_WINDOWS={own['valid_windows']} INVALID={own['invalid_windows']}")
+    print(f"OWN_PRESENCE_REQUESTS={own['requests']} SKIPPED={own['skipped']} "
+          f"ISSUED={own['issued']} SKIP_PERCENT={own['skip_percent']}")
     print("SETTINGS_ICON_COLD_WARM_LATENCY=MANUAL_OBSERVATION_REQUIRED")
 
 

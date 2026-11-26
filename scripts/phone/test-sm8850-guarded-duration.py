@@ -46,13 +46,14 @@ class BoundedTimingTest(unittest.TestCase):
                                capture_output=True, text=True, timeout=10)
             self.assertEqual(2, p.returncode)
 
-    def preflight_fixture(self, branch, env_value, result, error=None):
+    def preflight_fixture(self, branch, env_value, result, error=None, own_presence="off"):
         mod = load("sm8850_tel_preflight_test", TELEMETRY)
         with tempfile.TemporaryDirectory() as td:
             adb = Path(td) / "fake-adb"
             adb.write_text("# no executable needed for isolated mocks")
             argv = ["sm8850-600s-thermal-telemetry.py", "--repo", str(ROOT),
                     "--adb", str(adb), "--preflight-only", "--duration", "180"]
+            argv += ["--own-presence", own_presence]
             with patch("sys.argv", argv), \
                  patch.dict(mod.os.environ, {"ONEIOS_SM8850_SOFT_THERMAL_OFF": env_value}), \
                  patch.object(mod.subprocess, "check_output", return_value=branch) as git, \
@@ -76,6 +77,20 @@ class BoundedTimingTest(unittest.TestCase):
                 self.assertTrue(root.call_args.kwargs["root"])
                 monitor.assert_not_called()
                 return root.call_args.args[2]
+
+    def test_own_presence_preflight_requires_exact_ack(self):
+        base = "PREFLIGHT OK\n" + GUARDED_MARKER + "\n"
+        cmd = self.preflight_fixture(PERF_BRANCH, "", base + "SM8850_OWN_PRESENCE=1\n",
+                                     own_presence="on")
+        self.assertTrue(cmd.endswith(" own-presence-1"))
+        for reply in (base, base + "SM8850_OWN_PRESENCE=0\n",
+                      base + "SM8850_OWN_PRESENCE=1\nSM8850_OWN_PRESENCE=1\n"):
+            self.preflight_fixture(PERF_BRANCH, "", reply, "own-presence mismatch",
+                                   own_presence="on")
+        cmd = self.preflight_fixture(PERF_BRANCH, "", base + "SM8850_OWN_PRESENCE=0\n")
+        self.assertNotIn("own-presence-1", cmd)
+        self.preflight_fixture(PERF_BRANCH, "", base + "SM8850_OWN_PRESENCE=1\n",
+                               "own-presence mismatch")
 
     def test_preflight_only_never_invokes_takeover_or_rearm(self):
         command = self.preflight_fixture(
