@@ -425,3 +425,41 @@ G2.2a changes only the embedded stub/host event handshake. Previously ops_done w
 
 
 **G23.1 automated interaction candidate (2026-11-26).** Add explicit `--interaction-profile swipe-60s` (default off) through telemetry, full wrapper, host launch and OneOS root-owned session metadata; guarded 180s performance branch and frame/frame-task only. Staged binary capability required before launch; exact requested/preflight acknowledgement and detached positional token, no arbitrary device file input. XNUHost built-in input script waits for current in-memory guest readiness (content or kernel ready call, not black timeout) and VirtIO driver, then 10s warm-up; 30 deterministic center-region left/right/up/down gestures, 320ms movement plus 1680ms rest, real advertised native touchscreen axes. Bounded 65s actual execution, minimum 10s deadline reserve, skips late readiness and aborts incomplete sequence, no key injection or app/icon coordinates; drains native touch in automation mode to avoid competing touch slots, separate side-key and recovery readers unchanged. Records start/begin/end/complete/skip/abort, monotonic timestamps and root deadline; offline analyzer requires complete ordered 30-gesture receipt, does NOT prove screen unlock, app scrolling or physical FPS. Keep 40% hybrid CFS, guard, emergency return, exact 180s deadline, GPU3D and 0082 default OFF. Source candidate only; WSL offline regression and full KGSL Android runtime build/rollback-backed stage upgrade pending. No Android kernel/module/guest kernel rebuild, phone mutation, rearm or live launch in this commit. App launch/mixed profile deferred until reliable guest UI state evidence exists.
+
+
+### G23.1 prime-first physical receipt and first-frame input gate fix (2026-11-26)
+
+Historical **retired** hybrid frequency-40/CFS policy, not a new admission.
+Operator confirms zero physical interaction. Exact launch
+`ee7c626acb814d92901a8672dc8169ef`, boot
+`51ca8a7b-7fe0-4075-be5f-6a9029b8d392`; archive SHA verified locally at
+`out/sm8850/g231-prime-first-analysis.DEJJHg`. Runtime PRIME_FIRST_ACTIVE,
+axes 0..4095, ready markers/full bridges/KGSL observed. Stop 2309, deadline
+2489, actual return record framework-deadline at 2490, new Android boot
+59c28c61-a29a-4bc6-bdbb-4f1315976212, system_server 9737. This is the
+historical timer return, not thermal-return authorization or independent
+recovery qualification. Periodic CPU snapshots peak 54.4 C, final 44.8 C;
+not whole-session extrema. CFS 100% by T43.89, nr_throttled 1. No new
+thermal policy validation.
+
+Automation **FAIL**: prepared, started at mono/boot 2365801, deadline
+2489000, immediately aborted completed=0 backlog=1. Receipt incomplete,
+0 begins/ends; no touch latency measurement or evidence of UI response.
+Treat as idle reference, not interactive prime-first vs default A/B.
+35 display windows, peak posts/s 20.38, median estimated active cadence
+6.58, 500/522 gaps over 60Hz budget (95.785%), 511/522 over 120Hz (97.893%),
+max 244.346 ms. Lock/copy/unlock maxima 35.8/31.72/4.02 ms; render-fence
+max 13.285 ms, other-fence max 45.538 ms; peak host traps 63286/s, 15 ABI
+warnings. No task-affinity sample, 156 role samples; profile marker does
+not prove physical core residency. No causal performance or physical FPS
+claim.
+
+Source root cause: reserved swipe expands first to ABS_MT_SLOT, then
+ABS_MT_TRACKING_ID; VirtIO queues the slot until SYN_REPORT. Old gate
+tested zero backlog at the second event and rejected its own prefix.
+Move empty-queue check before the slot event; preserve <=128 bound,
+release on partial abort, existing timing and completion contracts.
+Add native mock VirtIO replay of all 30 gestures, including observed
+backlog=1 after slot and refusal of actual pending data at next start.
+Local native CI remains pending; no live device operation. Thermal
+redesign admission block from the current status above remains intact.

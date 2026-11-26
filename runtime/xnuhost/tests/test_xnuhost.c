@@ -1759,6 +1759,57 @@ static void test_input_bench_plan(void)
   CHECK(xh_virtio_input_get_abs(d.dev, 0x35, &lo, &hi) && lo == 10 && hi == 1450);
 }
 
+// Exercise the production bench gate with the actual report-boundary input
+// transport, not just the plan parser. Replay without real sleeps or hardware.
+static void test_input_bench_backlog(void)
+{
+  xh_input_step *steps = NULL;
+  unsigned count = 0;
+  CHECK(xh_input_bench_plan(0, 4095, 0, 4095, &steps, &count) == 0);
+  if (!steps || count < 2) { free(steps); return; }
+  driver d = { .dev = xh_virtio_input_create(0, 45) };
+  CHECK(d.dev && driver_init(&d, 0, 2, GUEST_PA + 0x10000));
+  for (unsigned i = 0; i < 8; i++)
+    driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0x50000 + i * 8, 8, 1 } }, 1, false);
+  W(&d, 0x50, 0);
+  CHECK(xh_input_bench_step_allowed(&steps[0], 0));
+  CHECK(!xh_input_bench_step_allowed(&steps[0], 1)); // genuinely pending earlier frame
+  CHECK(!xh_input_bench_step_allowed(&steps[1], 129));
+  xh_input_source src;
+  xh_input_source_init(&src, d.dev, "bench-test", true);
+  unsigned downs = 0, ups = 0, reports = 0;
+  int64_t now = 100000000000;
+  for (unsigned i = 0; i < count; i++) {
+    const xh_input_step *step = &steps[i];
+    unsigned pending = xh_virtio_input_backlog(d.dev);
+    if (i == 1) CHECK(pending == 1); // exact physical G23.1 false-abort reproduction
+    if (!xh_input_bench_step_allowed(step, pending)) {
+      CHECK(false);
+      break;
+    }
+    if (step->kind == XH_STEP_WAIT) {
+      now += (int64_t)step->value * 1000000;
+      continue;
+    }
+    const xh_input_ev ev = { now, step->type, step->code, step->value };
+    xh_input_feed(&src, &ev, 1, now, 1000000000, 19200000);
+    if (step->type == 0 && step->code == 0) {
+      test_ev got[32];
+      unsigned n = input_take(&d, got, 32);
+      CHECK(n > 0 && got[n-1].type == 0);
+      CHECK(xh_virtio_input_backlog(d.dev) == 0);
+      reports++;
+      for (unsigned j = 0; j < n; j++)
+        if (got[j].type == 3 && got[j].code == 0x39) {
+          if (got[j].value >= 0) downs++; else ups++;
+        }
+    }
+  }
+  CHECK(downs == 30 && ups == 30 && reports == 30 * 22);
+  CHECK(xh_virtio_input_backlog(d.dev) == 0);
+  free(steps);
+}
+
 // ---- the seccomp filter, run as the kernel would ------------------------------------------------
 static uint32_t bpf_run(const struct xs_filter_insn *f, unsigned n, uint32_t nr, uint64_t ip, const uint64_t args[6], uint32_t arch)
 {
@@ -3071,6 +3122,7 @@ int main(void)
   test_pen();
   test_input_script();
   test_input_bench_plan();
+  test_input_bench_backlog();
   test_filter();
   test_fault_access();
   test_queue_join();

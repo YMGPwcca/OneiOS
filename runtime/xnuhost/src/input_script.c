@@ -221,6 +221,22 @@ bool xh_input_bench_can_start(uint64_t now_boot_ms, uint64_t deadline_boot_ms)
          deadline_boot_ms - now_boot_ms >= XH_INTERACTION_MAX_MS + XH_INTERACTION_RESERVE_MS;
 }
 
+// A swipe begins with ABS_MT_SLOT, not TRACKING_ID. The slot is itself
+// buffered until SYN_REPORT. Checking for zero backlog after it is sent
+// rejects every healthy first touch frame (observed backlog=1).
+static bool bench_gesture_start(const xh_input_step *s)
+{
+  return s->kind == XH_STEP_EVENT && s->type == EV_ABS_ &&
+         s->code == ABS_MT_SLOT_ && s->value == 0;
+}
+
+bool xh_input_bench_step_allowed(const xh_input_step *s, unsigned backlog)
+{
+  // Keep the bounded backlog guard, but require empty only BEFORE
+  // emitting a new gesture's first event, never within its first frame.
+  return s && backlog <= 128 && (!bench_gesture_start(s) || backlog == 0);
+}
+
 static uint64_t boot_ms(void)
 {
 #ifdef CLOCK_BOOTTIME
@@ -319,21 +335,21 @@ static void run_bench(void)
        (unsigned long long)mono_ms(), (unsigned long long)start,
        (unsigned long long)bench_deadline_ms, XH_INTERACTION_GESTURES);
   for (unsigned i = 0; i < nsteps; i++) {
-    if (!bench_alive(limit) || !xh_virtio_ready(target) || xh_virtio_input_backlog(target) > 128) break;
     const xh_input_step *s = &steps[i];
+    if (!bench_alive(limit) || !xh_virtio_ready(target) ||
+        !xh_input_bench_step_allowed(s, xh_virtio_input_backlog(target))) break;
     if (s->kind == XH_STEP_WAIT) {
       if (!bench_wait(boot_ms() + (uint64_t)s->value, limit)) break;
     } else if (s->kind == XH_STEP_EVENT) {
-      if (s->type == EV_ABS_ && s->code == ABS_MT_TRACKING_ID_) {
-        if (s->value >= 0) {
-          // Each preceding gesture had a 1.68s rest to drain. An outstanding
-          // backlog invalidates a comparable run instead of silently losing input.
-          if (xh_virtio_input_backlog(target)) break;
-          held = true;
-          LOGI("SM8850_INTERACTION_V1 status=gesture_begin index=%u mono_ms=%llu",
-               completed + 1, (unsigned long long)mono_ms());
-        } else lifting = true;
-      }
+      if (bench_gesture_start(s)) {
+        // The preceding gesture had a 1.68s rest to drain. The admission
+        // check above must happen before sending this first slot event.
+        // Mark held early so abort cleanup also closes a partial down frame.
+        held = true;
+        LOGI("SM8850_INTERACTION_V1 status=gesture_begin index=%u mono_ms=%llu",
+             completed + 1, (unsigned long long)mono_ms());
+      } else if (s->type == EV_ABS_ && s->code == ABS_MT_TRACKING_ID_ &&
+                 s->value < 0) lifting = true;
       emit_step(s);
       if (s->type == EV_SYN_ && lifting) {
         held = lifting = false;

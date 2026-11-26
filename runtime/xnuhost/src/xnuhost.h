@@ -796,6 +796,7 @@ int   xh_input_script_parse(const char *text, xh_input_step **steps, unsigned *c
 bool  xh_input_bench_enabled(void);
 void  xh_input_bench_set_deadline(uint64_t deadline_boot_ms);
 bool  xh_input_bench_can_start(uint64_t now_boot_ms, uint64_t deadline_boot_ms);
+bool  xh_input_bench_step_allowed(const xh_input_step *step, unsigned backlog);
 int   xh_input_bench_plan(int32_t xmin, int32_t xmax, int32_t ymin, int32_t ymax,
                           xh_input_step **out, unsigned *count);
 int   xh_input_script_load(const char *path, bool *has_pen);
