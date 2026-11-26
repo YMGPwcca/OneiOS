@@ -50,6 +50,14 @@ struct xh_gpu3d {
   // right after a context is made (CTX_CREATE's context_init bits 8-23; byte 2 is 0) and before each SUBMIT_3D (the command
   // header's three padding bytes). An older guest sends zeros.
   void     (*hint)(xh_gpu3d *b, uint32_t ctx, const uint8_t hint[3]);
+  // Optional paired backend drain provider. Close only after host lanes
+  // are parked. Poll may perform timeout=0 ioctls; no guaranteed syscall
+  // wall-clock bound. Resume MUST be try-lock-only, with no ioctl,
+  // callback, or device-lock acquisition. All return negative errno on
+  // failure, -EAGAIN for retry; a successful close returns a nonzero ticket.
+  int (*drain_close)(xh_gpu3d *b, uint64_t *ticket);
+  int (*drain_poll)(xh_gpu3d *b, uint64_t ticket);
+  int (*drain_resume)(xh_gpu3d *b, uint64_t ticket);
   // Set by the device before the first context.
   xh_gpu3d_retire retire;
   xh_virtio *dev;
@@ -77,6 +85,19 @@ struct xh_gpu_gate_state {
 int xh_virtio_gpu_gate_close(xh_virtio *dev, uint64_t *ticket);
 int xh_virtio_gpu_gate_status(xh_virtio *dev, uint64_t ticket, struct xh_gpu_gate_state *out);
 int xh_virtio_gpu_gate_resume(xh_virtio *dev, uint64_t ticket);
+
+// Combined host + backend GPU quiesce. One public ticket, independent
+// backend ticket retained privately. 0 from close means ingress closed,
+// not drained. Poll returns 0 only after both host and backend receipts;
+// -EAGAIN means retry under the independent owner's BOOTTIME deadline.
+// Terminal failure latches and never reopens ingress. Raw host resume
+// cannot reopen a combined ticket. Resume must be explicitly authorized
+// by the future supervisor, after CPU/thermal/IO conditions are verified.
+// These in-process APIs do not certify global GPU idle, IO drain or
+// safe temperature. No live caller or external control protocol yet.
+int xh_virtio_gpu_quiesce_close(xh_virtio *dev, uint64_t *ticket);
+int xh_virtio_gpu_quiesce_poll(xh_virtio *dev, uint64_t ticket);
+int xh_virtio_gpu_quiesce_resume(xh_virtio *dev, uint64_t ticket);
 
 // Test hook: waits until the 3D device's thread has nothing left to do.
 // Do not call while the ingress gate is closed.

@@ -34,6 +34,7 @@ void *(*xh_virtio_translate)(uint64_t pa, uint64_t len) = xh_ram;
 
 void *xh_virtio_opaque(xh_virtio *d) { return d->opaque; }
 void xh_virtio_lock(xh_virtio *d) { pthread_mutex_lock(&d->lock); }
+bool xh_virtio_trylock(xh_virtio *d) { return pthread_mutex_trylock(&d->lock) == 0; }
 void xh_virtio_unlock(xh_virtio *d) { pthread_mutex_unlock(&d->lock); }
 
 static void raise_irq(xh_virtio *d, uint32_t bits)

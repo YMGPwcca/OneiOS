@@ -621,6 +621,7 @@ void      *xh_virtio_opaque(xh_virtio *dev);
 // The device's lock (recursive): what a device's own threads take around its state, so that it
 // nests the same way in them as in the vCPU that handles a register access.
 void       xh_virtio_lock(xh_virtio *dev);
+bool       xh_virtio_trylock(xh_virtio *dev);
 void       xh_virtio_unlock(xh_virtio *dev);
 // Takes the next available chain of `queue` without the guest's kick (device-initiated data, as
 // input events). Returns the count of parts, 0 if the guest has posted none.

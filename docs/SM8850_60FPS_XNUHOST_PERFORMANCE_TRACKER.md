@@ -605,3 +605,39 @@ the two exact original hunk bodies, and confirmed the merged 14-old /
 the full patch's non-hunk-header lines are byte-identical. No C source or
 ledger test changes. Full patch-chain application and Android link still
 require the operator's local build. No device access or new kernel work.
+
+
+### G24.4 local acceptance / G24.5 combined GPU quiesce (2026-11-26)
+
+Operator WSL G24.4 ledger at 40c3472: 159 checks PASS. At
+OneiOS `5c4dc620b90e5ddb7dbbd2a3baed992526f08d9f` after the hunk-only fix, the full KGSL Android
+patch/build/link succeeded, all three drain symbols found, ARM64 static
+Android 30 / NDK r28c. XNUHost SHA256
+`a8d9d01a8d448f95e00539261b3ed11ce13f8328b7341e6a3a95ba28c50e9a93`;
+evidence `/tmp/oneios-g244-resume.aGrjFc`; DEVICE_ACCESS=NONE.
+
+G24.5 connects the actual KGSL renderer callbacks to the VirtIO device
+and adds combined close/poll/resume. One host ticket owns an independent
+private backend ticket. Host ingress parks first; both host lanes must
+be idle before backend close, but pending host fences must NOT delay the
+backend close. Poll checks both receipts and rechecks host reset and
+callback state after backend work. Stale callers cannot mutate a new
+ticket. Raw host resume cannot bypass combined admission. Resume
+requires a verified combined ticket and opens the backend then host
+under device lock -> fence bookkeeping lock (reset uses the same order);
+the backend resume is a try-lock-only state change with no ioctl or
+callback. Terminal errors latch the gate closed; no automatic reopen.
+Tests drive real host lanes with mock KGSL responses: missing provider,
+pending fence, backend retry, queued work preserved, exact-once resume,
+backend terminal error, reset inside polling, stale tickets and raw
+resume refusal. Local sanitizer native CI / Android compile/link pending.
+
+The API is in-process, not a deployed root supervisor. A combined receipt
+attests host work + recorded KGSL timestamps only, not global physical
+GPU idle, IO drain, or safe temperature. Poll syscalls may block despite
+timeout=0. There is no independent post-freeze verification or external
+session-bound control channel yet; no live admission. The remaining
+integration must provide independent deadline/ownership and fault
+handling, display/IO lifecycle, CPU freeze/resume, and an independently
+owned adaptive frequency provider. No fixed cap 40%, temperature-triggered
+return/reboot, Android kernel changes or new physical recovery tests.

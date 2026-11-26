@@ -120,8 +120,14 @@ typedef struct {
   // Protected by pl, except the atomic fast-path read of gate_closed.
   // Front activity includes generation reconciliation and an entire popped
   // chain (including slow-lane handoff/retry). A parked front consumes none.
-  bool gate_closed, front_active, gate_invalid;
+  bool gate_closed, front_active, gate_invalid, gate_combined;
   uint64_t gate_ticket, reset_serial, reset_handled;
+  // Serializes combined operations, never taken by command workers or
+  // retire callbacks. Device lock -> pl for atomic reset/resume ordering.
+  pthread_mutex_t quiesce_lock;
+  uint64_t backend_ticket;
+  bool quiesce_verified;
+  int quiesce_fault;
   unsigned retiring_callbacks;
   pthread_cond_t gate_cv;
   int wake;                            // eventfd: the control queue was kicked (written from the trap handler)
@@ -1302,19 +1308,31 @@ static struct xh_gpu_gate_state gate_state_locked(gpu_state *g)
   return s;
 }
 
+// pl held.
+static int gate_begin_locked(gpu_state *g, uint64_t *ticket, bool combined)
+{
+  if (__atomic_load_n(&g->gate_closed, __ATOMIC_RELAXED)) return -EBUSY;
+  if (g->gate_ticket == UINT64_MAX) return -EOVERFLOW;
+  g->gate_invalid = g->reset_serial != g->reset_handled;
+  g->gate_combined = combined;
+  *ticket = ++g->gate_ticket;
+  __atomic_store_n(&g->gate_closed, true, __ATOMIC_RELEASE);
+  return 0;
+}
+static void gate_open_locked(gpu_state *g)
+{
+  g->gate_combined = false;
+  __atomic_store_n(&g->gate_closed, false, __ATOMIC_RELEASE);
+  pthread_cond_broadcast(&g->gate_cv);
+}
+
 int xh_virtio_gpu_gate_close(xh_virtio *dev, uint64_t *ticket)
 {
   if (!ticket) return -EINVAL;
   gpu_state *g;
   int r = gate_lock(dev, &g);
   if (r) return r;
-  if (__atomic_load_n(&g->gate_closed, __ATOMIC_RELAXED)) r = -EBUSY;
-  else if (g->gate_ticket == UINT64_MAX) r = -EOVERFLOW;
-  else {
-    g->gate_invalid = g->reset_serial != g->reset_handled;
-    *ticket = ++g->gate_ticket;
-    __atomic_store_n(&g->gate_closed, true, __ATOMIC_RELEASE);
-  }
+  r = gate_begin_locked(g, ticket, false);
   pthread_mutex_unlock(&g->pl);
   return r;
 }
@@ -1340,16 +1358,156 @@ int xh_virtio_gpu_gate_resume(xh_virtio *dev, uint64_t ticket)
   if (r) return r;
   if (!__atomic_load_n(&g->gate_closed, __ATOMIC_RELAXED) || ticket != g->gate_ticket)
     r = -ESTALE;
+  else if (g->gate_combined) r = -EPERM;
   else {
     struct xh_gpu_gate_state s = gate_state_locked(g);
     if (s.reset_invalidated) r = -ESTALE;
     else if (!s.host_drained) r = -EBUSY;
-    else {
-      __atomic_store_n(&g->gate_closed, false, __ATOMIC_RELEASE);
-      pthread_cond_broadcast(&g->gate_cv);
-    }
+    else gate_open_locked(g);
   }
   pthread_mutex_unlock(&g->pl);
+  return r;
+}
+
+// Combined operations are serialized separately so backend polling never
+// holds the VirtIO device or fence locks. Only resume calls the backend
+// while holding them, and that provider has a strict try-lock contract.
+static int quiesce_lock(xh_virtio *dev, gpu_state **out)
+{
+  if (!dev) return -EINVAL;
+  gpu_state *g = xh_virtio_opaque(dev);
+  if (!g || !g->blobs || !g->b || g->b->dev != dev ||
+      !g->b->drain_close || !g->b->drain_poll || !g->b->drain_resume)
+    return -ENOTSUP;
+  int r = pthread_mutex_trylock(&g->quiesce_lock);
+  if (r) return r == EBUSY ? -EAGAIN : -r;
+  *out = g;
+  return 0;
+}
+
+// Take device lock first, as reset does, so a reset cannot have changed
+// the virtqueue yet still be waiting to invalidate the gate on pl.
+static int quiesce_gate_lock(gpu_state *g)
+{
+  if (!xh_virtio_trylock(g->dev)) return -EAGAIN;
+  int r = pthread_mutex_trylock(&g->pl);
+  if (r) {
+    xh_virtio_unlock(g->dev);
+    return r == EBUSY ? -EAGAIN : -r;
+  }
+  return 0;
+}
+static void quiesce_gate_unlock(gpu_state *g)
+{
+  pthread_mutex_unlock(&g->pl);
+  xh_virtio_unlock(g->dev);
+}
+static bool combined_ticket_locked(gpu_state *g, uint64_t ticket)
+{
+  return ticket && g->gate_combined && ticket == g->gate_ticket &&
+         __atomic_load_n(&g->gate_closed, __ATOMIC_RELAXED);
+}
+static int quiesce_snapshot(gpu_state *g, uint64_t ticket, struct xh_gpu_gate_state *out)
+{
+  int r = quiesce_gate_lock(g);
+  if (r) return r;
+  if (!combined_ticket_locked(g, ticket)) r = -ESTALE;
+  else *out = gate_state_locked(g);
+  quiesce_gate_unlock(g);
+  return r;
+}
+static int quiesce_fail(gpu_state *g, int error)
+{
+  g->quiesce_verified = false;
+  g->quiesce_fault = error < 0 ? error : -EPROTO;
+  return g->quiesce_fault;
+}
+
+int xh_virtio_gpu_quiesce_close(xh_virtio *dev, uint64_t *ticket)
+{
+  if (!ticket) return -EINVAL;
+  gpu_state *g;
+  int r = quiesce_lock(dev, &g);
+  if (r) return r;
+  r = quiesce_gate_lock(g);
+  if (!r) {
+    r = gate_begin_locked(g, ticket, true);
+    if (!r) {
+      g->backend_ticket = 0;
+      g->quiesce_verified = false;
+      g->quiesce_fault = 0;
+    }
+    quiesce_gate_unlock(g);
+  }
+  pthread_mutex_unlock(&g->quiesce_lock);
+  return r;
+}
+
+int xh_virtio_gpu_quiesce_poll(xh_virtio *dev, uint64_t ticket)
+{
+  if (!ticket) return -EINVAL;
+  gpu_state *g;
+  int r = quiesce_lock(dev, &g);
+  if (r) return r;
+  struct xh_gpu_gate_state s = {0};
+  r = quiesce_snapshot(g, ticket, &s);
+  if (r) goto done; // a stale caller does not mutate another ticket
+  if (g->quiesce_fault) { r = g->quiesce_fault; goto done; }
+  g->quiesce_verified = false;
+  if (s.reset_invalidated) { r = quiesce_fail(g, -ESTALE); goto done; }
+  // Already dequeued commands may still need the backend. Once both
+  // lanes are parked, close it even if VirtIO fences are still pending.
+  if (!s.lanes_idle) { r = -EAGAIN; goto done; }
+  if (!g->backend_ticket) {
+    uint64_t backend = 0;
+    r = g->b->drain_close(g->b, &backend);
+    if (r == -EAGAIN && !backend) goto done;
+    if (r || !backend) { r = quiesce_fail(g, r == -EAGAIN ? -EPROTO : r); goto done; }
+    g->backend_ticket = backend;
+  }
+  r = g->b->drain_poll(g->b, g->backend_ticket);
+  if (r == -EAGAIN) goto done;
+  if (r) { r = quiesce_fail(g, r); goto done; }
+  // Backend work can take time; recheck host generation and callbacks.
+  r = quiesce_snapshot(g, ticket, &s);
+  if (r) goto done;
+  if (s.reset_invalidated) { r = quiesce_fail(g, -ESTALE); goto done; }
+  if (!s.host_drained) { r = -EAGAIN; goto done; }
+  g->quiesce_verified = true;
+done:
+  pthread_mutex_unlock(&g->quiesce_lock);
+  return r;
+}
+
+int xh_virtio_gpu_quiesce_resume(xh_virtio *dev, uint64_t ticket)
+{
+  if (!ticket) return -EINVAL;
+  gpu_state *g;
+  int r = quiesce_lock(dev, &g);
+  if (r) return r;
+  r = quiesce_gate_lock(g);
+  if (r) goto done;
+  if (!combined_ticket_locked(g, ticket)) r = -ESTALE;
+  else if (g->quiesce_fault) r = g->quiesce_fault;
+  else {
+    struct xh_gpu_gate_state s = gate_state_locked(g);
+    if (s.reset_invalidated) r = quiesce_fail(g, -ESTALE);
+    else if (!g->quiesce_verified || !g->backend_ticket || !s.host_drained) r = -EBUSY;
+    else {
+      // No reset or host lane can enter between these two opens.
+      // Backend resume is a nonblocking, ticket-verified state change;
+      // if it refuses, leave ingress closed and never synthesize replies.
+      r = g->b->drain_resume(g->b, g->backend_ticket);
+      if (!r) {
+        g->backend_ticket = 0;
+        g->quiesce_verified = false;
+        gate_open_locked(g);
+      } else if (r != -EAGAIN) r = quiesce_fail(g, r);
+    }
+  }
+  quiesce_gate_unlock(g);
+done:
+  pthread_mutex_unlock(&g->quiesce_lock);
   return r;
 }
 
@@ -1405,6 +1563,7 @@ xh_virtio *xh_virtio_gpu_create_3d(uint64_t base, unsigned spi, unsigned width, 
   g->blobs = calloc(BLOB_SLOTS, sizeof *g->blobs);
   g->wake = eventfd(0, EFD_CLOEXEC);
   pthread_mutex_init(&g->pl, NULL);
+  pthread_mutex_init(&g->quiesce_lock, NULL);
   pthread_cond_init(&g->idle, NULL);
   pthread_mutex_init(&g->cmd, NULL);
   pthread_cond_init(&g->slow_cv, NULL);

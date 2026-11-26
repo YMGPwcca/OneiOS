@@ -378,6 +378,24 @@ static void ctx_destroy(xh_gpu3d *b, uint32_t id)
   pthread_mutex_unlock(&st.lock);
 }
 
+// The renderer is process-local and has one owner. Resume only checks
+// the ledger ticket under its try-lock; it performs no KGSL ioctl.
+static int drain_close(xh_gpu3d *b, uint64_t *ticket)
+{
+  (void)b;
+  return drm2kgsl_renderer_drain_close(ticket);
+}
+static int drain_poll(xh_gpu3d *b, uint64_t ticket)
+{
+  (void)b;
+  return drm2kgsl_renderer_drain_poll(ticket);
+}
+static int drain_resume(xh_gpu3d *b, uint64_t ticket)
+{
+  (void)b;
+  return drm2kgsl_renderer_drain_resume(ticket);
+}
+
 static int submit(xh_gpu3d *b, uint32_t id, const void *commands, size_t size)
 {
   (void)b;
@@ -778,7 +796,8 @@ xh_gpu3d *xh_gpu3d_kgsl_open(int ram_fd, uint64_t ram_phys, uint64_t ram_size, v
   k->pool_host = pool_host; k->pool_size = pool_size;
   k->base = (xh_gpu3d){ .opaque = k, .capset_count = capset_count, .capset_info = capset_info, .capset = capset, .ctx_create = ctx_create,
                         .ctx_destroy = ctx_destroy, .submit = submit, .submit_fence = submit_fence, .create_blob = create_blob,
-                        .map_blob = map_blob, .attach = attach, .unref = unref, .hint = hint };
+                        .map_blob = map_blob, .attach = attach, .unref = unref, .hint = hint,
+                        .drain_close = drain_close, .drain_poll = drain_poll, .drain_resume = drain_resume };
   the = &k->base;
   level_start();
   say(1, "gpu: drm2kgsl on %s: chip 0x%llx (gpu id %u), GPU addresses 0x%llx + %llu GiB, %u priorities; pool %llu MiB; "

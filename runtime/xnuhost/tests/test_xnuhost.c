@@ -1298,6 +1298,8 @@ static void test_virtio_gpu3d(void)
     CHECK(G(9, 24) == 0);
     uint64_t ticket = 0, second = 0;
     struct xh_gpu_gate_state gs = {0};
+    // A host-only backend cannot obtain a combined quiesce ticket.
+    CHECK(xh_virtio_gpu_quiesce_close(dev, &ticket) == -ENOTSUP && !ticket);
     CHECK(!test_gate_close(dev, &ticket) && ticket);
     CHECK(!test_gate_status(dev, ticket, &gs) && gs.lanes_idle &&
           gs.pending_fences == 1 && !gs.host_drained && !gs.reset_invalidated);
@@ -1334,6 +1336,184 @@ static void test_virtio_gpu3d(void)
 #undef GX
 #undef CLEAR
 #undef RND
+}
+
+// Exercise the real combined gate with the actual VirtIO lanes and
+// completion callbacks; only the KGSL ioctl provider is mocked here.
+struct mock_drain {
+  uint64_t ticket;
+  unsigned close_attempts, polls, resumes, close_busy, resume_busy;
+  bool closed, verified;
+  int poll_result;
+  driver *reset_in_poll;
+};
+static int mock_drain_close(xh_gpu3d *b, uint64_t *ticket)
+{
+  struct mock_drain *m = b->opaque;
+  m->close_attempts++;
+  if (m->close_busy) { m->close_busy--; return -EAGAIN; }
+  if (m->closed) return -EBUSY;
+  m->closed = true; m->verified = false;
+  *ticket = ++m->ticket;
+  return 0;
+}
+static int mock_drain_poll(xh_gpu3d *b, uint64_t ticket)
+{
+  struct mock_drain *m = b->opaque;
+  m->polls++;
+  if (!m->closed || ticket != m->ticket) return -ESTALE;
+  if (m->reset_in_poll) {
+    // The coordinator must not hold the device or fence lock while
+    // polling and must recheck the reset serial after the callback.
+    W(m->reset_in_poll, 0x70, 0);
+    m->reset_in_poll = NULL;
+  }
+  m->verified = m->poll_result == 0;
+  return m->poll_result;
+}
+static int mock_drain_resume(xh_gpu3d *b, uint64_t ticket)
+{
+  struct mock_drain *m = b->opaque;
+  m->resumes++;
+  if (!m->closed || ticket != m->ticket) return -ESTALE;
+  if (!m->verified) return -EBUSY;
+  if (m->resume_busy) { m->resume_busy--; return -EAGAIN; }
+  m->closed = m->verified = false;
+  return 0;
+}
+static int retry_q_close(xh_virtio *dev, uint64_t *ticket)
+{
+  for (unsigned i = 0; i < 2000; i++) {
+    int r = xh_virtio_gpu_quiesce_close(dev, ticket);
+    if (r != -EAGAIN) return r;
+    usleep(1000);
+  }
+  return -ETIMEDOUT;
+}
+static int retry_q_op(int (*op)(xh_virtio *, uint64_t), xh_virtio *dev, uint64_t ticket)
+{
+  for (unsigned i = 0; i < 2000; i++) {
+    int r = op(dev, ticket);
+    if (r != -EAGAIN) return r;
+    usleep(1000);
+  }
+  return -ETIMEDOUT;
+}
+static void test_virtio_gpu_combined_quiesce(void)
+{
+  static struct mock_drain mocks[2];
+  static xh_gpu3d backends[2];
+  for (unsigned kind = 0; kind < 2; kind++) {
+    memset(&fake, 0, sizeof fake);
+    struct mock_drain *m = &mocks[kind];
+    // Use a different backend ticket sequence from the host's sequence.
+    m->ticket = 100;
+    xh_gpu3d *b = &backends[kind];
+    *b = (xh_gpu3d){
+      .opaque = m, .capset_count = fake_capset_count,
+      .ctx_create = fake_ctx_create, .ctx_destroy = fake_ctx_destroy,
+      .submit = fake_submit, .submit_fence = fake_submit_fence,
+      .drain_close = mock_drain_close, .drain_poll = mock_drain_poll,
+      .drain_resume = mock_drain_resume
+    };
+    driver d = { .dev = xh_virtio_gpu_create_3d(0, 43, 8, 4, b) };
+    if (!d.dev || !driver_init(&d, 0x59, 2, GUEST_PA + 0x10000)) { CHECK(false); return; }
+    xh_virtio *dev = d.dev;
+    uint16_t *used = xh_ram(d.queue_pa[0] + 0x2000, 0x1000);
+    uint32_t *cmd = xh_ram(GUEST_PA + 0x30000, 4096);
+    uint32_t *resp = xh_ram(GUEST_PA + 0x31000, 4096);
+    const uint32_t create[] = { 0x200, 0, 0, 0, 5, 0, 4, 6, 0x74736574 };
+    memcpy(cmd, create, sizeof create);
+    CHECK(gpu3d_send(&d, dev, 9, 0, 24) == 1 && resp[0] == 0x1100);
+    memset(cmd, 0, 4096);
+    cmd[0] = 0x207; cmd[1] = 3; cmd[2] = 0x42; cmd[4] = 5;
+    cmd[5] = 1; cmd[6] = 4; cmd[8] = 0xaa;
+    CHECK(gpu3d_send(&d, dev, 9, 0, 24) == 0 && fake.submits == 1);
+    uint64_t t = 0, other = 0;
+    int r = retry_q_close(dev, &t);
+    CHECK(!r && t);
+    if (r) return;
+    CHECK(retry_q_close(dev, &other) == -EBUSY && !other);
+    CHECK(test_gate_resume(dev, t) == -EPERM);
+    CHECK(retry_q_op(xh_virtio_gpu_quiesce_poll, dev, t + 1) == -ESTALE);
+    CHECK(!m->close_attempts);
+    CHECK(retry_q_op(xh_virtio_gpu_quiesce_resume, dev, t) == -EBUSY);
+
+    // Backend already drained, but the host completion has not retired.
+    // Exercise a real close retry first and then the host-only pending fence.
+    m->close_busy = 1;
+    for (unsigned i = 0; i < 2000 && !m->polls; i++) {
+      r = xh_virtio_gpu_quiesce_poll(dev, t);
+      CHECK(r == -EAGAIN);
+      if (r != -EAGAIN) return;
+      usleep(1000);
+    }
+    CHECK(m->close_attempts == 2 && m->polls && m->closed && m->verified);
+    CHECK(retry_q_op(xh_virtio_gpu_quiesce_resume, dev, t) == -EBUSY && !m->resumes);
+
+    // A new guest chain remains queued even after the earlier fence
+    // callback. Force backend polling to be incomplete once more.
+    uint16_t used_before = used[1];
+    memset(cmd, 0, 4096);
+    cmd[0] = 0x207; cmd[4] = 5; cmd[6] = 4; cmd[8] = 0xbb;
+    driver_send(&d, 0, (const uint64_t[][3]){
+      { GUEST_PA + 0x30000, 9 * 4, 0 }, { GUEST_PA + 0x31000, 24, 1 }
+    }, 2, true);
+    b->retire(dev, 5, 1, 0x42);
+    m->poll_result = -EAGAIN;
+    unsigned before = m->polls;
+    for (unsigned i = 0; i < 2000 && m->polls == before; i++) {
+      r = xh_virtio_gpu_quiesce_poll(dev, t);
+      CHECK(r == -EAGAIN);
+      if (r != -EAGAIN) return;
+      usleep(1000);
+    }
+    CHECK(m->polls > before && !m->verified);
+    CHECK(retry_q_op(xh_virtio_gpu_quiesce_resume, dev, t) == -EBUSY);
+    CHECK(fake.submits == 1 && (uint16_t)(used[1] - used_before) == 1);
+
+    m->poll_result = 0;
+    r = retry_q_op(xh_virtio_gpu_quiesce_poll, dev, t);
+    CHECK(!r && m->verified);
+    if (r) return;
+    CHECK(retry_q_op(xh_virtio_gpu_quiesce_resume, dev, t + 1) == -ESTALE);
+    m->resume_busy = 1;
+    for (unsigned i = 0; i < 2000 && !m->resumes; i++) {
+      r = xh_virtio_gpu_quiesce_resume(dev, t);
+      CHECK(r == -EAGAIN);
+      if (r != -EAGAIN) return;
+      usleep(1000);
+    }
+    CHECK(m->resumes == 1 && m->closed);
+    struct xh_gpu_gate_state gs = {0};
+    CHECK(!test_gate_status(dev, t, &gs) && gs.host_drained);
+    CHECK(test_gate_resume(dev, t) == -EPERM);
+    r = retry_q_op(xh_virtio_gpu_quiesce_resume, dev, t);
+    CHECK(!r && m->resumes == 2 && !m->closed);
+    if (r) return;
+    xh_virtio_gpu_idle(dev);
+    CHECK(fake.submits == 2 && (uint16_t)(used[1] - used_before) == 2);
+    CHECK(retry_q_op(xh_virtio_gpu_quiesce_poll, dev, t) == -ESTALE);
+
+    // Second ticket: terminal backend failure OR a reset occurring
+    // inside the poll callback, after ingress has been parked.
+    r = retry_q_close(dev, &other);
+    CHECK(!r && other > t);
+    if (r) return;
+    if (kind == 0) m->poll_result = -EIO;
+    else m->reset_in_poll = &d;
+    int expected = kind == 0 ? -EIO : -ESTALE;
+    CHECK(retry_q_op(xh_virtio_gpu_quiesce_poll, dev, other) == expected);
+    CHECK(m->closed);
+    before = m->polls;
+    m->poll_result = 0;
+    CHECK(retry_q_op(xh_virtio_gpu_quiesce_poll, dev, other) == expected);
+    CHECK(m->polls == before); // fault is sticky, not a fresh backend vote
+    CHECK(retry_q_op(xh_virtio_gpu_quiesce_resume, dev, other) == expected);
+    CHECK(m->resumes == 2 && test_gate_resume(dev, other) == -EPERM);
+    // Leave the faulted fixture parked, like the existing ingress reset
+    // test. Its detached workers cannot consume the next fixture's RAM.
+  }
 }
 
 static void test_virtio_input(void)
@@ -3187,6 +3367,7 @@ int main(void)
   test_virtio_gpu();
   test_virtio_gpu3d();
   test_virtio_gpu3d_reset_overlap();
+  test_virtio_gpu_combined_quiesce();
   fprintf(stderr, "NATIVE_TEST_STAGE=virtio_input\n");
   test_virtio_input();
   test_input_filter();
