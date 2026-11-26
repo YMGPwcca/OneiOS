@@ -1,0 +1,228 @@
+--- a/src/drm/drm2kgsl/drm2kgsl_renderer.c
++++ b/src/drm/drm2kgsl/drm2kgsl_renderer.c
+@@ -96,7 +96,8 @@
+ #include "msm/msm_proto.h"
+ #include "drm2kgsl/msm_kgsl.h"
+ #include "drm2kgsl/drm2kgsl_renderer.h"
+-#include "oneios_gpu_policy.h"   /* ONEIOS (0008): the classes and their KGSL priorities */
++#include "oneios_gpu_policy.h"   /* ONEIOS (0008): the classes and their KGSL priorities */
++#include "oneios_kgsl_drain.h"
+ 
+ /*
+  * The VBO reserves the guest's entire GPU VA range.  It is virtual-only
+@@ -549,9 +550,44 @@
+    int ret;
+    do {
+       ret = ioctl(fd, request, arg);
+-   } while (ret == -1 && (errno == EINTR || errno == EAGAIN));
+-   return ret;
+-}
++   } while (ret == -1 && (errno == EINTR || errno == EAGAIN));
++   return ret;
++}
++
++/* Accepted timestamps independent of VirtIO fences. One timeout=0 ioctl
++ * per poll, without the existing unbounded retry wrapper for waits. */
++static struct oneios_kgsl_drain g_drain = ONEIOS_KGSL_DRAIN_INITIALIZER;
++
++static int
++oneios_wait_accepted(int fd, uint32_t ctx, uint32_t ts, void *unused)
++{
++   (void)unused;
++   struct kgsl_device_waittimestamp_ctxtid wait = {
++      .context_id = ctx, .timestamp = ts, .timeout = 0,
++   };
++   if (!ioctl(fd, IOCTL_KGSL_DEVICE_WAITTIMESTAMP_CTXTID, &wait))
++      return 0;
++   int err = errno;
++   return err == EINTR || err == EAGAIN || err == ETIMEDOUT ? -EAGAIN : -err;
++}
++
++/* 1: suppressed keepalive; 0: accepted; -1: ioctl error. */
++static int
++oneios_tracked_submit(int fd, struct kgsl_gpu_command *cmd, bool keepalive)
++{
++   struct oneios_kgsl_drain_entry *e = NULL;
++   int r = oneios_kgsl_drain_begin(&g_drain, fd, cmd->context_id, keepalive, &e);
++   if (r) {
++      if (r > 0) return 1;
++      errno = -r;
++      return -1;
++   }
++   int ret = kgsl_ioctl(fd, IOCTL_KGSL_GPU_COMMAND, cmd);
++   int saved = errno;
++   oneios_kgsl_drain_finish(&g_drain, e, ret == 0, cmd->timestamp);
++   errno = saved;
++   return ret;
++}
+ 
+ /* Guest turnip allocates every BO from the VA range returned by GET_PARAM.
+  * That range is per renderer context in the KGSL nctx backend, even though
+@@ -1516,8 +1552,9 @@
+    if (kgsl_getprop(kctx->base.fd, KGSL_PROP_GPU_RESET_STAT, &status, sizeof(status)) ||
+        status == KGSL_CTX_STAT_NO_ERROR || status == KGSL_CTX_STAT_INNOCENT_CONTEXT_RESET_EXT)
+       return;
+-   kctx->shmem->global_faults++;
+-   drm_err("queue %u: the GPU was reset with this context %s (fault %u of the context)", drawctxt_id,
++   oneios_kgsl_drain_fault(&g_drain);
++   kctx->shmem->global_faults++;
++   drm_err("queue %u: the GPU was reset with this context %s (fault %u of the context)", drawctxt_id,
+            status == KGSL_CTX_STAT_GUILTY_CONTEXT_RESET_EXT ? "guilty" : "involved", kctx->shmem->global_faults);
+ }
+ 
+@@ -1856,9 +1893,9 @@
+    return true;
+ }
+ 
+-static bool
+-oneios_hold_keepalive(void)
+-{
++static int
++oneios_hold_keepalive(void)
++{
+    struct kgsl_command_object obj = {
+       .gpuaddr = g_hold.ib, .size = g_hold.ib_bytes, .flags = KGSL_CMDLIST_IB, .id = g_hold.ib_id,
+    };
+@@ -1869,7 +1906,7 @@
+       .numcmds = 1,
+       .context_id = g_hold.drawctxt,
+    };
+-   return kgsl_ioctl(g_hold.fd, IOCTL_KGSL_GPU_COMMAND, &cmd) == 0;
++   return oneios_tracked_submit(g_hold.fd, &cmd, true);
+ }
+ 
+ static void *
+@@ -1878,8 +1915,8 @@
+    (void)arg;
+    pthread_mutex_lock(&g_hold.lock);
+    for (;;) {
+-      while (oneios_now_ns() >= g_hold.until) {
+-         g_hold.holding = false;
++      while (oneios_kgsl_drain_closed(&g_drain) || oneios_now_ns() >= g_hold.until) {
++         g_hold.holding = false;
+          pthread_cond_wait(&g_hold.wake, &g_hold.lock);
+       }
+       if (!g_hold.holding) {
+@@ -1887,5 +1924,6 @@
+          g_hold.holds++;
+       }
+       pthread_mutex_unlock(&g_hold.lock);
+-      const bool ok = oneios_hold_keepalive();
+-      struct timespec gap = { 0, (long)ONEIOS_HOLD_PERIOD_NS };
++      const int result = oneios_hold_keepalive();
++      const int submit_error = errno;
++      struct timespec gap = { 0, (long)ONEIOS_HOLD_PERIOD_NS };
+@@ -1892,9 +1930,9 @@
+       nanosleep(&gap, NULL);
+       pthread_mutex_lock(&g_hold.lock);
+-      if (ok)
+-         g_hold.keepalives++;
+-      else if (++g_hold.failures == 1)
+-         drm_err("clock hold: a keep-alive submission failed: %s", strerror(errno));
++      if (result == 0)
++         g_hold.keepalives++;
++      else if (result < 0 && ++g_hold.failures == 1)
++         drm_err("clock hold: a keep-alive submission failed: %s", strerror(submit_error));
+    }
+    return NULL;
+ }
+@@ -1910,7 +1948,7 @@
+       kgsl_parse_u64_env("DRM2KGSL_PWR_HOLD_MS", &hold_ms);
+       read = true;
+    }
+-   if (hold_ms && !g_hold.failed) {
++   if (!oneios_kgsl_drain_closed(&g_drain) && hold_ms && !g_hold.failed) {
+       if (!g_hold.started) {
+          pthread_t thread;
+          g_hold.started = true;
+@@ -1954,7 +1992,8 @@
+       read = true;
+    }
+    const uint64_t now = oneios_now_ns();
+-   if (g_hold.started && !g_hold.failed && hold_ms && g_hold.last_render && now - g_hold.last_render < follow_ms * 1000000ull &&
++   if (!oneios_kgsl_drain_closed(&g_drain) &&
++       g_hold.started && !g_hold.failed && hold_ms && g_hold.last_render && now - g_hold.last_render < follow_ms * 1000000ull &&
+        now + hold_ms * 1000000ull > g_hold.until) {
+       g_hold.until = now + hold_ms * 1000000ull;
+       pthread_cond_signal(&g_hold.wake);
+@@ -1966,9 +2005,42 @@
+  * their next submission and the hold runs to DRM2KGSL_PWR_HOLD_MS after this call. The governor's: their constraint goes off at
+  * their next submission and the hold stops now (KGSL lets the last renewal expire, its idle timer, then the governor decides).
+  * Replaces 0002-0006's rules: every render-server submission at the top and 150 ms after it, whatever the frame needed. */
+-void
+-drm2kgsl_renderer_set_level(int top)
+-{
++/* First park host ingress and confirm both host lanes idle. Lock order:
++ * hold scheduler then ledger. The keepalive submit holds neither
++ * lock during GPU_COMMAND. */
++int
++drm2kgsl_renderer_drain_close(uint64_t *ticket)
++{
++   int r = pthread_mutex_trylock(&g_hold.lock);
++   if (r) return r == EBUSY ? -EAGAIN : -r;
++   r = oneios_kgsl_drain_close(&g_drain, ticket);
++   if (!r) {
++      g_hold.until = 0;
++      g_hold.last_render = 0;
++      __atomic_store_n(&g_oneios_top, false, __ATOMIC_RELEASE);
++      pthread_cond_signal(&g_hold.wake);
++   }
++   pthread_mutex_unlock(&g_hold.lock);
++   return r;
++}
++
++int
++drm2kgsl_renderer_drain_poll(uint64_t ticket)
++{
++   return oneios_kgsl_drain_poll(&g_drain, ticket, oneios_wait_accepted, NULL);
++}
++
++int
++drm2kgsl_renderer_drain_resume(uint64_t ticket)
++{
++   /* The next guest work decides its normal policy. No old hold restart. */
++   return oneios_kgsl_drain_resume(&g_drain, ticket);
++}
++
++void
++drm2kgsl_renderer_set_level(int top)
++{
++   if (oneios_kgsl_drain_closed(&g_drain)) return;
+    __atomic_store_n(&g_oneios_top, top != 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_oneios_driven, true, __ATOMIC_RELEASE);
+    if (top) {
+@@ -2095,8 +2167,10 @@
+ static void
+ kgsl_drawctxt_destroy(struct kgsl_context *kctx, uint32_t drawctxt_id)
+ {
+-   struct kgsl_drawctxt_destroy req = { .drawctxt_id = drawctxt_id };
+-   kgsl_ioctl(kctx->base.fd, IOCTL_KGSL_DRAWCTXT_DESTROY, &req);
++   oneios_kgsl_drain_forget(&g_drain, kctx->base.fd, drawctxt_id, false,
++                           oneios_wait_accepted, NULL);
++   struct kgsl_drawctxt_destroy req = { .drawctxt_id = drawctxt_id };
++   kgsl_ioctl(kctx->base.fd, IOCTL_KGSL_DRAWCTXT_DESTROY, &req);
+ }
+ 
+ /*
+@@ -2752,8 +2826,8 @@
+       .timestamp = KGSL_GUEST_TS(req->fence), /* guest seqno (USER_GENERATED_TS) */
+    };
+ 
+-   int ret = kgsl_ioctl(dctx->fd, IOCTL_KGSL_GPU_COMMAND, &cmd);
+-   /* Preserve errno before any cleanup or reset-status query can change it. */
++   int ret = oneios_tracked_submit(dctx->fd, &cmd, false);
++   /* Preserve errno before any cleanup or reset-status query can change it. */
+    int submit_errno = ret ? errno : 0;
+    free(kcmds);
+ 
+@@ -3547,7 +3621,9 @@
+       kctx->pending_guest_fd = -1;
+    }
+ 
+-   drm_context_deinit(dctx); /* frees remaining objects via free_object */
++   /* Verify timestamps before fd/context identities disappear. */
++   oneios_kgsl_drain_forget(&g_drain, dctx->fd, 0, true, oneios_wait_accepted, NULL);
++   drm_context_deinit(dctx); /* frees remaining objects via free_object */
+ 
+ 
+    /* The VBO is global (shared by all contexts) -- do not free it here. */

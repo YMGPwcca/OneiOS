@@ -54,7 +54,7 @@ $(A)/drm2kgsl/patched/drm2kgsl_renderer.c: $(VIRGL)/src/drm/drm2kgsl/drm2kgsl_re
 	cp $< $@.tmp
 	for p in $(DRM2KGSL_PATCHES); do patch -s --no-backup-if-mismatch -F0 $@.tmp < $$p || exit 1; done
 	mv $@.tmp $@
-$(A)/drm2kgsl/drm2kgsl_renderer.o: $(A)/drm2kgsl/patched/drm2kgsl_renderer.c drm2kgsl/config.h
+$(A)/drm2kgsl/drm2kgsl_renderer.o: $(A)/drm2kgsl/patched/drm2kgsl_renderer.c drm2kgsl/config.h drm2kgsl/oneios_kgsl_drain.h
 	$(ANDROID_CC) -std=gnu11 -O2 -g -w $(VIRGL_INC) -c $< -o $@
 $(A)/libdrm2kgsl.a: $(DRM2KGSL_OBJ)
 	rm -f $@ && $(TOOLS)/llvm-ar rcs $@ $^
@@ -166,6 +166,10 @@ $(H)/test_gpu_fence_perf: tests/test_gpu_fence_perf.c src/gpu_fence_perf.h
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) -Isrc -fsanitize=address,undefined tests/test_gpu_fence_perf.c -o $@
 
+$(H)/test_kgsl_drain: tests/test_kgsl_drain.c drm2kgsl/oneios_kgsl_drain.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) -Idrm2kgsl -fsanitize=address,undefined tests/test_kgsl_drain.c -lpthread -o $@
+
 $(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DXH_HOST_TEST -fsanitize=address,undefined tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../loader/src/adt.c ../loader/src/boot.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
@@ -273,7 +277,8 @@ parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
 
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_stub_event $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_task_timing_totals $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
+test: $(H)/test_kgsl_drain $(H)/test_stub_event $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_task_timing_totals $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
+	ASAN_OPTIONS=detect_leaks=0 $(H)/test_kgsl_drain
 	$(H)/test_sm8850_stage_admission
 	$(H)/test_stub_event
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_stub_copy

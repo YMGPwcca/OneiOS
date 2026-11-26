@@ -559,3 +559,36 @@ retirement independently, and handle IO/lifecycle and resume. No new
 vendor/kernel writes or raw frequency vote guessed. No live caller has
 been added; the thermal admission block stays intact. No phone access,
 stage, rearm, watchdog audit or recovery test follows from this commit.
+
+
+### G24.3 receipt / G24.4 KGSL accepted timestamp ledger (2026-11-26)
+
+Local G24.3 OneiOS `cce950cd256db9cf7e49c3e3680a4301e6983719`, pinned OneOS
+`2967fda7d727babbb52b8b8675543cc326e97890`: native regression
+19,759 checks / zero failures, Android ARM64 static build PASS,
+SHA256 `bb4766aded8aafe520f7894618ee106a9d470c2fe342389e315c896de6b0c68d`,
+evidence `/tmp/oneios-g243-resume.j9Fh8z`. DEVICE_ACCESS=NONE.
+Earlier two failures were relative-path fixtures run from the wrong cwd,
+not gate failures. Real udmabuf import skipped.
+
+G24.4 patch 0010 adds a process-local accepted-timestamp ledger at BOTH
+GPU_COMMAND call sites (guest and autonomous keepalive) in the pinned
+renderer. A closed backend ticket suppresses keepalive and rejects any
+unexpected guest submit. Polls owned fd/context timestamps using one
+WAITTIMESTAMP_CTXTID timeout=0 ioctl, up to 16 timestamps per call.
+Ambiguous submit errors, non-forward/zero timestamps, observed reset,
+lost identity, terminal wait failures latch unconfirmed state. No
+automatic thaw or reboot. A verified ticket does not prove global GPU
+idle, successful rendering, or CPU/IO quiescence. Context destruction
+checks pending timestamps before identity loss, adding a non-retrying
+poll on normal teardown; ledger bookkeeping adds open-path overhead
+which is not yet measured. No new frequency votes. Existing firmware
+thermal protections stay intact.
+
+All 11 earlier patches and the new patch were reconstructed against
+virglrenderer pin `7e17c8e814e963912fc1e4e737137a31b5efa027` with exact
+hunk context matching; local actual patch application, sanitizer ledger
+test and KGSL Android link are still pending. No admitted live caller:
+host+backend ticket coordination, independent supervisor, safe resume
+and frequency provider remain blockers. No phone access or new
+kernel/recovery audit requested.

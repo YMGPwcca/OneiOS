@@ -29,4 +29,10 @@ void drm2kgsl_renderer_set_class(struct virgl_context *ctx, unsigned cls, bool l
 // those: asked IO-coherent and kept it, asked and lost it (KGSL dropped it), asked without it, flags not readable.
 void drm2kgsl_renderer_import_stats(uint64_t *imports, uint64_t *checked, uint64_t *kept, uint64_t *dropped, uint64_t *plain,
                                     uint64_t *unreadable);
+// patch 0010: actual accepted timestamp ledger, including keepalive.
+// Call only after host ingress/lanes parked. Poll success does not attest
+// global GPU idle or successful rendering. No stock clock vote changes.
+int drm2kgsl_renderer_drain_close(uint64_t *ticket);
+int drm2kgsl_renderer_drain_poll(uint64_t ticket);
+int drm2kgsl_renderer_drain_resume(uint64_t ticket);
 #endif
