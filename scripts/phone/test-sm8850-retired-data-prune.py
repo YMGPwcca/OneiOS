@@ -66,6 +66,20 @@ root_dir() { [ ! -L "$1" ] && [ "$(stat -c '%u:%a' "$1")" = "$TEST_UID:700" ]; }
 getprop() { case "$1" in sys.boot_completed) echo 1 ;; init.svc.zygote) echo running ;; esac; }
 getenforce() { echo Enforcing; }
 pidof() { [ "$1" = system_server ]; }
+# Model a fully allocated 8 GiB payload without allocating it on the host.
+# stat -c %b reports 512-byte blocks; exercise >32-bit byte totals even
+# when the test runs under a 64-bit host shell.
+stat() {
+    if [ "$1" = -c ] && [ "$2" = %b ]; then
+        case "$3" in
+            */data.img) echo 16777216 ;;
+            */unique-chip-id) echo 8 ;;
+            *) return 2 ;;
+        esac
+    else
+        command stat "$@"
+    fi
+}
 sync() { :; }
 '''+body+'\nprune_retired_data_locked\n'
             def execute():
@@ -80,9 +94,11 @@ sync() { :; }
                 self.assertTrue(keep.is_file(), keep)
             if not fault:
                 self.assertIn("RETIRED_DATA_FILES_PRUNED=2", p.stdout)
+                self.assertIn("RETIRED_DATA_ALLOCATED_BYTES_ESTIMATE=8589938688", p.stdout)
                 again = execute()
                 self.assertEqual(0, again.returncode, (again.stdout, again.stderr))
                 self.assertIn("RETIRED_DATA_FILES_PRUNED=0", again.stdout)
+                self.assertIn("RETIRED_DATA_ALLOCATED_BYTES_ESTIMATE=0", again.stdout)
 
     def test_prune_and_idempotence(self):
         self.run_case()

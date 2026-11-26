@@ -91,7 +91,12 @@ prune_retired_data_locked() {
                         rm -f "$prune_path" || fail "cannot remove retired payload: $prune_path"
                         [ ! -e "$prune_path" ] && [ ! -L "$prune_path" ] || fail "retired payload still present"
                         prune_files=$((prune_files + 1))
-                        prune_bytes=$((prune_bytes + prune_blocks * 512))
+                        # Android mksh may use signed 32-bit shell arithmetic.
+                        # Accumulate decimal bytes in awk (exact at phone-scale
+                        # sizes), not in a shell arithmetic expansion.
+                        prune_bytes=$(awk -v total="$prune_bytes" -v blocks="$prune_blocks" \
+                            'BEGIN {printf "%.0f\n", total + blocks * 512}') ||
+                            fail "cannot sum retired Data allocated bytes"
                         printf 'RETIRED_DATA_PAYLOAD_PRUNED=%s\n' "$prune_path"
                     fi
                 done

@@ -259,12 +259,28 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         stage = STAGER.read_text()
         host = TAKEOVER_SOURCE.read_text()
         wrapper = WRAPPER.read_text()
-        self.assertIn('probe|prepare|rearm-data|upgrade-runtime|upgrade-kernel)', stage)
+        self.assertIn('probe|prepare|rearm-data|upgrade-runtime|upgrade-kernel|prune-retired-data)', stage)
+        self.assertIn('if [ "$operation" = rearm-data-prune ]; then', stage)
+        self.assertIn('discard_retired=0', stage)
+        self.assertIn('discard_retired=1', stage)
+        self.assertIn('--discard-retired-data', host)
+        self.assertIn('if args.discard_retired_data and args.mode != "rearm-data":', host)
+        self.assertIn('operation = "rearm-data-prune"', host)
+        rearm = stage.split('if [ "$operation" = rearm-data ]; then', 1)[1]
+        self.assertEqual(2, rearm.count('if [ "$discard_retired" = 1 ]; then\n        '))
+        first = rearm.index('prune_retired_data_locked')
+        copied = rearm.index('timeout -s TERM 900 "$incoming/image-copy"')
+        ready = rearm.index('mv "$stage/image.ready.rearm-pending" "$stage/image.ready"')
+        last = rearm.rindex('prune_retired_data_locked')
+        self.assertLess(first, copied)
+        self.assertLess(copied, ready)
+        self.assertLess(ready, last)
         self.assertIn('if [ "$operation" = upgrade-kernel ]; then', stage)
         self.assertIn('if [ "$operation" = rearm-data ]; then', stage)
         # A REAL guest may write its one-shot clone; that must not make
         # it impossible to create a NEW isolated clone from the original
-        # benchmark seed. Always preserve the old guest Data and marker.
+        # benchmark seed. Preserve the old guest Data and marker by default;
+        # explicit discard prunes only retired payloads, after archiving receipts.
         self.assertIn('APFS_CONSUMED_GUEST_DATA=MODIFIED_PRESERVE_OLD', stage)
         self.assertIn('APFS_REARM_ORIGINAL_SOURCE=EXISTING_BENCHMARK_SEED_NOT_HISTORICALLY_ATTESTED', stage)
         self.assertIn('original seed aliases the already-consumed guest Data', stage)
