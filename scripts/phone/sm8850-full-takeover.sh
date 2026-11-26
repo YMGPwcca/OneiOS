@@ -23,15 +23,10 @@ ONEIOS_SM8850_FULL_BRIDGES_180S=I_ACCEPT_UNQUALIFIED_180S_LIVE_TEST.
 Both rearm and run require --duration 180, selected by the operator.
 Re-arming fresh one-shot Data and launching are separate steps; the
 180s software deadline is not an independently qualified recovery guarantee.
-On feat/sm8850-xnuhost-perf-p0, guarded 180s requires a downward-only 40%
-hardware-MAX frequency ceiling plus CFS-v1 budget (target 45-70C, hard
-80C latched until 70C). Emergency/fault recovery remains; discard no-guard env.
-On other supported branches, the historical explicit passive experiment uses:
-ONEIOS_SM8850_SOFT_THERMAL_OFF=I_ACCEPT_SOFT_GUARD_OFF_180S
-This disables the OneOS root thermal monitor AND its 28% CPU cap worker.
-Kernel/firmware thermal protections remain unchanged; recovery is unqualified.
-The floor-aware 28% requested CPU limit may be exceeded by Samsung minimum
-frequency votes. All other full-run durations: 60..600 seconds, default 600.
+CURRENT STATUS: new full runs and wrapper rearm are blocked. The previous
+fixed-40%/thermal-return and no-guard policies have been retired. See
+AGENTS.md and app/docs/SM8850_ADAPTIVE_THERMAL.md. No opt-in bypass.
+Offline testing, evidence collection and separately requested staging remain.
 The live run WILL stop Android Framework. Samsung USB + Volume Up+Down can
 enter Download Mode. DO NOT press both volume keys during this experiment.
 If frozen, Power/Side + Volume Down for >7 seconds forces a restart.
@@ -50,6 +45,11 @@ cpu_profile=default
 own_presence=off
 interaction_profile=off
 case "$mode" in prepare|rearm|stage-runtime|run) ;; *) usage ;; esac
+case "$mode" in
+    run|rearm)
+        echo "SM8850_THERMAL_POLICY=BLOCKED_LEGACY_RETIRED; adaptive owned ceiling and non-reboot guest quiesce not qualified" >&2
+        exit 2 ;;
+esac
 if [ "$mode" = run ]; then
     [ "$risk" = --i-accept-10-minute-legacy-watchdog-risk ] || usage
     shift 3

@@ -346,6 +346,19 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         self.assertIn('FRAMEWORK_TIMEBASE=MISMATCH', source)
         self.assertIn('meta.get("ctl/framework.duration") == str(duration)', source)
 
+    def test_retired_policy_blocks_wrapper_before_device_and_root_before_claim(self):
+        marker = "SM8850_THERMAL_POLICY=BLOCKED_LEGACY_RETIRED"
+        for mode in ("run", "rearm"):
+            result = subprocess.run(["bash", str(WRAPPER), mode, "fake-serial"],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(2, result.returncode)
+            self.assertIn(marker, result.stderr)
+        switch = ONEOS_SWITCH.read_text()
+        self.assertLess(switch.index(marker),
+                        switch.index("APFS_DATA_CLONE=CONSUMED_ONE_SHOT_BEFORE_FRAMEWORK_STOP"))
+        self.assertIn('if [ "$FW_MODE" = run ]; then\n        framework_block "' + marker,
+                      switch)
+
     def test_shell_syntax_bash_and_available_mksh(self):
         shells = [shutil.which("bash"), shutil.which("sh")]
         for shell in (shutil.which("mksh"),):

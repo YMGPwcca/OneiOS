@@ -832,6 +832,10 @@ mkdir launches/{token}
     return 4
 
 
+# Keep historical launch helpers for offline fixtures, not live admission.
+LIVE_THERMAL_POLICY_READY = False
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
@@ -903,6 +907,8 @@ def main():
         return upgrade_kernel(Phone(args.adb, args.serial), candidate, pins, HERE / "framework-stage.sh")
     if any(value is not None for value in kernel_args):
         parser.error("kernel upgrade options require --upgrade-kernel")
+    if args.mode == "run" and not LIVE_THERMAL_POLICY_READY:
+        parser.error("SM8850_THERMAL_POLICY=BLOCKED_LEGACY_RETIRED; adaptive owned ceiling and non-reboot guest quiesce not qualified")
     phone = Phone(args.adb, args.serial)
     if args.mode == "dry-run":
         return audit(phone)

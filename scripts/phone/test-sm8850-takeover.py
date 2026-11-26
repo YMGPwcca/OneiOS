@@ -468,8 +468,24 @@ control/framework.result=smoke complete
             self.assertEqual(2, exit_code.exception.code)
             phone.assert_not_called()
 
+    def test_retired_policy_blocks_live_cli_before_phone(self):
+        with patch.object(TAKEOVER, "Phone") as phone, \
+             patch.object(TAKEOVER, "launch") as launch, \
+             patch("sys.argv", ["sm8850-takeover.py", "--run", "--confirm",
+                                "--accept-legacy-watchdog-risk", "--gpu", "3d",
+                                "--duration", "180"]), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr, \
+             self.assertRaises(SystemExit) as result:
+            TAKEOVER.main()
+        self.assertEqual(2, result.exception.code)
+        self.assertIn("SM8850_THERMAL_POLICY=BLOCKED_LEGACY_RETIRED", stderr.getvalue())
+        phone.assert_not_called()
+        launch.assert_not_called()
+
     def test_run_300s_reaches_launcher_without_phone_activity(self):
+        # Historical argument forwarding under mocks only.
         with tempfile.TemporaryDirectory() as folder, \
+             patch.object(TAKEOVER, "LIVE_THERMAL_POLICY_READY", True), \
              patch.object(TAKEOVER, "Phone") as phone, \
              patch.object(TAKEOVER, "launch", return_value=0) as launch, \
              patch("sys.argv", ["sm8850-takeover.py", "--run", "--confirm",

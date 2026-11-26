@@ -1,0 +1,15 @@
+# SM8850 operator constraints (OneiOS / OneOS)
+
+These requirements supersede historical thermal experiment receipts and defaults.
+Do not silently substitute an implementation choice for an operator requirement.
+
+- Target junction temperatures 45–70 C. This is a cooling/throughput target, not a requirement to heat a cool device.
+- Soft throttle at 70 C. At 80 C hard throttle, latch until junction temperatures are at or below 70 C, then recover gradually.
+- Adaptive frequency ceiling, NOT a fixed 40% hardware-MAX ceiling for the full session. A startup limit must be justified, explicitly distinguished from a permanent ceiling, and qualified before live use.
+- No OneOS/OneiOS thermal-threshold-triggered return or forced reboot. At severe temperatures the replacement must reduce load and, if needed, safely quiesce the guest rather than reboot. Distinguish a temperature reading from a lost monitor, invalid sensors, or actuator failure; do not make an unprotected live session admissible. Do not reinterpret a separately accepted benchmark deadline as authorization for thermal-triggered reboot.
+- Preserve Samsung/Qualcomm stock thermal, power, watchdog and emergency protections. No custom Android kernel/module, kernel flash, SELinux weakening, bypass, or writes that relax another actor's shared frequency/QoS vote. No promise that stock firmware will never shut down or reboot.
+- A reversible frequency actuator requires independent ownership, readback and safe lifecycle semantics. Do not raise shared scaling_max_freq, msm_performance, or cpufreq_limit based merely on cool readings; do not invent vendor perf-lock IDs. CFS duty and utilization clamps are not verified frequency ceilings.
+- Local-first offline tests on the operator's CachyOS/WSL; no GitHub Actions except final explicitly needed PR verification. No live benchmark, staging, rearm, or recovery experiment without a valid new admission and separate operator decision. Preserve existing evidence and rollback.
+- The previous CFS-only live startup sampled 95.7 C; the legacy hybrid policy retained 40% for an entire session and requested thermal emergency return. Neither is an acceptable replacement. Do not re-enable either as the current thermal policy.
+
+Current source status: legacy full-run admission is retired, pending a physically qualified independently owned adaptive actuator and a bounded guest-quiesce mechanism. The pure policy reference is not a live controller. Existing recovery paths are retained for already active/legacy sessions, historical evidence, and separate explicitly selected recovery operations.

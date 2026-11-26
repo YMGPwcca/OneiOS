@@ -664,6 +664,11 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
         return code
 
 
+# Retired policy is retained below only for historical parsing and mocked
+# regression coverage. No environment or risk-token override is supported.
+LIVE_THERMAL_POLICY_READY = False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo", type=Path, default=Path.home() / "projects/OneiOS")
@@ -751,6 +756,8 @@ def main() -> int:
     if (branch in {"feat/oneios-sm8850-m3q", "feat/sm8850-full-bridges-takeover", "feat/sm8850-xnuhost-perf-p0"}
             and args.duration != 180):
         ap.error("SM8850 full bridges live trial requires --duration 180")
+    if not LIVE_THERMAL_POLICY_READY:
+        ap.error("SM8850_THERMAL_POLICY=BLOCKED_LEGACY_RETIRED; adaptive owned ceiling and non-reboot guest quiesce not qualified")
     # Apply once before either preflight or the rearm/run subprocesses.
     # Never depend on the caller remembering a separate shell export.
     if args.own_presence == "on" and (branch != "feat/sm8850-xnuhost-perf-p0" or args.duration != 180):

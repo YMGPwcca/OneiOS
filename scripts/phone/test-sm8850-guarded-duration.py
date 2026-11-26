@@ -30,6 +30,25 @@ def load(name, path):
 
 
 class BoundedTimingTest(unittest.TestCase):
+    def test_retired_policy_refuses_preflight_and_live_before_adb(self):
+        for args in (["--preflight-only"],
+                     ["--i-accept-10-minute-legacy-watchdog-risk"]):
+            mod = load("retired_policy_test", TELEMETRY)
+            with patch("sys.argv", [str(TELEMETRY), "--duration", "180", *args]), \
+                 patch.object(mod.subprocess, "check_output", return_value=PERF_BRANCH), \
+                 patch.object(mod, "stock_identity") as identity, \
+                 patch.object(mod, "adb_shell") as adb, \
+                 patch.object(mod, "run_monitor") as monitor, \
+                 patch.dict(mod.os.environ, {"ONEIOS_SM8850_SOFT_THERMAL_OFF": OFF_TOKEN}), \
+                 contextlib.redirect_stderr(io.StringIO()) as stderr, \
+                 self.assertRaises(SystemExit) as result:
+                mod.main()
+            self.assertEqual(2, result.exception.code)
+            self.assertIn("SM8850_THERMAL_POLICY=BLOCKED_LEGACY_RETIRED", stderr.getvalue())
+            identity.assert_not_called()
+            adb.assert_not_called()
+            monitor.assert_not_called()
+
     def test_no_device_self_tests_at_300_and_600(self):
         for duration in (300, 600):
             with self.subTest(duration=duration):
@@ -56,7 +75,9 @@ class BoundedTimingTest(unittest.TestCase):
             argv += ["--own-presence", own_presence]
             if interaction != "off":
                 argv += ["--perf-profile", "frame", "--interaction-profile", interaction]
+            # Historical admission parser coverage, under mocks only.
             with patch("sys.argv", argv), \
+                 patch.object(mod, "LIVE_THERMAL_POLICY_READY", True), \
                  patch.dict(mod.os.environ, {"ONEIOS_SM8850_SOFT_THERMAL_OFF": env_value}), \
                  patch.object(mod.subprocess, "check_output", return_value=branch) as git, \
                  patch.object(mod, "stock_identity", return_value={"boot_id": "test"}) as identity, \
