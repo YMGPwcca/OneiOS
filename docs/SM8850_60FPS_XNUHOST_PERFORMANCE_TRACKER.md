@@ -687,3 +687,25 @@ resource blocks, SoC identity, native service membership and optional
 default dump is needed; do not repeat broad inventory. No write or
 actual vendor API invocation, kernel changes, stage/rearm or live
 admission. Provider aggregation, ownership and lifetime still unproved.
+
+
+G24.6 targeted follow-up receipt (2026-11-27 ICT):
+`/tmp/oneios-g246-perflock.sqOJGh.txt`, SM8850 SoC ID 660/canoe,
+real max/min nodes under /sys/kernel/msm_performance/parameters,
+sampled max all INT_MAX and min all zero. Exact packed MAX resource IDs
+0x40804000 (big) and 0x40804200 (prime) in firmware launch/animation
+configs; MIN resource IDs 0x40800000/0x40800200 are not to be submitted.
+Native HAL and service belong to /system/uid_* not /apps/uid_* in the
+sampled stock boot. Default perf2 dump empty; no ownership/readback
+proof, no runtime vote tested.
+
+Pin OneOS 0e04adb2a5ab1565e3146d185a5e51f180b0074a for the full receipt. The next step is targeted static
+analysis of the exact client/server ELF and supporting libraries, rather
+than another inventory or guessed perflock request.
+`scripts/phone/sm8850-perflock-static-evidence.py` reads seven fixed
+firmware paths into a host ZIP with size, ELF architecture and SHA256
+checks. No arbitrary path selection, no serial in archive, no vendor
+execution, device-side file creation or control write. Archive is for
+private analysis only; never commit the proprietary binaries. The
+collector is unrun; it does not qualify the provider. No live admission
+change, device staging or thermal-triggered reboot.
