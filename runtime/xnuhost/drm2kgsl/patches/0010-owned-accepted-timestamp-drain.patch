@@ -103,7 +103,7 @@
           pthread_cond_wait(&g_hold.wake, &g_hold.lock);
        }
        if (!g_hold.holding) {
-@@ -1887,5 +1924,6 @@
+@@ -1887,14 +1924,15 @@
           g_hold.holds++;
        }
        pthread_mutex_unlock(&g_hold.lock);
@@ -112,7 +112,6 @@
 +      const int result = oneios_hold_keepalive();
 +      const int submit_error = errno;
 +      struct timespec gap = { 0, (long)ONEIOS_HOLD_PERIOD_NS };
-@@ -1892,9 +1930,9 @@
        nanosleep(&gap, NULL);
        pthread_mutex_lock(&g_hold.lock);
 -      if (ok)

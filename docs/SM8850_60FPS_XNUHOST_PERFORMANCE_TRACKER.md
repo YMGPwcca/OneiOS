@@ -592,3 +592,16 @@ test and KGSL Android link are still pending. No admitted live caller:
 host+backend ticket coordination, independent supervisor, safe resume
 and frequency provider remain blockers. No phone access or new
 kernel/recovery audit requested.
+
+
+G24.4 intermediate local CI at `40c3472f4986010285726027472ebc57ffef4bb3`: KGSL ledger regression
+159 checks PASS; Android build stopped during GNU patch application,
+1/14 hunks rejected with -F0. The hunk at old line 1887 has zero trailing
+context; the next hunk starts immediately at old line 1892. Exact-text
+matching alone was insufficient to model GNU patch's boundary matching.
+Reproduced failure using actual GNU patch -F0 on a host fixture containing
+the two exact original hunk bodies, and confirmed the merged 14-old /
+15-new-line hunk succeeds. Only hunk boundaries/line counts changed;
+the full patch's non-hunk-header lines are byte-identical. No C source or
+ledger test changes. Full patch-chain application and Android link still
+require the operator's local build. No device access or new kernel work.
