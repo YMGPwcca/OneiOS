@@ -40,6 +40,7 @@ bool xh_stopping(void) { return stop_reason != 99; }
 static int ready_count, flushes, flushes_at_frame = -1;
 static bool last_lit, frame_answer = true;
 void xh_guest_ready(void) { }
+bool xh_guest_interaction_ready(void) { return false; }
 bool xh_guest_frame(bool lit) { ready_count++; last_lit = lit; flushes_at_frame = flushes; return frame_answer; }
 struct xh_info g_info;                       // main.c's: the device asks it where the boot framebuffer is
 const struct xh_vector *xh_vector(void) { return NULL; }
@@ -1729,6 +1730,35 @@ static void test_input_script(void)
   CHECK(d.dev && !xh_virtio_ready(d.dev) && driver_init(&d, 0, 2, GUEST_PA + 0x10000) && xh_virtio_ready(d.dev));
 }
 
+static void test_input_bench_plan(void)
+{
+  xh_input_step *steps = NULL;
+  unsigned n = 0, downs = 0, ups = 0, waits = 0;
+  CHECK(xh_input_bench_plan(10, 1450, -20, 3100, &steps, &n) == 0);
+  for (unsigned i = 0; i < n; i++) {
+    xh_input_step *s = &steps[i];
+    CHECK(!s->pen && (s->kind == XH_STEP_WAIT || s->kind == XH_STEP_EVENT));
+    if (s->kind == XH_STEP_WAIT) waits += (unsigned)s->value;
+    else if (s->type == 1) {
+      CHECK(s->code == 0x14a && (s->value == 0 || s->value == 1));
+      if (s->value) downs++; else ups++;
+    } else if (s->type == 3 && s->code == 0x35) CHECK(s->value >= 298 && s->value <= 1162);
+    else if (s->type == 3 && s->code == 0x36) CHECK(s->value >= 916 && s->value <= 2164);
+  }
+  CHECK(downs == 30 && ups == 30 && waits == 60000);
+  free(steps);
+  CHECK(xh_input_bench_plan(1, 1, 0, 3000, &steps, &n) == -1);
+  CHECK(xh_input_bench_can_start(100000, 175000));
+  CHECK(!xh_input_bench_can_start(100001, 175000));
+  CHECK(!xh_input_bench_can_start(0, 175000));
+  CHECK(!xh_input_bench_can_start(200000, 175000));
+  driver d = { .dev = xh_virtio_input_create(0, 45) };
+  int32_t lo, hi;
+  CHECK(d.dev && !xh_virtio_input_get_abs(d.dev, 0x35, &lo, &hi));
+  xh_virtio_input_set_abs(d.dev, 0x35, 10, 1450, 0);
+  CHECK(xh_virtio_input_get_abs(d.dev, 0x35, &lo, &hi) && lo == 10 && hi == 1450);
+}
+
 // ---- the seccomp filter, run as the kernel would ------------------------------------------------
 static uint32_t bpf_run(const struct xs_filter_insn *f, unsigned n, uint32_t nr, uint64_t ip, const uint64_t args[6], uint32_t arch)
 {
@@ -3040,6 +3070,7 @@ int main(void)
   test_input_filter();
   test_pen();
   test_input_script();
+  test_input_bench_plan();
   test_filter();
   test_fault_access();
   test_queue_join();

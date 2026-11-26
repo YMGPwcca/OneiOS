@@ -41,7 +41,8 @@ def read_logs(
     names = (prefix + 'session/xnuhost.log', prefix + 'control/display.log')
     controls = {key: prefix + 'control/' + file for key, file in (
         ('launch_id', 'framework.launch'), ('perf_profile', 'framework.perf-profile'),
-        ('boot_id', 'boot'), ('mode', 'framework.mode'), ('cpu_profile', 'framework.cpu-profile'))}
+        ('boot_id', 'boot'), ('mode', 'framework.mode'), ('cpu_profile', 'framework.cpu-profile'),
+        ('interaction_profile', 'framework.interaction-profile'))}
 
     def finish(read):
         meta = {key: read(name, 256, optional=True) for key, name in controls.items()}
@@ -92,6 +93,64 @@ def read_logs(
             raise ValueError(f'Oversized file: {path}')
         return path.read_text(encoding='utf-8', errors='replace')
     return finish(read)
+
+
+def interaction_summary(host: str, metadata: dict) -> dict:
+    """A valid receipt proves injection, not UI state or physical FPS."""
+    rows = []
+    for line in host.splitlines():
+        if "SM8850_INTERACTION_V1 status=" not in line:
+            continue
+        payload = line.split("SM8850_INTERACTION_V1 ", 1)[1]
+        rows.append(dict(re.findall(r"([a-z_]+)=([^\s]+)", payload)))
+    profile = metadata.get("interaction_profile")
+    begins = [r for r in rows if r.get("status") == "gesture_begin"]
+    ends = [r for r in rows if r.get("status") == "gesture_end"]
+    starts = [r for r in rows if r.get("status") == "start"]
+    finishes = [r for r in rows if r.get("status") == "complete"]
+    timeline = [r for r in rows if r.get("status") in ("start", "gesture_begin", "gesture_end", "complete")]
+    valid = False
+    if profile == "swipe-60s" and len(starts) == len(finishes) == 1 and len(begins) == len(ends) == 30:
+        expected = ["start"] + [s for _ in range(30) for s in ("gesture_begin", "gesture_end")] + ["complete"]
+        try:
+            mono = [int(r["mono_ms"]) for r in timeline]
+            valid = ([r["status"] for r in timeline] == expected and mono == sorted(mono) and
+                     [int(r["index"]) for r in begins] == list(range(1, 31)) and
+                     [int(r["index"]) for r in ends] == list(range(1, 31)) and
+                     starts[0].get("profile") == profile and starts[0].get("planned") == "30" and
+                     finishes[0].get("completed") == "30" and
+                     60000 <= int(finishes[0]["elapsed_ms"]) <= 65000 and
+                     int(starts[0]["deadline_ms"]) - int(starts[0]["boot_ms"]) >= 75000 and
+                     not any(r.get("status") in ("aborted", "skipped", "refused") for r in rows))
+        except (KeyError, ValueError):
+            pass
+    return {"profile": profile, "status": "COMPLETE" if valid else
+            ("OFF" if profile in (None, "off") and not rows else "INCOMPLETE_OR_MISMATCH"),
+            "gesture_begins": len(begins), "gesture_ends": len(ends),
+            "start_mono_ms": int(starts[0]["mono_ms"]) if valid else None,
+            "end_mono_ms": int(finishes[0]["mono_ms"]) if valid else None,
+            "elapsed_ms": int(finishes[0]["elapsed_ms"]) if valid else None,
+            "events": rows, "scope": "injected gesture receipt only; UI state and physical presentation unverified"}
+
+
+def interaction_display_summary(display: str, receipt: dict) -> dict:
+    """Use only whole display windows within a verified interaction interval."""
+    if receipt["status"] != "COMPLETE":
+        return {"status": "UNAVAILABLE_INCOMPLETE_INTERACTION", "active_post_summary": None}
+    selected = []
+    for line in display.splitlines():
+        if "oneios-display: perf:" not in line:
+            continue
+        values = {k: float(v) if "." in v else int(v) for k, v in KVS.findall(line)}
+        end = values.get("mono_ms")
+        duration = values.get("window_ms")
+        if (end is not None and duration is not None and duration > 0 and
+                end - duration >= receipt["start_mono_ms"] and end <= receipt["end_mono_ms"]):
+            selected.append(values)
+    return {"status": "MEASURED_NOT_PHYSICAL_FPS" if selected else "NO_WHOLE_WINDOWS",
+            "whole_windows": len(selected), "active_post_summary": active_post_summary(selected),
+            "peak_post_rate": max((1000 * r["posts"] / r["window_ms"] for r in selected
+                                   if "posts" in r), default=None)}
 
 
 def nearest(events, at, max_diff):
@@ -237,6 +296,8 @@ def main() -> int:
                                  expected_launch=args.expected_launch, metadata=metadata)
         data = analyze(xnu, display, thermal_csv=args.thermal_csv)
         data['session_metadata'] = metadata
+        data['interaction'] = interaction_summary(xnu, metadata)
+        data['interaction_display'] = interaction_display_summary(display, data['interaction'])
         data['runtime_trace_observed'] = {
             'runtime_profile_markers': re.findall(r'(?m)^ONEIOS_PERF_PROFILE=(off|frame|task|frame-task)$', xnu),
             'queue_lines': xnu.count('gpu-queue-trace:'),
@@ -262,6 +323,10 @@ def main() -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(result, encoding='utf-8')
     copy_max = data['max_display_copy_ms']
+    receipt = data['interaction']
+    print(f"INTERACTION_RECEIPT={receipt['status']} profile={receipt['profile']} begins={receipt['gesture_begins']} ends={receipt['gesture_ends']}")
+    if receipt["status"] == "COMPLETE":
+        print("INTERACTION_DISPLAY=" + json.dumps(data["interaction_display"], sort_keys=True))
     print(f"FRAME_STALL_CANDIDATES={len(data['candidate_windows'])}; TOUCH_NO_FRAME={data['touch_without_frame_before_summary_end']}/{data['touch_summaries']}; MAX_DISPLAY_COPY_MS=" +
           (f"{copy_max:.2f}" if copy_max is not None else "UNKNOWN"))
     for item in data['candidate_windows'][:20]:

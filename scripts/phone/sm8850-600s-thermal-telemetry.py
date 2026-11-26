@@ -42,7 +42,7 @@ meta() { printf 'M\t%s\t%s\n' "$1" "$2"; }
 val() { [ ! -r "$1" ] || meta "$2" "$(cat "$1" 2>/dev/null)"; }
 val /proc/sys/kernel/random/boot_id boot_id
 meta uptime "$(cut -d' ' -f1 /proc/uptime)"
-for k in boot state framework.launch framework.mode framework.duration framework.perf-profile framework.cpu-profile framework.own-presence framework.cpu-budget thermal.cap.group framework.deadline framework.takeover-confirmed watchdog.phase thermal.guard.heartbeat thermal.cap.heartbeat thermal.guard.fault thermal.cap.fault; do
+for k in boot state framework.launch framework.mode framework.duration framework.perf-profile framework.cpu-profile framework.own-presence framework.interaction-profile framework.cpu-budget thermal.cap.group framework.deadline framework.takeover-confirmed watchdog.phase thermal.guard.heartbeat thermal.cap.heartbeat thermal.guard.fault thermal.cap.fault; do
     val "$ST/control/$k" "ctl/$k"
 done
 # The previous session's stage is intentionally retained across a reboot.
@@ -517,6 +517,8 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
             cmd += ["--cpu-profile", args.cpu_profile]
         if args.own_presence == "on":
             cmd += ["--own-presence", "on"]
+        if args.interaction_profile != "off":
+            cmd += ["--interaction-profile", args.interaction_profile]
         console.say(f"===== LAUNCH GUARDED ONEIOS FULL {duration}S TAKEOVER =====")
         proc, thread = run_existing(repo, cmd, console, out / "takeover.log", async_mode=True)
         deadline = None
@@ -676,6 +678,8 @@ def main() -> int:
                     help="experimental topology-aware placement; no thermal or recovery change")
     ap.add_argument("--own-presence", choices=("off", "on"), default="off",
                     help="opt-in kernel patch 0082; guarded performance branch 180s only")
+    ap.add_argument("--interaction-profile", choices=("off", "swipe-60s"), default="off",
+                    help="bounded automated gestures, guarded performance branch and frame tracing only")
     ap.add_argument("--no-rearm", action="store_true", help="skip rearm; preflight must still admit a fresh Data clone")
     ap.add_argument("--verbose", action="store_true",
                     help="echo all snapshot and wrapper lines to terminal; full files are always retained")
@@ -751,6 +755,10 @@ def main() -> int:
     # Never depend on the caller remembering a separate shell export.
     if args.own_presence == "on" and (branch != "feat/sm8850-xnuhost-perf-p0" or args.duration != 180):
         ap.error("--own-presence on requires the guarded 180s performance branch")
+    if args.interaction_profile != "off" and (branch != "feat/sm8850-xnuhost-perf-p0" or
+            args.duration != 180 or args.perf_profile not in ("frame", "frame-task") or
+            (not args.preflight_only and not args.no_rearm)):
+        ap.error("interaction requires guarded 180s performance branch, frame tracing and separately prepared Data (--no-rearm)")
     configure_performance_thermal_profile(branch, args.duration, os.environ)
     if not (repo / WRAPPER).is_file():
         ap.error(f"Missing existing OneiOS wrapper: {repo / WRAPPER}")
@@ -772,7 +780,8 @@ def main() -> int:
             prefix + "/system/bin/sh /data/adb/oneios-m3q-framework/oneios_switch.sh --framework-check run " +
             str(args.duration) + profile_token + (" perf-" + args.perf_profile if args.perf_profile != "off" else "") +
             (" cpu-prime-first" if args.cpu_profile == "prime-first" else "") +
-            (" own-presence-1" if args.own_presence == "on" else ""),
+            (" own-presence-1" if args.own_presence == "on" else "") +
+            (" interaction-swipe-60s" if args.interaction_profile == "swipe-60s" else ""),
             root=True, timeout=120,
         )
         print(result, end="" if result.endswith("\n") else "\n")
@@ -800,6 +809,11 @@ def main() -> int:
         expected_own = "SM8850_OWN_PRESENCE=" + ("1" if args.own_presence == "on" else "0")
         if (own_profiles or args.own_presence == "on") and own_profiles != [expected_own]:
             raise RuntimeError("root preflight own-presence mismatch; no Framework stop or data consumption")
+        interaction_profiles = [line for line in result.splitlines()
+                                if line.startswith("SM8850_INTERACTION_PROFILE=")]
+        if (interaction_profiles or args.interaction_profile != "off") and interaction_profiles != [
+                "SM8850_INTERACTION_PROFILE=" + args.interaction_profile]:
+            raise RuntimeError("root preflight interaction profile mismatch; no Framework stop or data consumption")
         if no_guard:
             print("NO_USERSPACE_THERMAL_180S_PREFLIGHT=PASS_NO_FRAMEWORK_STOP_NO_DATA_CONSUMPTION")
         else:

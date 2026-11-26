@@ -162,6 +162,31 @@ class TakeoverTest(unittest.TestCase):
                     self.assertEqual(2, rc)
                     self.assertEqual(1, len(cmds))
 
+    def test_interaction_exact_ack_and_detached_token(self):
+        marker = (b"SM8850_CPU_THROTTLE_POLICY=HYBRID_FREQ40_CFS_V1_TARGET_45_70_HARD_80_RELEASE_70\n"
+                  b"SM8850_PERF_PROFILE=frame\nSM8850_CPU_PROFILE_REQUESTED=default\n")
+        for ack in (b"", b"SM8850_INTERACTION_PROFILE=off\n", b"SM8850_INTERACTION_PROFILE=swipe-60s\n"):
+            with self.subTest(ack=ack), tempfile.TemporaryDirectory() as folder, \
+                 patch.object(TAKEOVER, "audit", return_value=0), \
+                 patch.object(TAKEOVER, "upload", return_value=0), \
+                 patch.object(TAKEOVER, "status", return_value="boot=mock-boot\n"), \
+                 patch.object(TAKEOVER.time, "monotonic", side_effect=[0.0, 1000.0]), \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                device = unittest.mock.Mock()
+                device.root.side_effect = [subprocess.CompletedProcess([], 0, marker + ack),
+                                           subprocess.CompletedProcess([], 0, b"")]
+                rc = TAKEOVER.launch(device, "run", Path(folder), duration=180,
+                                     perf_profile="frame", interaction_profile="swipe-60s")
+                cmds = [c.args[0] for c in device.root.call_args_list]
+                self.assertTrue(cmds[0].endswith("180 perf-frame interaction-swipe-60s"))
+                if ack.endswith(b"=swipe-60s\n"):
+                    self.assertEqual(4, rc)
+                    self.assertEqual(2, len(cmds))
+                    self.assertIn("180 perf-frame interaction-swipe-60s", cmds[1])
+                else:
+                    self.assertEqual(2, rc)
+                    self.assertEqual(1, len(cmds))
+
     def test_detached_run_carries_explicit_no_guard_profile_token(self):
         with tempfile.TemporaryDirectory() as folder, \
              patch.object(TAKEOVER, "audit", return_value=0), \

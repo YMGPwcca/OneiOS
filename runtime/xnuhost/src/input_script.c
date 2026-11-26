@@ -2,6 +2,7 @@
 // A scripted event source for the virtio-input device: touches and key presses from a text file, for a host
 // with no touchscreen (the PC under qemu-aarch64) and for repeatable checks of the guest's input path.
 // Setting: input-script=FILE (--input-script FILE). It runs beside the evdev reader, or alone with --no-input.
+// Reserved @sm8850-swipe-60s: root-admitted 180s benchmark only, no arbitrary file or hardware keys.
 //
 //   # comment
 //   abs CODE MIN MAX [RES]   an axis of the device's configuration (what input.c takes from EVIOCGABS on the
@@ -52,7 +53,13 @@ static xh_pen_source pen_script;               // pen.c's filter, for the pen- l
 static bool pen_on;
 static char script_path[512];
 static pthread_t thread;
-static volatile bool running;
+static bool running;
+static bool bench;
+static uint64_t bench_deadline_ms;
+
+static bool script_running(void) { return __atomic_load_n(&running, __ATOMIC_ACQUIRE); }
+bool xh_input_bench_enabled(void) { return bench; } // selected before any input threads start
+void xh_input_bench_set_deadline(uint64_t deadline_boot_ms) { bench_deadline_ms = deadline_boot_ms; }
 
 static bool push(xh_input_step **list, unsigned *n, unsigned *cap, xh_input_step step)
 {
@@ -182,39 +189,192 @@ int xh_input_script_parse(const char *text, xh_input_step **out, unsigned *count
   return 0;
 }
 
+// Fixed, finite plan; normalized coordinates use the real VirtIO-advertised
+// native touchscreen ranges. Do not alter those axes or send side keys.
+// Four directions in a center rectangle, 320ms motion + 1680ms rest.
+int xh_input_bench_plan(int32_t xmin, int32_t xmax, int32_t ymin, int32_t ymax,
+                        xh_input_step **out, unsigned *count)
+{
+  if ((int64_t)xmax - xmin < 100 || (int64_t)ymax - ymin < 100) return -1;
+  int32_t xl = (int32_t)(xmin + ((int64_t)xmax - xmin) / 5);
+  int32_t xr = (int32_t)(xmin + ((int64_t)xmax - xmin) * 4 / 5);
+  int32_t xm = (int32_t)(xmin + ((int64_t)xmax - xmin) / 2);
+  int32_t yt = (int32_t)(ymin + ((int64_t)ymax - ymin) * 3 / 10);
+  int32_t yb = (int32_t)(ymin + ((int64_t)ymax - ymin) * 7 / 10);
+  int32_t ym = (int32_t)(ymin + ((int64_t)ymax - ymin) / 2);
+  const int32_t points[4][4] = {{xr,ym,xl,ym}, {xl,ym,xr,ym}, {xm,yb,xm,yt}, {xm,yt,xm,yb}};
+  char text[4096];
+  size_t used = 0;
+  for (unsigned i = 0; i < XH_INTERACTION_GESTURES; i++) {
+    const int32_t *p = points[i % 4];
+    int n = snprintf(text + used, sizeof text - used, "swipe %d %d %d %d 320\nwait 1680\n",
+                     p[0], p[1], p[2], p[3]);
+    if (n < 0 || (size_t)n >= sizeof text - used) return -1;
+    used += (size_t)n;
+  }
+  return xh_input_script_parse(text, out, count, NULL);
+}
+
+bool xh_input_bench_can_start(uint64_t now_boot_ms, uint64_t deadline_boot_ms)
+{
+  return now_boot_ms && deadline_boot_ms > now_boot_ms &&
+         deadline_boot_ms - now_boot_ms >= XH_INTERACTION_MAX_MS + XH_INTERACTION_RESERVE_MS;
+}
+
+static uint64_t boot_ms(void)
+{
+#ifdef CLOCK_BOOTTIME
+  struct timespec t;
+  if (!clock_gettime(CLOCK_BOOTTIME, &t))
+    return (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
+#endif
+  return 0;
+}
+
+static uint64_t mono_ms(void)
+{
+  struct timespec t;
+  if (clock_gettime(CLOCK_MONOTONIC, &t)) return 0;
+  return (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
+}
+
 static void sleep_ms(long ms)
 {
-  for (; ms > 0 && running; ms -= 50) {
+  for (; ms > 0 && script_running(); ms -= 50) {
     long part = ms < 50 ? ms : 50;
     nanosleep(&(struct timespec){ .tv_sec = 0, .tv_nsec = part * 1000000L }, NULL);
   }
 }
 
+static void emit_step(const xh_input_step *s)
+{
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  const int64_t now_ns = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
+  const xh_input_ev ev = { now_ns, s->type, s->code, s->value };
+  if (s->pen) { if (pen_on) xh_pen_feed(&pen_script, &ev, 1, now_ns); }
+  else xh_input_feed(&source, &ev, 1, now_ns, xh_counter(), g_info.timebase_hz);
+}
+
+static bool bench_alive(uint64_t limit)
+{
+  uint64_t now = boot_ms();
+  return script_running() && !xh_stopping() && now && now < limit;
+}
+
+static bool bench_wait(uint64_t target_ms, uint64_t limit)
+{
+  while (bench_alive(limit)) {
+    uint64_t now = boot_ms();
+    if (!now) break;
+    if (now >= target_ms) return true;
+    uint64_t left = target_ms - now;
+    sleep_ms((long)(left < 50 ? left : 50));
+  }
+  return false;
+}
+
+static void bench_release(void)
+{
+  const xh_input_step release[] = {
+    { .kind = XH_STEP_EVENT, .type = EV_ABS_, .code = ABS_MT_SLOT_, .value = 0 },
+    { .kind = XH_STEP_EVENT, .type = EV_ABS_, .code = ABS_MT_TRACKING_ID_, .value = -1 },
+    { .kind = XH_STEP_EVENT, .type = EV_KEY_, .code = BTN_TOUCH_, .value = 0 },
+    { .kind = XH_STEP_EVENT, .type = EV_SYN_, .code = 0, .value = 0 },
+  };
+  for (unsigned i = 0; i < sizeof release / sizeof *release; i++) emit_step(&release[i]);
+}
+
+static void run_bench(void)
+{
+  // The deadline is in the same CLOCK_BOOTTIME domain as the switcher's
+  // /proc/uptime. Leave a full recovery margin; late boot skips, never extends.
+  const uint64_t latest = bench_deadline_ms > XH_INTERACTION_RESERVE_MS ?
+                          bench_deadline_ms - XH_INTERACTION_RESERVE_MS : 0;
+  while (bench_alive(latest) &&
+         (!xh_guest_interaction_ready() || !xh_virtio_ready(target))) {
+    uint64_t now = boot_ms();
+    if (!now || now >= latest || latest - now < XH_INTERACTION_WARMUP_MS + XH_INTERACTION_MAX_MS) break;
+    sleep_ms(100);
+  }
+  uint64_t now = boot_ms();
+  if (!bench_alive(latest) || !xh_guest_interaction_ready() || !xh_virtio_ready(target) ||
+      !now || now >= latest || latest - now < XH_INTERACTION_WARMUP_MS + XH_INTERACTION_MAX_MS ||
+      !bench_wait(now + XH_INTERACTION_WARMUP_MS, latest) ||
+      !xh_virtio_ready(target) || !xh_input_bench_can_start(boot_ms(), bench_deadline_ms)) {
+    LOGI("SM8850_INTERACTION_V1 status=skipped reason=not_ready_or_insufficient_time mono_ms=%llu",
+         (unsigned long long)mono_ms());
+    return;
+  }
+  uint64_t start = boot_ms();
+  if (!xh_input_bench_can_start(start, bench_deadline_ms)) {
+    LOGI("SM8850_INTERACTION_V1 status=skipped reason=late_start mono_ms=%llu", (unsigned long long)mono_ms());
+    return;
+  }
+  uint64_t limit = start + XH_INTERACTION_MAX_MS;
+  if (limit > latest) limit = latest;
+  unsigned completed = 0;
+  bool held = false, lifting = false;
+  LOGI("SM8850_INTERACTION_V1 status=start profile=swipe-60s mono_ms=%llu boot_ms=%llu deadline_ms=%llu planned=%u ui=unverified",
+       (unsigned long long)mono_ms(), (unsigned long long)start,
+       (unsigned long long)bench_deadline_ms, XH_INTERACTION_GESTURES);
+  for (unsigned i = 0; i < nsteps; i++) {
+    if (!bench_alive(limit) || !xh_virtio_ready(target) || xh_virtio_input_backlog(target) > 128) break;
+    const xh_input_step *s = &steps[i];
+    if (s->kind == XH_STEP_WAIT) {
+      if (!bench_wait(boot_ms() + (uint64_t)s->value, limit)) break;
+    } else if (s->kind == XH_STEP_EVENT) {
+      if (s->type == EV_ABS_ && s->code == ABS_MT_TRACKING_ID_) {
+        if (s->value >= 0) {
+          // Each preceding gesture had a 1.68s rest to drain. An outstanding
+          // backlog invalidates a comparable run instead of silently losing input.
+          if (xh_virtio_input_backlog(target)) break;
+          held = true;
+          LOGI("SM8850_INTERACTION_V1 status=gesture_begin index=%u mono_ms=%llu",
+               completed + 1, (unsigned long long)mono_ms());
+        } else lifting = true;
+      }
+      emit_step(s);
+      if (s->type == EV_SYN_ && lifting) {
+        held = lifting = false;
+        completed++;
+        LOGI("SM8850_INTERACTION_V1 status=gesture_end index=%u mono_ms=%llu",
+             completed, (unsigned long long)mono_ms());
+      }
+    }
+    if (i + 1 == nsteps && completed == XH_INTERACTION_GESTURES && bench_alive(limit) &&
+        !xh_virtio_input_backlog(target)) {
+      LOGI("SM8850_INTERACTION_V1 status=complete completed=%u mono_ms=%llu elapsed_ms=%llu",
+           completed, (unsigned long long)mono_ms(), (unsigned long long)(boot_ms() - start));
+      return;
+    }
+  }
+  if (held && !xh_stopping() && xh_virtio_ready(target)) bench_release();
+  LOGI("SM8850_INTERACTION_V1 status=aborted completed=%u mono_ms=%llu backlog=%u",
+       completed, (unsigned long long)mono_ms(), xh_virtio_input_backlog(target));
+}
+
 static void *script_main(void *arg)
 {
   (void)arg;
+  if (bench) { run_bench(); return NULL; }
   unsigned start = 0;
   int32_t left = 0;                            // repeats still to run; 0 before the first `repeat` is met
   bool counting = false;
-  for (unsigned i = 0; i < nsteps && running; i++) {
+  for (unsigned i = 0; i < nsteps && script_running(); i++) {
     const xh_input_step *s = &steps[i];
     switch (s->kind) {
     case XH_STEP_ABS: break;                   // applied when the file was read
     case XH_STEP_READY:
-      while (running && !xh_virtio_ready(target)) sleep_ms(200);
-      if (running) LOGI("input script: the guest's driver runs the input device");
+      while (script_running() && !xh_virtio_ready(target)) sleep_ms(200);
+      if (script_running()) LOGI("input script: the guest's driver runs the input device");
       start = i + 1;
       break;
     case XH_STEP_WAIT: sleep_ms(s->value); break;
     case XH_STEP_EVENT: {
       // Through input.c's filter, as the panel's events go: a frame's end gets its time (EV_MSC / MSC_TIMESTAMP, the
       // time it is sent), and the gesture is counted and logged (input: touch: ...) with its touch-to-frame time.
-      struct timespec now;
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      const int64_t now_ns = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
-      const xh_input_ev ev = { now_ns, s->type, s->code, s->value };
-      if (s->pen) { if (pen_on) xh_pen_feed(&pen_script, &ev, 1, now_ns); }   // the pen's filter (pen.c), as the phone's pen
-      else xh_input_feed(&source, &ev, 1, now_ns, xh_counter(), g_info.timebase_hz);
+      emit_step(s);
       break;
     }
     case XH_STEP_REPEAT:
@@ -224,13 +384,15 @@ static void *script_main(void *arg)
       break;
     }
   }
-  if (running) LOGI("input script: done");
+  if (script_running()) LOGI("input script: done");
   return NULL;
 }
 
 int xh_input_script_load(const char *path, bool *has_pen)
 {
   *has_pen = false;
+  bench = path && !strcmp(path, XH_SM8850_INTERACTION_SCRIPT);
+  if (bench) return bench_deadline_ms ? 0 : -1;
   if (!path || !*path) return 0;
   FILE *f = fopen(path, "r");
   if (!f) { LOGE("input script %s: %s", path, strerror(errno)); return -1; }
@@ -252,6 +414,22 @@ int xh_input_script_load(const char *path, bool *has_pen)
 
 int xh_input_script_start(xh_virtio *dev, xh_virtio *pen)
 {
+  if (bench) {
+    int32_t xmin, xmax, ymin, ymax, slot_min, slot_max, id_min, id_max;
+    if (!bench_deadline_ms || !boot_ms() ||
+        !xh_virtio_input_get_abs(dev, ABS_MT_SLOT_, &slot_min, &slot_max) ||
+        slot_min != 0 || slot_max < 0 ||
+        !xh_virtio_input_get_abs(dev, ABS_MT_TRACKING_ID_, &id_min, &id_max) ||
+        id_min > 1 || id_max < (int32_t)XH_INTERACTION_GESTURES ||
+        !xh_virtio_input_get_abs(dev, ABS_MT_POSITION_X_, &xmin, &xmax) ||
+        !xh_virtio_input_get_abs(dev, ABS_MT_POSITION_Y_, &ymin, &ymax) ||
+        xh_input_bench_plan(xmin, xmax, ymin, ymax, &steps, &nsteps)) {
+      LOGE("SM8850_INTERACTION_V1 status=refused reason=invalid_clock_or_native_axes");
+      return -1;
+    }
+    snprintf(script_path, sizeof script_path, "%s", XH_SM8850_INTERACTION_SCRIPT);
+    LOGI("SM8850_INTERACTION_V1 status=prepared x=%d..%d y=%d..%d", xmin, xmax, ymin, ymax);
+  }
   if (!nsteps) return 0;
   unsigned events = 0, pen_events = 0;
   xh_pen_device scripted = { .fd = -1 };
@@ -275,15 +453,16 @@ int xh_input_script_start(xh_virtio *dev, xh_virtio *pen)
     xh_pen_describe(&scripted, axes, sizeof axes);
     LOGI("input script: a pen (%s) on the guest's pen device", axes);
   } else if (pen_events) LOGI("input script: %u pen events, no pen device (pen=off): left out", pen_events);
-  running = true;
-  if (pthread_create(&thread, NULL, script_main, NULL)) { running = false; return -1; }
+  __atomic_store_n(&running, true, __ATOMIC_RELEASE);
+  if (pthread_create(&thread, NULL, script_main, NULL)) {
+    __atomic_store_n(&running, false, __ATOMIC_RELEASE); return -1;
+  }
   LOGI("input script: %s, %u steps (%u events, %u of them the pen's)", script_path, nsteps, events, pen_events);
   return 0;
 }
 
 void xh_input_script_stop(void)
 {
-  if (!running) return;
-  running = false;
+  if (!__atomic_exchange_n(&running, false, __ATOMIC_ACQ_REL)) return;
   pthread_join(thread, NULL);
 }

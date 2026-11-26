@@ -134,6 +134,17 @@ void xh_virtio_input_set_abs(xh_virtio *dev, unsigned axis, int32_t min, int32_t
   s->abs[axis].min = min; s->abs[axis].max = max; s->abs[axis].res = res; s->abs[axis].present = true;
 }
 
+// Read the actual advertised axis bounds without changing the guest's configuration.
+bool xh_virtio_input_get_abs(xh_virtio *dev, unsigned axis, int32_t *min, int32_t *max)
+{
+  if (!dev || !min || !max || axis >= ABS_COUNT_) return false;
+  input_state *s = xh_virtio_opaque(dev);
+  if (!s->abs[axis].present || s->abs[axis].min >= s->abs[axis].max) return false;
+  *min = s->abs[axis].min;
+  *max = s->abs[axis].max;
+  return true;
+}
+
 void xh_virtio_input_event(xh_virtio *dev, uint16_t type, uint16_t code, int32_t value)
 {
   input_state *s = xh_virtio_opaque(dev);

@@ -46,7 +46,7 @@ class BoundedTimingTest(unittest.TestCase):
                                capture_output=True, text=True, timeout=10)
             self.assertEqual(2, p.returncode)
 
-    def preflight_fixture(self, branch, env_value, result, error=None, own_presence="off"):
+    def preflight_fixture(self, branch, env_value, result, error=None, own_presence="off", interaction="off"):
         mod = load("sm8850_tel_preflight_test", TELEMETRY)
         with tempfile.TemporaryDirectory() as td:
             adb = Path(td) / "fake-adb"
@@ -54,6 +54,8 @@ class BoundedTimingTest(unittest.TestCase):
             argv = ["sm8850-600s-thermal-telemetry.py", "--repo", str(ROOT),
                     "--adb", str(adb), "--preflight-only", "--duration", "180"]
             argv += ["--own-presence", own_presence]
+            if interaction != "off":
+                argv += ["--perf-profile", "frame", "--interaction-profile", interaction]
             with patch("sys.argv", argv), \
                  patch.dict(mod.os.environ, {"ONEIOS_SM8850_SOFT_THERMAL_OFF": env_value}), \
                  patch.object(mod.subprocess, "check_output", return_value=branch) as git, \
@@ -91,6 +93,16 @@ class BoundedTimingTest(unittest.TestCase):
         self.assertNotIn("own-presence-1", cmd)
         self.preflight_fixture(PERF_BRANCH, "", base + "SM8850_OWN_PRESENCE=1\n",
                                "own-presence mismatch")
+
+    def test_interaction_preflight_requires_exact_ack(self):
+        base = "PREFLIGHT OK\n" + GUARDED_MARKER + "\nSM8850_PERF_PROFILE=frame\n"
+        cmd = self.preflight_fixture(PERF_BRANCH, "", base + "SM8850_INTERACTION_PROFILE=swipe-60s\n",
+                                     interaction="swipe-60s")
+        self.assertTrue(cmd.endswith(" perf-frame interaction-swipe-60s"))
+        for reply in (base, base + "SM8850_INTERACTION_PROFILE=off\n",
+                      base + "SM8850_INTERACTION_PROFILE=swipe-60s\nSM8850_INTERACTION_PROFILE=swipe-60s\n"):
+            self.preflight_fixture(PERF_BRANCH, "", reply, "interaction profile mismatch",
+                                   interaction="swipe-60s")
 
     def test_preflight_only_never_invokes_takeover_or_rearm(self):
         command = self.preflight_fixture(

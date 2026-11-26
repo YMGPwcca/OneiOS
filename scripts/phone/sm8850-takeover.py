@@ -519,7 +519,7 @@ def full_takeover_deadline_result(baseline, after, token):
 
 def launch(phone, mode, output, *, reboot_only=False, duration=600,
            passive_soft_thermal=False, on_reboot_smoke_ready=None, smoke_seconds=20,
-           perf_profile="off", cpu_profile="default", own_presence="off"):
+           perf_profile="off", cpu_profile="default", own_presence="off", interaction_profile="off"):
     # SM8850 full-run deliberately uses the same legacy OneOS V watchdog
     # feeder and mandatory reboot-return path as the observed smoke.
     # It is separately risk-acknowledged, NEVER an in-place handback.
@@ -538,6 +538,10 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
             (mode != "run" or duration != 180 or passive_soft_thermal)):
         raise ValueError("own-presence requires guarded 180s run")
     own_token = " own-presence-1" if own_presence == "on" else ""
+    if interaction_profile not in ("off", "swipe-60s") or (interaction_profile != "off" and
+            (mode != "run" or duration != 180 or passive_soft_thermal or perf_profile not in ("frame", "frame-task"))):
+        raise ValueError("interaction requires guarded 180s run and frame tracing")
+    interaction_token = " interaction-swipe-60s" if interaction_profile == "swipe-60s" else ""
     legacy_reboot = reboot_only or mode == "run"
     if passive_soft_thermal and (mode != "run" or duration != 180):
         raise ValueError("passive software thermal experiment requires exactly 180s run")
@@ -556,7 +560,7 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
     smoke_token = f" {smoke_seconds}" if reboot_only and smoke_seconds != 20 else ""
     check = phone.root(f"{experimental_prefix}{shell} --framework-check {session_mode}" +
                        (f" {duration}" if mode == "run" else smoke_token) +
-                       (" I_ACCEPT_SOFT_GUARD_OFF_180S" if passive_soft_thermal else "") + perf_token + cpu_token + own_token,
+                       (" I_ACCEPT_SOFT_GUARD_OFF_180S" if passive_soft_thermal else "") + perf_token + cpu_token + own_token + interaction_token,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
     check_output = check.stdout.decode("utf-8", "replace") if isinstance(check.stdout, bytes) else (check.stdout or "")
     if check_output:
@@ -603,6 +607,13 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
             print("BLOCKED: root preflight own-presence mismatch; nothing was launched",
                   file=sys.stderr, flush=True)
             return 2
+        interaction_profiles = [line for line in check_output.splitlines()
+                                if line.startswith("SM8850_INTERACTION_PROFILE=")]
+        if (interaction_profiles or interaction_profile != "off") and interaction_profiles != [
+                "SM8850_INTERACTION_PROFILE=" + interaction_profile]:
+            print("BLOCKED: root preflight interaction profile mismatch; nothing was launched",
+                  file=sys.stderr, flush=True)
+            return 2
     baseline = status(phone)
     (output / "baseline.txt").write_text(baseline)
     boot = re.search(r"^boot=(.+)$", baseline, re.M).group(1)
@@ -618,6 +629,8 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
             "preflight_profile": profiles[0] if profiles else None,
             "requested_cpu_profile": cpu_profile,
             "requested_own_presence": own_presence,
+            "requested_interaction_profile": interaction_profile,
+            "preflight_interaction_profile": interaction_profiles[0] if interaction_profiles else None,
             "preflight_own_presence": own_profiles[0] if own_profiles else None,
             "thermal_policy": "historical_no_guard" if passive_soft_thermal else "guarded_75c_monotonic",
             "preflight_cpu_profile": cpu_profiles[0] if cpu_profiles else None,
@@ -631,7 +644,7 @@ cd {STAGE}
 mkdir -p launches
 mkdir launches/{token}
 /data/adb/ksu/bin/busybox setsid /system/bin/sh -c '
-    {experimental_prefix}{shell} --framework-session {session_mode} {ACK} {token}{risk_token}{duration_token}{thermal_profile_token}{perf_token}{cpu_token}{own_token}
+    {experimental_prefix}{shell} --framework-session {session_mode} {ACK} {token}{risk_token}{duration_token}{thermal_profile_token}{perf_token}{cpu_token}{own_token}{interaction_token}
     rc=$?
     printf "%s\n" "$rc" > launches/{token}/exit
 ' </dev/null > launches/{token}/switch.log 2>&1 &
@@ -841,6 +854,8 @@ def main():
                         help="full run only: experimental topology-aware CPU placement; default unchanged")
     parser.add_argument("--own-presence", choices=("off", "on"), default="off",
                         help="opt-in kernel patch 0082; guarded 180s run only")
+    parser.add_argument("--interaction-profile", choices=("off", "swipe-60s"), default="off",
+                        help="fixed root-admitted gesture workload; guarded 180s and frame tracing only")
     parser.add_argument("--gpu", choices=["3d"])
     parser.add_argument("--bench-manifest", type=Path)
     parser.add_argument("--kernel-collection", type=Path)
@@ -868,6 +883,9 @@ def main():
         parser.error("--perf-profile applies to --run")
     if args.own_presence == "on" and (args.mode != "run" or args.duration != 180 or args.passive_soft_thermal_180):
         parser.error("--own-presence on requires guarded --run --duration 180")
+    if args.interaction_profile != "off" and (args.mode != "run" or args.duration != 180 or
+            args.passive_soft_thermal_180 or args.perf_profile not in ("frame", "frame-task")):
+        parser.error("interaction requires guarded --run --duration 180 and frame tracing")
     if args.passive_soft_thermal_180 and (args.mode != "run" or args.duration != 180):
         parser.error("--no-userspace-thermal-180 requires --run --duration 180")
     if (args.mode == "prepare") != bool(args.bench_manifest):
@@ -923,7 +941,7 @@ def main():
                   duration=args.duration if args.duration is not None else 600,
                   passive_soft_thermal=args.passive_soft_thermal_180,
                   perf_profile=args.perf_profile, cpu_profile=args.cpu_profile,
-                  own_presence=args.own_presence)
+                  own_presence=args.own_presence, interaction_profile=args.interaction_profile)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ Usage:
   bash scripts/phone/sm8850-full-takeover.sh prepare [SERIAL]
   bash scripts/phone/sm8850-full-takeover.sh rearm [SERIAL]
   bash scripts/phone/sm8850-full-takeover.sh stage-runtime [SERIAL]
-  bash scripts/phone/sm8850-full-takeover.sh run [SERIAL] --i-accept-10-minute-legacy-watchdog-risk [--duration SECONDS] [--perf-profile off|frame|task|frame-task] [--cpu-profile default|prime-first] [--own-presence off|on]
+  bash scripts/phone/sm8850-full-takeover.sh run [SERIAL] --i-accept-10-minute-legacy-watchdog-risk [--duration SECONDS] [--perf-profile off|frame|task|frame-task] [--cpu-profile default|prime-first] [--own-presence off|on] [--interaction-profile off|swipe-60s]
 stage-runtime: root-only stage update, no build/test, no APFS rearm and no
 Framework stop; requires previously consumed Data and prebuilt 3D artifacts.
 Full-bridges experimental branch: rearm and run are explicitly gated by
@@ -48,6 +48,7 @@ duration_explicit=0
 perf_profile=off
 cpu_profile=default
 own_presence=off
+interaction_profile=off
 case "$mode" in prepare|rearm|stage-runtime|run) ;; *) usage ;; esac
 if [ "$mode" = run ]; then
     [ "$risk" = --i-accept-10-minute-legacy-watchdog-risk ] || usage
@@ -61,6 +62,7 @@ if [ "$mode" = run ]; then
     perf_seen=0
     cpu_seen=0
     own_seen=0
+    interaction_seen=0
     while [ "$#" -gt 0 ]; do
         [ "$#" -ge 2 ] || usage
         case "$1" in
@@ -79,6 +81,11 @@ if [ "$mode" = run ]; then
                 own_seen=1
                 own_presence=$2
                 case "$own_presence" in off|on) ;; *) usage ;; esac ;;
+            --interaction-profile)
+                [ "$interaction_seen" = 0 ] || usage
+                interaction_seen=1
+                interaction_profile=$2
+                case "$interaction_profile" in off|swipe-60s) ;; *) usage ;; esac ;;
             *) usage ;;
         esac
         shift 2
@@ -132,6 +139,13 @@ esac
 if [ "$own_presence" = on ]; then
     [ "$BRANCH" = feat/sm8850-xnuhost-perf-p0 ] && [ "$duration" = 180 ] || {
         echo "BLOCKED: own-presence requires the guarded 180s performance branch" >&2
+        exit 2
+    }
+fi
+if [ "$interaction_profile" != off ]; then
+    [ "$BRANCH" = feat/sm8850-xnuhost-perf-p0 ] && [ "$duration" = 180 ] &&
+        { [ "$perf_profile" = frame ] || [ "$perf_profile" = frame-task ]; } || {
+        echo "BLOCKED: interaction requires guarded 180s performance branch and frame tracing" >&2
         exit 2
     }
 fi
@@ -345,6 +359,7 @@ PY
     [ "$perf_profile" = off ] || extra+=(--perf-profile "$perf_profile")
     [ "$cpu_profile" = default ] || extra+=(--cpu-profile "$cpu_profile")
     [ "$own_presence" = off ] || extra+=(--own-presence "$own_presence")
+    [ "$interaction_profile" = off ] || extra+=(--interaction-profile "$interaction_profile")
     if [ "${ONEIOS_SM8850_SOFT_THERMAL_OFF:-}" = I_ACCEPT_SOFT_GUARD_OFF_180S ]; then
       [ "$duration" = 180 ] || { echo "BLOCKED: passive thermal mode requires 180s" >&2; exit 2; }
       extra+=(--no-userspace-thermal-180)

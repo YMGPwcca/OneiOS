@@ -118,6 +118,14 @@ static bool sm8850_full_bridge_admitted(void)
   if (sm8850_stage_line("/data/control/framework.cpu-profile", cpu_profile, sizeof cpu_profile) ?
       strcmp(cpu_profile, want_cpu) : strcmp(want_cpu, "default")) return false;
 
+  // The built-in workload is only admitted by the root-owned, current-session
+  // profile. Arbitrary input files are not accepted in a full takeover.
+  char interaction[32] = {0};
+  bool want_interaction = !strcmp(config.input_script, XH_SM8850_INTERACTION_SCRIPT);
+  if (sm8850_stage_line("/data/control/framework.interaction-profile", interaction, sizeof interaction) ?
+      strcmp(interaction, want_interaction ? "swipe-60s" : "off") : want_interaction) return false;
+  if (*config.input_script && !want_interaction) return false;
+
   // OneOS's 180s no-guard mode intentionally has neither thermal worker.
   // Match its same-generation stop receipt and reboot deadline instead of
   // fabricating thermal.guard.required / thermal.cap.required.
@@ -134,6 +142,20 @@ static bool sm8850_full_bridge_admitted(void)
   xh_sm8850_stage_profile stage_profile = xh_sm8850_classify_stage(
       generation, software_thermal, duration, confirmed, deadline, guard, cap);
   if (stage_profile == XH_SM8850_STAGE_REFUSED) return false;
+  if (want_interaction) {
+    char budget[32];
+    if (stage_profile == XH_SM8850_STAGE_NO_USERSPACE_THERMAL_180S ||
+        !config.input || !config.touch_exclusive || !config.frame_trace ||
+        !sm8850_stage_line("/data/control/framework.cpu-budget", budget, sizeof budget) ||
+        strcmp(budget, "hybrid-v1-180s") ||
+        !sm8850_stage_line("/data/control/framework.duration", duration, sizeof duration) ||
+        strcmp(duration, "180") ||
+        !sm8850_stage_line("/data/control/framework.deadline", deadline, sizeof deadline) ||
+        strlen(deadline) > 12 || strspn(deadline, "0123456789") != strlen(deadline)) return false;
+    uint64_t seconds = strtoull(deadline, NULL, 10);
+    if (!seconds) return false;
+    xh_input_bench_set_deadline(seconds * 1000u);
+  }
   ssize_t a = readlink("/proc/self/ns/mnt", ns_self, sizeof ns_self - 1);
   ssize_t z = readlink("/proc/1/ns/mnt", ns_init, sizeof ns_init - 1);
   if (a <= 0 || z <= 0) return false;
@@ -154,6 +176,7 @@ static bool sm8850_full_bridge_admitted(void)
 static struct { uint32_t requested, reason, code; char why[96]; } stop_state;
 static pthread_mutex_t stop_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool guest_ready;
+static bool interaction_ready;
 static uint64_t boot_fb_pa;
 static unsigned fb_width, fb_height, fb_hz;
 
@@ -201,6 +224,10 @@ static void ready_now(xh_ready_why why, uint64_t now)
   if (why == XH_READY_NOT || why == XH_READY_ALREADY) return;
   if (__atomic_exchange_n(&guest_ready, true, __ATOMIC_ACQ_REL)) return;
   session_file("ready", "ready\n");
+  // A black-frame timeout or unconditional first-frame mode is not a usable
+  // interaction gate. Even a content/host-call receipt does not prove unlock.
+  if (why == XH_READY_CONTENT || why == XH_READY_CALL)
+    __atomic_store_n(&interaction_ready, true, __ATOMIC_RELEASE);
   double after = (double)(now - ready_rule.first_ms) / 1000.0;
   unsigned long long frames = (unsigned long long)ready_rule.frames;
   if (why == XH_READY_CONTENT && frames <= 1) LOGI("guest ready: first frame (it has content)");
@@ -211,6 +238,11 @@ static void ready_now(xh_ready_why why, uint64_t now)
          config.ready_content_wait, frames);
   else if (why == XH_READY_ANY_FRAME) LOGI("guest ready: first frame (ready-content-wait=0: content not waited for)");
   else LOGI("guest ready: first frame (the kernel's ready call)");
+}
+
+bool xh_guest_interaction_ready(void)
+{
+  return __atomic_load_n(&interaction_ready, __ATOMIC_ACQUIRE);
 }
 
 void xh_guest_ready(void)
@@ -751,7 +783,8 @@ static int boot(void)
   // Verify the full-bridges experiment before touching guest RAM, KGSL,
   // /dev/input or any Samsung CPU/HAL/panel device. Android Framework must
   // be down and its root-owned recovery admission match THIS boot.
-  if (config.sm8850_full_bridges && !sm8850_full_bridge_admitted()) {
+  if ((!strcmp(config.input_script, XH_SM8850_INTERACTION_SCRIPT) && !config.sm8850_full_bridges) ||
+      (config.sm8850_full_bridges && !sm8850_full_bridge_admitted())) {
     LOGE("SM8850_FULL_BRIDGES=BLOCKED_FRAMEWORK_OR_STAGE_NOT_VERIFIED; no host hardware opened");
     return -1;
   }

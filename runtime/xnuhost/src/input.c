@@ -339,6 +339,11 @@ static void *input_main(void *arg)
       struct input_event ev[64];
       ssize_t n = read(fds[i].fd, ev, sizeof ev);
       if (n <= 0) continue;
+      // An admitted automated workload owns the guest's touch slot. Continue
+      // draining the already-grabbed native touchscreen, without mixing
+      // physical touches into its synthetic gestures. The separate side-key
+      // devices and root recovery readers are unchanged.
+      if ((int)i != pen_index && sources[i].touch && xh_input_bench_enabled()) continue;
       int64_t now_ns = monotonic_ns();
       uint64_t now_counter = xh_counter();
       xh_input_ev batch[64];

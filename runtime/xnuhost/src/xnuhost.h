@@ -569,6 +569,7 @@ xh_ready_why xh_ready_on_frame(xh_ready_state *st, bool lit, int wait_s, uint64_
 xh_ready_why xh_ready_on_tick(xh_ready_state *st, int wait_s, uint64_t now_ms);             // the clock
 xh_ready_why xh_ready_on_call(xh_ready_state *st);                                          // the ready host call
 void xh_guest_ready(void);                 // the kernel's ready host call (main.c)
+bool xh_guest_interaction_ready(void);     // current in-memory readiness, not proof of unlocked UI
 // A frame of the guest's own was shown (virtio_gpu.c calls it before the frame goes to the display helper, so that
 // session/ready is there first); lit: xh_pixels_lit of the display's frame. True once the guest is ready, after which
 // it need not be called again. main.c.
@@ -701,6 +702,7 @@ void  xh_input_feed(xh_input_source *s, const xh_input_ev *ev, unsigned n, int64
 // virtio-input side
 void  xh_virtio_input_event(xh_virtio *dev, uint16_t type, uint16_t code, int32_t value);
 void  xh_virtio_input_set_abs(xh_virtio *dev, unsigned axis, int32_t min, int32_t max, int32_t res);
+bool  xh_virtio_input_get_abs(xh_virtio *dev, unsigned axis, int32_t *min, int32_t *max);
 // The device's name, serial and key codes (the default: "OneiOS touchscreen" with the side keys and BTN_TOUCH; at most 8 keys).
 void  xh_virtio_input_set_identity(xh_virtio *dev, const char *name, const char *serial, const uint16_t *keys, unsigned nkeys);
 unsigned xh_virtio_input_backlog(xh_virtio *dev);   // events still waiting for the guest's buffers
@@ -786,6 +788,16 @@ typedef struct { xh_input_step_kind kind; bool pen; uint16_t type, code; int32_t
 int   xh_input_script_parse(const char *text, xh_input_step **steps, unsigned *count, unsigned *bad_line);
 // Read and parse the file before the board is made (*has_pen: it has pen- lines, so it wants a pen device): 0, or no
 // path; -1: unreadable or a bad line. Then start it on the touch screen's device and the pen's (NULL: pen lines left out).
+#define XH_SM8850_INTERACTION_SCRIPT "@sm8850-swipe-60s"
+#define XH_INTERACTION_GESTURES 30u
+#define XH_INTERACTION_WARMUP_MS 10000u
+#define XH_INTERACTION_MAX_MS 65000u
+#define XH_INTERACTION_RESERVE_MS 10000u
+bool  xh_input_bench_enabled(void);
+void  xh_input_bench_set_deadline(uint64_t deadline_boot_ms);
+bool  xh_input_bench_can_start(uint64_t now_boot_ms, uint64_t deadline_boot_ms);
+int   xh_input_bench_plan(int32_t xmin, int32_t xmax, int32_t ymin, int32_t ymax,
+                          xh_input_step **out, unsigned *count);
 int   xh_input_script_load(const char *path, bool *has_pen);
 int   xh_input_script_start(xh_virtio *dev, xh_virtio *pen);
 void  xh_input_script_stop(void);
