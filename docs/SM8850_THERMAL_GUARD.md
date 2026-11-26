@@ -1,5 +1,16 @@
 # SM8850 independent thermal guard — design and acceptance
 
+> **SUPERSEDED HISTORICAL DESIGN (2026-11-26):** the return-on-temperature
+> state machine below is not the current operator requirement or a new
+> launch instruction. See [AGENTS.md](../AGENTS.md) and
+> [the adaptive redesign](../app/docs/SM8850_ADAPTIVE_THERMAL.md): 45–70 C,
+> soft throttle at 70 C, hard at 80 C latched until <=70 C, no fixed
+> 40% frequency ceiling and no temperature-triggered return/reboot.
+> The legacy full-run admission is blocked; the replacement actuator
+> and non-reboot quiesce remain unimplemented. Preserve stock safeguards
+> and historical evidence. Do not rerun recovery/watchdog tests for this
+> userspace task.
+
 **OneiOS 27.0.1 · Samsung Galaxy S26 Ultra (SM-S948B / m3q / SM8850) · proposed safety design, NOT IMPLEMENTED**
 
 [← Handbook](README.md) · [Current evidence](SM8850_LIVE_STATUS_2026-11-20.md) · [Recovery gate](SM8850_RECOVERY_ACCEPTANCE.md) · [Roadmap](TODO.md)

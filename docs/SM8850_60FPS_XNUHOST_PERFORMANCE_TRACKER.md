@@ -472,6 +472,15 @@ QEMU synthetic test kernel reported all passed, including task profiler.
 Real udmabuf imports/leak scenarios and unsupported QEMU process_vm cases
 skipped, not certified. The new mock VirtIO gesture replay is in the
 passing XNUHost suite; no physical gesture replay has been performed.
-The new Python admission/model regressions still require a local run.
+The new Python admission/model regressions passed in the operator's WSL
+at OneiOS `174fc79f31cd461f223877faee98ba82bda3a23c` and pinned OneOS
+`42478a784a0e26df88951066a1f36d3ab0ae1502`: 9 adaptive model + 35 takeover + 16 full takeover +
+21 guarded duration + 2 interaction = 83/83, DEVICE_ACCESS=NONE.
+No repeat needed for documentation-only changes. The actual adaptive
+frequency actuator and bounded non-reboot quiesce remain unimplemented.
+Existing per-session CFS and v2 guest cgroup are reuse candidates;
+XNUHost per-task/vCPU utilization clamps are not independent hardware
+frequency votes. See [OneOS adaptive thermal design](../app/docs/SM8850_ADAPTIVE_THERMAL.md).
+No new device test or recovery audit is requested.
 No stage, rearm or live device operation is authorized by this receipt.
 Thermal redesign admission block remains intact.
