@@ -131,6 +131,8 @@ class FullTakeoverOfflineTest(unittest.TestCase):
                         wrapper.index("unset " + key))
         self.assertIn("SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC", source)
         self.assertIn("SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC", TAKEOVER_SOURCE.read_text())
+        self.assertIn("SM8850_CPU_THROTTLE_POLICY=CFS_V1_TARGET_45_70_HARD_80_RELEASE_70", source)
+        self.assertIn("SM8850_CPU_THROTTLE_POLICY=CFS_V1_TARGET_45_70_HARD_80_RELEASE_70", TAKEOVER_SOURCE.read_text())
         self.assertIn('--duration "$duration" --preflight-only', wrapper)
         self.assertIn("extra+=(--no-userspace-thermal-180)", wrapper)
 
@@ -210,6 +212,7 @@ class FullTakeoverOfflineTest(unittest.TestCase):
         root_switch = ONEOS_SWITCH.read_text()
         host = TAKEOVER_SOURCE.read_text()
         self.assertIn('THERMAL_SAFETY=ROOT_GUARD_AND_MONOTONIC_THROTTLE_REQUIRED', wrapper)
+        self.assertIn('THERMAL_SAFETY=ROOT_GUARD_AND_CFS_V1_BUDGET_REQUIRED', wrapper)
         self.assertIn('CPU_AFFINITY=BENCH_ONLY_EIGHT_DISTINCT_HOST_CORES_REQUIRED', wrapper)
         self.assertIn('WARNING=GPU_3D_REQUIRED_NO_2D_FALLBACK', wrapper)
         # Sensor/CPU bridges enabled in guest do not certify the independent

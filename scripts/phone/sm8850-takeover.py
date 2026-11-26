@@ -36,7 +36,7 @@ STATUS = f"""stage={STAGE}
 echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
 echo "boot_completed=$(getprop sys.boot_completed)"
 echo "boot_reason=$(getprop ro.boot.bootreason)"
-for name in boot state framework.mode framework.return framework.takeover-confirmed framework.launch framework.duration framework.perf-profile framework.cpu-profile framework.deadline framework.result watchdog.phase thermal.guard.required thermal.cap.required thermal.guard.heartbeat thermal.cap.heartbeat thermal.guard.fault thermal.cap.fault; do
+for name in boot state framework.mode framework.return framework.takeover-confirmed framework.launch framework.duration framework.perf-profile framework.cpu-profile framework.cpu-budget thermal.cap.group framework.deadline framework.result watchdog.phase thermal.guard.required thermal.cap.required thermal.guard.heartbeat thermal.cap.heartbeat thermal.guard.fault thermal.cap.fault; do
     if [ -f "$stage/control/$name" ]; then printf 'control/%s=' "$name"; cat "$stage/control/$name"; fi
 done
 if [ -f "$stage/return.outcome" ]; then printf 'outcome='; cat "$stage/return.outcome"; fi
@@ -573,8 +573,11 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
               file=sys.stderr, flush=True)
         return 2
     if mode == "run":
-        if not passive_soft_thermal and "SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC" not in check_output.splitlines():
-            print("BLOCKED: guarded 75C CPU policy marker missing; nothing was launched",
+        thermal_marker = ("SM8850_CPU_THROTTLE_POLICY=CFS_V1_TARGET_45_70_HARD_80_RELEASE_70"
+                          if duration == 180 else
+                          "SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC")
+        if not passive_soft_thermal and thermal_marker not in check_output.splitlines():
+            print("BLOCKED: guarded thermal CPU policy marker missing; nothing was launched",
                   file=sys.stderr, flush=True)
             return 2
         profiles = [line.split("=", 1)[1] for line in check_output.splitlines()
@@ -633,6 +636,8 @@ mkdir launches/{token}
                 print("SM8850_SOFT_THERMAL_GUARD=OFF_NO_PROCESS_NO_HEARTBEAT", flush=True)
                 print("CPU_UNDERCLOCK=OFF_NO_ROOT_CAP_WORKER", flush=True)
                 print("WARNING=CAP_FAILURE_NO_SOFTWARE_REBOOT_AND_VENDOR_MINIMUM_MAY_OVERRIDE_CAP", flush=True)
+            elif duration == 180:
+                print("SM8850_SOFT_THERMAL_GUARD=DEFAULT_FAIL_CLOSED; CPU_BUDGET=CFS_V1; TARGET_45_70C; HARD_80C_RELEASE_70C; EMERGENCY_GUARD_SEPARATE", flush=True)
             else:
                 print("SM8850_SOFT_THERMAL_GUARD=DEFAULT_FAIL_CLOSED; CPU_TARGET_30_70C; 75C_THROTTLE_NOT_RETURN", flush=True)
             print("BRIDGES=1; CPU_PIN=1; CPU_AFFINITY_BENCH=0; GPU=3D_REQUIRED", flush=True)

@@ -23,8 +23,9 @@ ONEIOS_SM8850_FULL_BRIDGES_180S=I_ACCEPT_UNQUALIFIED_180S_LIVE_TEST.
 Both rearm and run require --duration 180, selected by the operator.
 Re-arming fresh one-shot Data and launching are separate steps; the
 180s software deadline is not an independently qualified recovery guarantee.
-On feat/sm8850-xnuhost-perf-p0, the guarded 30-70C target and 75C CPU
-throttle policy is required for rearm/run; old no-guard env is discarded.
+On feat/sm8850-xnuhost-perf-p0, the guarded CFS-v1 45-70C target and
+80C hard throttle latched until 70C is required for 180s rearm/run.
+Independent emergency/fault recovery remains; old no-guard env is discarded.
 On other supported branches, the historical explicit passive experiment uses:
 ONEIOS_SM8850_SOFT_THERMAL_OFF=I_ACCEPT_SOFT_GUARD_OFF_180S
 This disables the OneOS root thermal monitor AND its 28% CPU cap worker.
@@ -312,6 +313,8 @@ PY
       echo "WARNING=NO_ONEOS_CPU_CEILING_AND_NO_ROOT_THERMAL_GUARD"
       echo "WARNING=HISTORIC_CPU_PEAK_101C_WITH_SOFTWARE_EARLY_RETURN_DISABLED"
       echo "KERNEL_FIRMWARE_THERMAL_PROTECTION=UNCHANGED"
+    elif [ "$duration" = 180 ]; then
+      echo "THERMAL_SAFETY=ROOT_GUARD_AND_CFS_V1_BUDGET_REQUIRED; TARGET_45_70C; HARD_80C_RELEASE_70C; 90C_EMERGENCY_RETURN_SEPARATE"
     else
       echo "THERMAL_SAFETY=ROOT_GUARD_AND_MONOTONIC_THROTTLE_REQUIRED; TARGET_30_70C; 75C_THROTTLE_NOT_RETURN; 90C_EMERGENCY_RETURN"
     fi

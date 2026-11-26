@@ -3,8 +3,8 @@
 
 Uses the existing OneiOS full-takeover wrapper and its bounded DEVICE-SIDE
 framework deadline. Telemetry is read-only. On the dedicated SM8850 performance
-branch, the independently prearmed guarded 75C throttle policy is the fixed
-profile. Other branches keep their existing profile selection. Android
+branch, the independently prearmed guarded 180s CFS-v1 thermal budget is
+the fixed profile. Other guarded durations retain the legacy monotonic cap. Android
 kernel/firmware protection, emergency guard, watchdog and deadline remain.
 This is not safety certification.
 """
@@ -42,7 +42,7 @@ meta() { printf 'M\t%s\t%s\n' "$1" "$2"; }
 val() { [ ! -r "$1" ] || meta "$2" "$(cat "$1" 2>/dev/null)"; }
 val /proc/sys/kernel/random/boot_id boot_id
 meta uptime "$(cut -d' ' -f1 /proc/uptime)"
-for k in boot state framework.launch framework.mode framework.duration framework.perf-profile framework.cpu-profile framework.deadline framework.takeover-confirmed watchdog.phase thermal.guard.heartbeat thermal.cap.heartbeat thermal.guard.fault thermal.cap.fault; do
+for k in boot state framework.launch framework.mode framework.duration framework.perf-profile framework.cpu-profile framework.cpu-budget thermal.cap.group framework.deadline framework.takeover-confirmed watchdog.phase thermal.guard.heartbeat thermal.cap.heartbeat thermal.guard.fault thermal.cap.fault; do
     val "$ST/control/$k" "ctl/$k"
 done
 # The previous session's stage is intentionally retained across a reboot.
@@ -61,6 +61,29 @@ if [ "$ctl_boot" = "$current_boot" ] && [ "$ctl_state" = running ]; then
                [ -z "$stopline" ] || meta framework_stop_log "$stopline"
            fi ;;
     esac
+    if [ "$(cat "$ST/control/framework.cpu-budget" 2>/dev/null)" = cfs-v1-180s ]; then
+        case "$tok" in
+            ''|*[!0-9a-f]*) ;;
+            *)
+                group="/dev/cpuctl/oneios_guest.$tok"
+                if [ "${#tok}" = 32 ] && [ -d "$group" ] && [ ! -L "$group" ] &&
+                   [ "$(realpath "$group")" = "$group" ]; then
+                    read -r v b g t i extra < "$ST/control/thermal.cap.group" 2>/dev/null || v=
+                    if [ "$v" = v1 ] && [ "$b" = "$current_boot" ] &&
+                       [ "$g" = "$(cat "$ST/control/watchdog.generation" 2>/dev/null)" ] &&
+                       [ "$t" = "$tok" ] && [ -z "$extra" ] &&
+                       [ "$i" = "$(stat -c '%d:%i' "$group" 2>/dev/null)" ]; then
+                        val "$group/cpu.cfs_quota_us" cpu_budget/quota_us
+                        val "$group/cpu.cfs_period_us" cpu_budget/period_us
+                        while read -r key value extra; do
+                            case "$key" in nr_periods|nr_throttled|throttled_time|nr_bursts|burst_time)
+                                [ -z "$extra" ] && meta "cpu_budget/$key" "$value" ;;
+                            esac
+                        done < "$group/cpu.stat" 2>/dev/null
+                    fi
+                fi ;;
+        esac
+    fi
     if [ -f "$ST/control/display.log" ] && grep -qm1 'first frame posted' "$ST/control/display.log" 2>/dev/null; then
         meta first_frame 1
     fi
@@ -263,10 +286,15 @@ def snapshot_summary(record: dict) -> str:
     active = bool(current and meta.get("ctl/boot") == current and meta.get("ctl/state") == "running")
     guard_cpu = guard[8] if active and len(guard) == 14 and guard[:2] == ["v1", current] and guard[7] == "OK" else "NA"
     cap_pct = cap[9] if active and len(cap) == 10 and cap[:2] == ["v1", current] and cap[7] == "OK" else "NA"
+    cfs = active and meta.get("ctl/framework.cpu-budget") == "cfs-v1-180s" and len(cap) == 10 and cap[8] == "7"
+    budget_pct = cap_pct if cfs else "NA"
+    if cfs:
+        cap_pct = "NA"  # quota is CPU time, not a frequency percentage
     cpu0 = metrics.get("/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq", "NA")
     cpu6 = metrics.get("/sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq", "NA")
     return (f"SNAPSHOT={record['kind']} T={record['elapsed_from_framework_stop_s']}s "
-            f"guard_cpu_mC={guard_cpu} cap_pct={cap_pct} "
+            f"guard_cpu_mC={guard_cpu} cap_pct={cap_pct} cpu_budget_pct={budget_pct} "
+            f"nr_throttled={meta.get('cpu_budget/nr_throttled', 'NA') if cfs else 'NA'} "
             f"policy0_max_kHz={cpu0} policy6_max_kHz={cpu6} "
             f"guest_ready={meta.get('guest_ready', 'unseen')} "
             f"first_frame={meta.get('first_frame', 'unseen')} "
@@ -437,6 +465,8 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
     if os.environ.get("ONEIOS_SM8850_SOFT_THERMAL_OFF") == "I_ACCEPT_SOFT_GUARD_OFF_180S":
         console.say("SOFTWARE_THERMAL_GUARD=OFF_NO_ON_DEVICE_PROCESS; WARNING=NO_USERSPACE_TEMP_CUTOFF")
         console.say("CPU_UNDERCLOCK=OFF_NO_ROOT_CAP_WORKER; KERNEL_FIRMWARE_THERMAL_UNCHANGED")
+    elif args.duration == 180:
+        console.say("SOFTWARE_THERMAL_GUARD=REQUIRED; CPU_BUDGET=CFS_V1; TARGET_45_70C; HARD_80C_RELEASE_70C; 90C_EMERGENCY_RETURN_SEPARATE")
     else:
         console.say("SOFTWARE_THERMAL_GUARD=REQUIRED; CPU_TARGET_30_70C; 75C_THROTTLE_NOT_RETURN; 90C_EMERGENCY_RETURN")
     console.say("GPU_3D=REQUIRED_NO_2D_FALLBACK; BACKEND_PROOF=CHECK_XNUHOST_KGSL_LOG")
@@ -685,6 +715,10 @@ def main() -> int:
                   "metrics": {"/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq": "537600"}}
         summary = snapshot_summary(record)
         assert "guard_cpu_mC=41300 cap_pct=18" in summary and "policy0_max_kHz=537600" in summary
+        record["meta"]["ctl/framework.cpu-budget"] = "cfs-v1-180s"
+        record["meta"]["ctl/thermal.cap.heartbeat"] = "v1 a g 13 35 5 6 OK 7 80"
+        record["meta"]["cpu_budget/nr_throttled"] = "12"
+        assert "cap_pct=NA cpu_budget_pct=80 nr_throttled=12" in snapshot_summary(record)
         record["meta"]["ctl/boot"] = "previous"
         assert "guard_cpu_mC=NA cap_pct=NA" in snapshot_summary(record)
         print("SELF_TEST=PASS NO_DEVICE_ACCESS")
@@ -734,8 +768,11 @@ def main() -> int:
         cap_disabled = "SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER" in result
         if no_guard != cap_disabled:
             raise RuntimeError("root preflight CPU cap profile mismatch; no Framework stop or data consumption")
-        if not no_guard and "SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC" not in result.splitlines():
-            raise RuntimeError("guarded 75C policy marker missing; no Framework stop or data consumption")
+        thermal_marker = ("SM8850_CPU_THROTTLE_POLICY=CFS_V1_TARGET_45_70_HARD_80_RELEASE_70"
+                          if args.duration == 180 else
+                          "SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC")
+        if not no_guard and thermal_marker not in result.splitlines():
+            raise RuntimeError("guarded thermal policy marker missing; no Framework stop or data consumption")
         profiles = [line.split("=", 1)[1] for line in result.splitlines()
                     if line.startswith("SM8850_PERF_PROFILE=")]
         if (profiles and profiles != [args.perf_profile]) or (args.perf_profile != "off" and not profiles):

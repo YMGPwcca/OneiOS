@@ -33,9 +33,11 @@ sm8850_cpu_quota_apply() (
 # END SM8850_CPU_BANDWIDTH
 
 fail() { echo "CPU_BANDWIDTH_PROBE=BLOCKED $*" >&2; exit 2; }
+probe_enforcement=0
 case "${1:-}" in
     --quota-us) shift; sm8850_cpu_quota_us "$@"; exit $? ;;
     --probe) [ "$#" = 1 ] || fail usage ;;
+    --probe-enforcement) [ "$#" = 1 ] || fail usage; probe_enforcement=1 ;;
     *) fail usage ;;
 esac
 
@@ -97,7 +99,48 @@ awk -F: -v expected="$expected" '$2=="cpu" && $3==expected {ok=1} END {exit !ok}
 echo CPU_BANDWIDTH_CHILD_MEMBERSHIP=PASS
 CHILD
 [ -z "$(cat "$group/cgroup.procs")" ] || fail unexpected_remaining_tasks
-[ "$(grep -E '^[0-9]+:cpu:' /proc/$$/cgroup)" = "$parent_membership" ] || fail caller_moved
+if [ "$probe_enforcement" = 1 ]; then
+    # An explicit 1-second, single-task probe at 0.8 core aggregate.
+    # Only run after a verified cool-start check. No guest or multi-core
+    # stress, no modification of the root quota or vendor clock policy.
+    manifest="$stage/thermal.guard.manifest"
+    /system/bin/sh "$stage/oneios_sm8850_thermal_takeover_guard.sh" --check "$manifest" ||
+        fail thermal_readiness
+    peak=$(while read -r flag idx typ grp extra; do
+        [ "$flag" = z ] || continue
+        case "$grp" in
+            cpu|gpu|ddr)
+                case "$idx" in ''|*[!0-9]*) exit 2 ;; esac
+                [ "$(cat "/sys/class/thermal/thermal_zone$idx/type")" = "$typ" ] || exit 2
+                cat "/sys/class/thermal/thermal_zone$idx/temp" || exit 2 ;;
+        esac
+    done < "$manifest" | awk 'NF!=1 || $1 !~ /^[0-9]+$/ || $1<=0 {bad=1} {if($1>p)p=$1} END {if(bad||p<=0)exit 2; print p}') ||
+        fail thermal_sample
+    [ "$peak" -lt 45000 ] || fail cool_probe_required
+    sm8850_cpu_quota_apply "$group" 10 || fail enforcement_quota
+    before=$(awk '$1=="nr_throttled"{print $2}' "$group/cpu.stat")
+    case "$before" in ''|*[!0-9]*) fail cpu_stat_before ;; esac
+    # SIGKILL is only the timeout signal to our own disposable shell.
+    # It neither targets another process nor asks the phone to reboot.
+    rc=0
+    timeout -s KILL 1 /system/bin/sh -c '
+        set -eu
+        group=$1
+        printf "%s\n" "$" > "$group/cgroup.procs"
+        awk -F: -v expected="/${group##*/}" '"'"'$2=="cpu" && $3==expected {ok=1} END{exit !ok}'"'"' /proc/$/cgroup
+        echo CPU_BANDWIDTH_LOAD_CHILD_JOINED=YES
+        while :; do :; done
+    ' probe "$group" || rc=$?
+    case "$rc" in 124|137) ;; *) fail "bounded_child_exit_$rc" ;; esac
+    [ -z "$(cat "$group/cgroup.procs")" ] || fail enforcement_child_remaining
+    after=$(awk '$1=="nr_throttled"{print $2}' "$group/cpu.stat")
+    case "$after" in ''|*[!0-9]*) fail cpu_stat_after ;; esac
+    echo "CPU_BANDWIDTH_NR_THROTTLED_BEFORE=$before"
+    echo "CPU_BANDWIDTH_NR_THROTTLED_AFTER=$after"
+    [ "$after" -gt "$before" ] || fail enforcement_not_observed
+    echo CPU_BANDWIDTH_ENFORCEMENT=PASS
+fi
+[ "$(grep -E '^[0-9]+:cpu:' /proc/$/cgroup)" = "$parent_membership" ] || fail caller_moved
 [ "$(cat "$root/cpu.cfs_period_us")" = "$parent_period" ] && [ "$(cat "$root/cpu.cfs_quota_us")" = "$parent_quota" ] || fail parent_limits_changed
 cat "$group/cpu.stat"
 rmdir "$group" || fail remove_private_group
