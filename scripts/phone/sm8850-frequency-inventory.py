@@ -87,7 +87,7 @@ for d in /sys/devices/system/cpu/cpufreq/policy*; do
 done
 """)
     section("CANDIDATE SHARED INTERFACES (read only)", r"""
-for p in /sys/module/msm_performance/parameters/cpu_max_freq /sys/power/cpufreq_max_limit /sys/power/cpufreq_min_limit /sys/devices/system/cpu/cpufreq_limit/cpufreq_max_limit; do
+for p in /sys/kernel/msm_performance/parameters/cpu_max_freq /sys/kernel/msm_performance/parameters/cpu_min_freq /sys/module/msm_performance/parameters/cpu_max_freq /sys/power/cpufreq_max_limit /sys/power/cpufreq_min_limit /sys/devices/system/cpu/cpufreq_limit/cpufreq_max_limit; do
   [ -e "$p" ] || continue
   ls -l "$p"
   cat "$p" 2>&1

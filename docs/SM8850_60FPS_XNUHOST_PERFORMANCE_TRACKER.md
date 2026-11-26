@@ -670,3 +670,20 @@ availability during takeover. Linux scaling_max_freq readback alone
 cannot show request ownership. No adaptive frequency implementation
 is enabled. Independent supervisor and display/IO lifecycle remain
 unfinished; no live admission or kernel/recovery audit.
+
+
+G24.6 operator inventory completed on exact SM-S948B/S948BXXS4BZIG:
+`/tmp/oneios-g246-frequency.nIpqAc.txt`, DEVICE_WRITES=NONE,
+FREQUENCY_PROVIDER=NOT_QUALIFIED. Both Qualcomm PerfLock client variants
+export acquire/release; native perf2 HAL is running. CPU max resource
+major 0x2/minor 0x1 target override points at
+`/sys/kernel/msm_performance/parameters/cpu_max_freq`. The initial
+probe missed that path; corrected inventory node list. Policy0 max
+3628800 kHz; policy6 advertises 4742400 kHz but available OPP list ends
+4396800 kHz. Do not guess packed IDs/cluster selectors or round to an
+unlisted OPP. See pinned OneOS 2332c069eb207de9668fdc3795ef8056db66c03a for detailed receipt.
+Only a narrow follow-up for the real nodes, complete relevant XML
+resource blocks, SoC identity, native service membership and optional
+default dump is needed; do not repeat broad inventory. No write or
+actual vendor API invocation, kernel changes, stage/rearm or live
+admission. Provider aggregation, ownership and lifetime still unproved.
