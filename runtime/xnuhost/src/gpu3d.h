@@ -61,7 +61,25 @@ struct xh_gpu3d {
 // what UniXNU-droidvm's DroidVMVirtioGpu3D.cpp waits for). Guest blobs can be the scanout (SET_SCANOUT_BLOB); the 2D
 // commands stay. With b == NULL it is xh_virtio_gpu_create's 2D device.
 xh_virtio *xh_virtio_gpu_create_3d(uint64_t base, unsigned spi, unsigned width, unsigned height, xh_gpu3d *b);
+// Host ingress gate for a future thermal quiesce provider. Closing parks
+// the fast lane at a chain boundary and lets the previously dequeued slow
+// work finish. Guest avail entries stay queued; no synthetic error/reply.
+// Status is a HOST-only receipt: it says nothing about unfenced GPU work,
+// backend autonomous submissions, KGSL reset, or device/IO completion.
+// Calls are nonblocking try-lock operations, returning -EAGAIN on contention.
+// The external caller must bound retries using CLOCK_BOOTTIME and verify
+// ownership, backend drain, and safe resume independently. No live caller
+// is enabled by this interface.
+struct xh_gpu_gate_state {
+  bool lanes_idle, host_drained, reset_invalidated;
+  unsigned pending_fences, retiring_callbacks;
+};
+int xh_virtio_gpu_gate_close(xh_virtio *dev, uint64_t *ticket);
+int xh_virtio_gpu_gate_status(xh_virtio *dev, uint64_t ticket, struct xh_gpu_gate_state *out);
+int xh_virtio_gpu_gate_resume(xh_virtio *dev, uint64_t ticket);
+
 // Test hook: waits until the 3D device's thread has nothing left to do.
+// Do not call while the ingress gate is closed.
 void xh_virtio_gpu_idle(xh_virtio *dev);
 #ifdef XH_HOST_TEST
 // Host-only regression hook: snapshot the in-memory VirtIO wait metrics.

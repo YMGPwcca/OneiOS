@@ -775,6 +775,36 @@ static bool chunks_are(int count, xh_gpu_chunk *chunks, int want, const uint8_t 
   return ok;
 }
 
+// Test-only retry of the nonblocking ingress API; production will use an
+// independent BOOTTIME deadline. The fixture must never wait indefinitely.
+static int test_gate_close(xh_virtio *dev, uint64_t *ticket)
+{
+  for (unsigned i = 0; i < 2000; i++) {
+    int r = xh_virtio_gpu_gate_close(dev, ticket);
+    if (r != -EAGAIN) return r;
+    usleep(1000);
+  }
+  return -ETIMEDOUT;
+}
+static int test_gate_status(xh_virtio *dev, uint64_t ticket, struct xh_gpu_gate_state *out)
+{
+  for (unsigned i = 0; i < 2000; i++) {
+    int r = xh_virtio_gpu_gate_status(dev, ticket, out);
+    if (r != -EAGAIN) return r;
+    usleep(1000);
+  }
+  return -ETIMEDOUT;
+}
+static int test_gate_resume(xh_virtio *dev, uint64_t ticket)
+{
+  for (unsigned i = 0; i < 2000; i++) {
+    int r = xh_virtio_gpu_gate_resume(dev, ticket);
+    if (r != -EAGAIN) return r;
+    usleep(1000);
+  }
+  return -ETIMEDOUT;
+}
+
 static void test_virtio_gpu3d(void)
 {
   capture_scanout = true;
@@ -1257,6 +1287,47 @@ static void test_virtio_gpu3d(void)
     CHECK(G(6, 24) == 1 && resp[0] == 0x1100);
     cmd[4] = 41;
     CHECK(G(6, 24) == 1 && resp[0] == 0x1100);
+  }
+  // Ingress gate: a fenced command already accepted is not a drain
+  // receipt. A new unfenced command stays in avail while parked, and
+  // executes exactly once after the explicit resume.
+  {
+    CLEAR(); cmd[0] = 0x200; cmd[4] = 42; cmd[6] = 4; cmd[7] = 6; memcpy(&cmd[8], "test", 4);
+    CHECK(G(24, 24) == 1 && resp[0] == 0x1100);
+    CLEAR(); cmd[0] = 0x207; cmd[1] = 3; cmd[2] = 0x2403; cmd[4] = 42; cmd[5] = 1; cmd[6] = 4; cmd[8] = 0xa1;
+    CHECK(G(9, 24) == 0);
+    uint64_t ticket = 0, second = 0;
+    struct xh_gpu_gate_state gs = {0};
+    CHECK(!test_gate_close(dev, &ticket) && ticket);
+    CHECK(!test_gate_status(dev, ticket, &gs) && gs.lanes_idle &&
+          gs.pending_fences == 1 && !gs.host_drained && !gs.reset_invalidated);
+    CHECK(test_gate_close(dev, &second) == -EBUSY && !second);
+    CHECK(test_gate_resume(dev, ticket) == -EBUSY);
+    unsigned submitted = fake.submits;
+    uint16_t used_before = used[1];
+    CLEAR(); cmd[0] = 0x207; cmd[4] = 42; cmd[6] = 4; cmd[8] = 0xb2;
+    driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0x30000, 9 * 4, 0 }, { GUEST_PA + 0x31000, 24, 1 } }, 2, true);
+    b.retire(dev, 42, 1, 0x2403);
+    CHECK(!test_gate_status(dev, ticket, &gs) && gs.host_drained &&
+          !gs.pending_fences && !gs.retiring_callbacks);
+    CHECK(fake.submits == submitted && (uint16_t)(used[1] - used_before) == 1);
+    CHECK(test_gate_resume(dev, ticket + 1) == -ESTALE);
+    CHECK(!test_gate_resume(dev, ticket));
+    xh_virtio_gpu_idle(dev);
+    CHECK(fake.submits == submitted + 1 && (uint16_t)(used[1] - used_before) == 2);
+    d.used_seen[0] = used[1];
+    CHECK(test_gate_status(dev, ticket, &gs) == -ESTALE);
+    CLEAR(); cmd[0] = 0x201; cmd[4] = 42;
+    CHECK(G(6, 24) == 1 && resp[0] == 0x1100);
+    // Reset after close invalidates the receipt; never auto-reopen or
+    // reconcile the new queue while the gate belongs to this ticket.
+    CHECK(!test_gate_close(dev, &second) && second > ticket);
+    CHECK(!test_gate_status(dev, second, &gs) && gs.host_drained);
+    W(&d, 0x70, 0);
+    CHECK(!test_gate_status(dev, second, &gs) && gs.reset_invalidated && !gs.host_drained);
+    CHECK(test_gate_resume(dev, second) == -ESTALE);
+    // Deliberately left closed; this detached fixture will not consume
+    // subsequent test guest memory. No live session is being resumed.
   }
   capture_scanout = false;
 #undef G

@@ -526,3 +526,36 @@ provider, GPU/IO gate and drain provider, session creator/membership and
 independent thermal reader/runner integration remain unimplemented or
 unqualified. Legacy admission remains blocked. No stage, rearm, live run,
 watchdog/recovery audit or kernel modification is authorized.
+
+
+### G24.2 local receipt and G24.3 GPU ingress gate (2026-11-26)
+
+G24.2 local WSL at OneiOS `122c88728c2cd0bc07c5bef06422750b13a25a6b`, OneOS
+`25ae4473711265d13a5bbde5df1f271ddf7708ae`: host and Android ARM64
+production object compiles PASS, owned-group actuator 330 checks PASS,
+native thermal controller 239 checks PASS, C/Python policy parity
+8,640 samples PASS; DEVICE_ACCESS=NONE; evidence
+`/tmp/oneios-g242.ijjF7A`. OneOS receipt pinned at `2967fda7d727babbb52b8b8675543cc326e97890`.
+
+G24.3 implements the actual XNUHost VirtIO GPU ingress gate in
+`virtio_gpu.c`/`gpu3d.h`. Close returns a unique ticket, stops taking new
+avail chains at the next chain boundary, and lets already dequeued slow
+work finish. Status distinguishes host lanes idle, pending VirtIO fences,
+retiring callbacks and reset invalidation. A reset during a closed gate
+invalidates its ticket; stale tickets and unconfirmed host drain refuse
+resume. Commands are not discarded or given synthetic replies. This is a
+nonblocking try-lock API for a later independent deadline owner.
+Regression uses the existing fake backend, pending fence, queued
+submission, exact-once resume, stale ticket and reset invalidation.
+Local native regression and Android compile pending.
+
+Do NOT call host_drained a hardware idle proof. The pinned Droid-VM
+virglrenderer has KGSL work without guest VirtIO fences, fence callbacks
+which may retire on errors, and an autonomous GPU clock-hold keepalive
+thread (patches 0005/0006/0008). A complete backend provider must stop
+autonomous submissions, account for each owned KGSL draw context and its
+last accepted timestamp (including destruction/fault cases), verify
+retirement independently, and handle IO/lifecycle and resume. No new
+vendor/kernel writes or raw frequency vote guessed. No live caller has
+been added; the thermal admission block stays intact. No phone access,
+stage, rearm, watchdog audit or recovery test follows from this commit.

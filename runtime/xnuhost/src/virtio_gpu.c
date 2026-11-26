@@ -117,6 +117,13 @@ typedef struct {
   pthread_cond_t idle;
   pending *fences;
   uint64_t gen, state_gen, kicks, served;
+  // Protected by pl, except the atomic fast-path read of gate_closed.
+  // Front activity includes generation reconciliation and an entire popped
+  // chain (including slow-lane handoff/retry). A parked front consumes none.
+  bool gate_closed, front_active, gate_invalid;
+  uint64_t gate_ticket, reset_serial, reset_handled;
+  unsigned retiring_callbacks;
+  pthread_cond_t gate_cv;
   int wake;                            // eventfd: the control queue was kicked (written from the trap handler)
   // Two lanes. The queue's thread serves the render server's contexts and every command of no context (the display,
   // the 2D commands) at once, and hands every other context's commands, in their order, to the slow lane's thread.
@@ -473,6 +480,7 @@ static void retire(gpu_state *g, uint32_t ctx, int64_t ring, uint64_t fence,
   bool report_ready = false;
   const uint64_t callback_ns = g->fence_trace && outcome == XH_FENCE_COMPLETED ? scanout_now_ns() : 0;
   pthread_mutex_lock(&g->pl);
+  g->retiring_callbacks++;
   for (pending **link = &g->fences; *link;) {
     pending *p = *link;
     // A refused fence is NOT a retirement of every preceding fence.
@@ -511,6 +519,9 @@ static void retire(gpu_state *g, uint32_t ctx, int64_t ring, uint64_t fence,
   // Retired records are freed outside device lock.
   while (done) { pending *p = done; done = p->next; free(p); }
   if (report_ready) gpu_fence_perf_report(&report, scanout_now_ns(), window_ns);
+  pthread_mutex_lock(&g->pl);
+  g->retiring_callbacks--;
+  pthread_mutex_unlock(&g->pl);
 }
 
 static void gpu_retire(xh_virtio *dev, uint32_t ctx, uint32_t ring, uint64_t fence)
@@ -991,23 +1002,27 @@ static void gpu_reset(xh_virtio *dev)
 }
 
 // ---- the 3D device's control queue: its own thread -------------------------------------------------------------------
-static void wake(gpu_state *g)
+static void wake(gpu_state *g, bool reset)
 {
   pthread_mutex_lock(&g->pl);
+  if (reset) {
+    g->reset_serial++;
+    if (__atomic_load_n(&g->gate_closed, __ATOMIC_RELAXED)) g->gate_invalid = true;
+  }
   g->kicks++;
   pthread_mutex_unlock(&g->pl);
   uint64_t one = 1;
   while (write(g->wake, &one, 8) < 0 && errno == EINTR) {}
 }
 
-static void gpu_kick(xh_virtio *dev, unsigned queue) { (void)queue; wake(xh_virtio_opaque(dev)); }
+static void gpu_kick(xh_virtio *dev, unsigned queue) { (void)queue; wake(xh_virtio_opaque(dev), false); }
 
 // With the device's lock held (virtio.c): the queues are already gone; the worker forgets the rest before its next command.
 static void gpu_reset_3d(xh_virtio *dev)
 {
   gpu_state *g = xh_virtio_opaque(dev);
   g->gen++;
-  wake(g);
+  wake(g, true);
 }
 
 // Called with cmd held. A reset can arrive after a wake or while either lane
@@ -1162,6 +1177,18 @@ static void *slow_worker(void *arg)
   return NULL;
 }
 
+// pl held. Publish the parked state before sleeping; a resume changes
+// the same flag under pl, so a wake cannot be lost. Never hold cmd or the
+// device lock while parked.
+static void front_enter_locked(gpu_state *g)
+{
+  while (__atomic_load_n(&g->gate_closed, __ATOMIC_RELAXED)) {
+    g->front_active = false;
+    pthread_cond_wait(&g->gate_cv, &g->pl);
+  }
+  g->front_active = true;
+}
+
 static void *worker(void *arg)
 {
   gpu_state *g = arg;
@@ -1170,12 +1197,21 @@ static void *worker(void *arg)
     uint64_t count;
     if (read(g->wake, &count, 8) < 0 && errno != EINTR) break;
     pthread_mutex_lock(&g->pl);
-    uint64_t upto = g->kicks;
+    front_enter_locked(g);
+    uint64_t upto = g->kicks, reset_at_start = g->reset_serial;
     pthread_mutex_unlock(&g->pl);
     pthread_mutex_lock(&g->cmd);
     sync_generation(g);
     pthread_mutex_unlock(&g->cmd);
     for (;;) {
+      // No additional mutex on the ordinary open hot path. A close racing
+      // this read sees front_active=true until this chain finishes and
+      // the front parks. The close receipt is not the drain receipt.
+      if (__atomic_load_n(&g->gate_closed, __ATOMIC_ACQUIRE)) {
+        pthread_mutex_lock(&g->pl);
+        front_enter_locked(g);
+        pthread_mutex_unlock(&g->pl);
+      }
       uint16_t head;
       xh_virtio_lock(g->dev);
       uint64_t gen = g->gen;
@@ -1232,10 +1268,89 @@ static void *worker(void *arg)
     }
     pthread_mutex_lock(&g->pl);
     g->served = upto;
+    g->reset_handled = reset_at_start;
+    g->front_active = false;
     pthread_cond_broadcast(&g->idle);
     pthread_mutex_unlock(&g->pl);
   }
   return NULL;
+}
+
+static int gate_lock(xh_virtio *dev, gpu_state **out)
+{
+  if (!dev) return -EINVAL;
+  gpu_state *g = xh_virtio_opaque(dev);
+  if (!g || !g->b || !g->blobs) return -ENOTSUP;
+  int r = pthread_mutex_trylock(&g->pl);
+  if (r) return r == EBUSY ? -EAGAIN : -r;
+  *out = g;
+  return 0;
+}
+
+// pl held. A backend completion removed from the fence list may still be
+// publishing its used chain. Keep it visible until the callback is done.
+static struct xh_gpu_gate_state gate_state_locked(gpu_state *g)
+{
+  struct xh_gpu_gate_state s = {
+    .lanes_idle = !g->front_active && g->slow_done == g->slow_queued,
+    .reset_invalidated = g->gate_invalid || g->reset_serial != g->reset_handled,
+    .retiring_callbacks = g->retiring_callbacks
+  };
+  for (pending *p = g->fences; p; p = p->next) s.pending_fences++;
+  s.host_drained = s.lanes_idle && !s.pending_fences &&
+                   !s.retiring_callbacks && !s.reset_invalidated;
+  return s;
+}
+
+int xh_virtio_gpu_gate_close(xh_virtio *dev, uint64_t *ticket)
+{
+  if (!ticket) return -EINVAL;
+  gpu_state *g;
+  int r = gate_lock(dev, &g);
+  if (r) return r;
+  if (__atomic_load_n(&g->gate_closed, __ATOMIC_RELAXED)) r = -EBUSY;
+  else if (g->gate_ticket == UINT64_MAX) r = -EOVERFLOW;
+  else {
+    g->gate_invalid = g->reset_serial != g->reset_handled;
+    *ticket = ++g->gate_ticket;
+    __atomic_store_n(&g->gate_closed, true, __ATOMIC_RELEASE);
+  }
+  pthread_mutex_unlock(&g->pl);
+  return r;
+}
+
+int xh_virtio_gpu_gate_status(xh_virtio *dev, uint64_t ticket, struct xh_gpu_gate_state *out)
+{
+  if (!out || !ticket) return -EINVAL;
+  gpu_state *g;
+  int r = gate_lock(dev, &g);
+  if (r) return r;
+  if (!__atomic_load_n(&g->gate_closed, __ATOMIC_RELAXED) || ticket != g->gate_ticket)
+    r = -ESTALE;
+  else *out = gate_state_locked(g);
+  pthread_mutex_unlock(&g->pl);
+  return r;
+}
+
+int xh_virtio_gpu_gate_resume(xh_virtio *dev, uint64_t ticket)
+{
+  if (!ticket) return -EINVAL;
+  gpu_state *g;
+  int r = gate_lock(dev, &g);
+  if (r) return r;
+  if (!__atomic_load_n(&g->gate_closed, __ATOMIC_RELAXED) || ticket != g->gate_ticket)
+    r = -ESTALE;
+  else {
+    struct xh_gpu_gate_state s = gate_state_locked(g);
+    if (s.reset_invalidated) r = -ESTALE;
+    else if (!s.host_drained) r = -EBUSY;
+    else {
+      __atomic_store_n(&g->gate_closed, false, __ATOMIC_RELEASE);
+      pthread_cond_broadcast(&g->gate_cv);
+    }
+  }
+  pthread_mutex_unlock(&g->pl);
+  return r;
 }
 
 void xh_virtio_gpu_idle(xh_virtio *dev)
@@ -1293,6 +1408,7 @@ xh_virtio *xh_virtio_gpu_create_3d(uint64_t base, unsigned spi, unsigned width, 
   pthread_cond_init(&g->idle, NULL);
   pthread_mutex_init(&g->cmd, NULL);
   pthread_cond_init(&g->slow_cv, NULL);
+  pthread_cond_init(&g->gate_cv, NULL);
   g->slow_tail = &g->slow_head;
   if (!g->blobs || g->wake < 0 || !(g->dev = xh_virtio_create(base, spi, &gpu_3d_ops, g, "virtio-gpu"))) return NULL;
   b->retire = gpu_retire;
