@@ -141,12 +141,17 @@ def upload(phone, operation, manifest=None):
         "oneios_sm8850_thermal_takeover_guard.sh",
     )}
     files["stage.sh"] = HERE / "framework-stage.sh"
+    if operation == "prune-retired-data":
+        # No compilation or recovery-script refresh for standalone cleanup.
+        files = {"stage.sh": files["stage.sh"]}
+    if operation in {"prune-retired-data", "rearm-data-prune"}:
+        files["prune-retired-data.sh"] = HERE / "framework-prune-retired-data.sh"
     with tempfile.TemporaryDirectory(prefix="oneios-framework-") as folder:
-        if operation not in {"install", "upgrade"}:
+        if operation not in {"install", "upgrade", "prune-retired-data"}:
             clone = Path(folder) / "image-copy"
             build_phone_tool(HERE / "framework-image-copy.c", clone)
             files["image-copy"] = clone
-        if operation != "probe":
+        if operation not in {"probe", "prune-retired-data"}:
             supervisor = Path(folder) / "oneios-watchdog"
             build_phone_tool(ASSETS.parent / "native/oneios_watchdog.c", supervisor)
             files["oneios-watchdog"] = supervisor
@@ -799,9 +804,11 @@ mkdir launches/{token}
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for mode in ("dry-run", "reboot-audit", "readiness", "recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "return", "status", "storage-probe", "prepare", "rearm-data", "upgrade-runtime", "upgrade-kernel", "collect"):
+    for mode in ("dry-run", "reboot-audit", "readiness", "recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "return", "status", "storage-probe", "prepare", "rearm-data", "upgrade-runtime", "upgrade-kernel", "prune-retired-data", "collect"):
         modes.add_argument(f"--{mode}", dest="mode", action="store_const", const=mode)
     parser.add_argument("--confirm", action="store_true", help="Explicitly opt in to the requested device changes")
+    parser.add_argument("--discard-retired-data", action="store_true",
+                        help="rearm only: permanently discard old retired guest payloads before/after cloning; retain receipts, seed, current Data and rollback")
     parser.add_argument("--accept-legacy-watchdog-risk", action="store_true",
                         help="Separate risk consent for SM8850 legacy a:82 mandatory-reboot smoke OR 600-second full iOS takeover")
     parser.add_argument("--serial", help="ADB USB serial. Defaults to the sole authorized USB device.")
@@ -824,8 +831,10 @@ def main():
     parser.add_argument("--expected-trustcache")
     parser.add_argument("--output", type=Path, help="New local evidence directory")
     args = parser.parse_args()
-    if args.mode in {"recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "storage-probe", "prepare", "rearm-data", "upgrade-runtime", "upgrade-kernel"} and not args.confirm:
+    if args.mode in {"recovery-smoke", "reboot-stage-check", "reboot-smoke", "run", "storage-probe", "prepare", "rearm-data", "upgrade-runtime", "upgrade-kernel", "prune-retired-data"} and not args.confirm:
         parser.error(f"--{args.mode} requires --confirm")
+    if args.discard_retired_data and args.mode != "rearm-data":
+        parser.error("--discard-retired-data applies only to --rearm-data --confirm")
     if args.mode in {"reboot-smoke", "run"} and not args.accept_legacy_watchdog_risk:
         parser.error(f"--{args.mode} requires separate --accept-legacy-watchdog-risk consent")
     if args.mode == "run" and (args.gpu != "3d" or (args.duration is not None and
@@ -866,8 +875,10 @@ def main():
         return phone.root(f"if [ -f {STAGE}/oneios_switch.sh ]; then "
                           f"/system/bin/sh {STAGE}/oneios_switch.sh --framework-return; "
                           "else echo 'No experimental stage'; fi", timeout=650).returncode
-    if args.mode in {"storage-probe", "prepare", "rearm-data", "upgrade-runtime"}:
+    if args.mode in {"storage-probe", "prepare", "rearm-data", "upgrade-runtime", "prune-retired-data"}:
         operation = "probe" if args.mode == "storage-probe" else args.mode
+        if args.discard_retired_data:
+            operation = "rearm-data-prune"
         return upload(phone, operation, manifest)
 
     output = args.output

@@ -4,6 +4,11 @@ set -eu
 umask 077
 incoming=$1
 operation=$2
+discard_retired=0
+if [ "$operation" = rearm-data-prune ]; then
+    operation=rearm-data
+    discard_retired=1
+fi
 stage=/data/adb/oneios-m3q-framework
 bench=/data/local/tmp/oneios-m3q-ios27-bench
 MIN_FREE=31457280
@@ -164,7 +169,7 @@ install_stage() {
 
 case "$operation" in
     install|upgrade) install_stage; exit ;;
-    probe|prepare|rearm-data|upgrade-runtime|upgrade-kernel) ;;
+    probe|prepare|rearm-data|upgrade-runtime|upgrade-kernel|prune-retired-data) ;;
     *) fail "unknown staging operation" ;;
 esac
 
@@ -379,6 +384,20 @@ if [ "$operation" = upgrade-kernel ]; then
     upgrade_guest_kernel
     exit 0
 fi
+if [ "$operation" = prune-retired-data ] || [ "$discard_retired" = 1 ]; then
+    [ -f "$incoming/prune-retired-data.sh" ] && [ ! -L "$incoming/prune-retired-data.sh" ] ||
+        fail "missing retired Data prune helper"
+    . "$incoming/prune-retired-data.sh"
+fi
+if [ "$operation" = prune-retired-data ]; then
+    [ -d "$stage" ] && root_dir "$stage" && [ ! -L "$stage/start.lock" ] ||
+        fail "untrusted retired Data stage or lock"
+    exec 8>>"$stage/start.lock"
+    flock -n 0 0<&8 || fail "a switch or stage operation is starting"
+    prune_retired_data_locked
+    echo "LIVE_FRAMEWORK_STOP=NO"
+    exit 0
+fi
 chmod 700 "$incoming/image-copy"
 printf 'SM8850 reflink probe\n' > "$incoming/source"
 : > "$incoming/destination"
@@ -456,6 +475,9 @@ ONEIOS_MOUNT_PROBE
         fail "consumed Data directory missing or untrusted"
     extra=$(find "$stage/data" -mindepth 1 -maxdepth 1 ! -name data.img ! -name unique-chip-id -print -quit)
     [ -z "$extra" ] || fail "consumed Data has unexpected files; preserve and inspect manually"
+    if [ "$discard_retired" = 1 ]; then
+        prune_retired_data_locked
+    fi
     # Prefer the established full logical-size budget. On low-space phones
     # only, use the same measured sparse helper as the visual runner. It
     # pre-scans nonzero 4 KiB pages before writing Data payload and requires
@@ -558,6 +580,12 @@ ONEIOS_MOUNT_PROBE
         fail "could not re-arm verified image after fresh Data publish"
     echo "APFS_DATA_REARMED=YES"
     echo "PREVIOUS_DATA_ARCHIVED=$archive"
+    if [ "$discard_retired" = 1 ]; then
+        # Fresh clone is already independently verified and published. Retain
+        # the previous consumption token and both hash inventories, not its
+        # multi-GiB guest-writable payload. A prune error must not undo rearm.
+        prune_retired_data_locked
+    fi
     echo "LIVE_FRAMEWORK_STOP=NO"
     exit 0
 fi
