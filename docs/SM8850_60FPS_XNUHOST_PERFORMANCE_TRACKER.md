@@ -502,3 +502,27 @@ Independent reversible frequency provider, session ownership/membership,
 sensor supervisor and GPU quiescence integration remain blockers.
 The existing legacy admission block remains intact. No kernel/module,
 watchdog qualification or physical benchmark is requested.
+
+
+### G24.1 local receipt and G24.2 native controller (2026-11-26)
+
+G24.1 local WSL CI at OneiOS `e4db1508b0534c8af2db92a9c8dcba675011b291`, OneOS
+`7fa70488c1681679386d80c6cc6359fd6d5b5f6a`: production host compile
+PASS, owned-group fixture 284 checks PASS, Android ARM64 object compile
+PASS, DEVICE_ACCESS=NONE; evidence `/tmp/oneios-g241.SIUBOr`.
+
+G24.2 pins OneOS `25ae4473711265d13a5bbde5df1f271ddf7708ae`: native policy and controller
+using the existing owned-group actuator. Exact session and sample freshness
+checks; reductions before increases; severe heat requests GPU gate/drain
+before CPU freeze; resume at minimum budgets after verified thaw with GPU
+gate still closed; persistent fault latch, no thermal-triggered reboot.
+Read-only group verification was added, with a new fixture. Native
+controller fixture mocks the required providers; deterministic C/Python
+parity exercises 8,640 samples. Both new suites, updated owned-group
+fixture, host and Android compilation are pending local validation.
+
+This is not a deployable phone controller. Independently owned frequency
+provider, GPU/IO gate and drain provider, session creator/membership and
+independent thermal reader/runner integration remain unimplemented or
+unqualified. Legacy admission remains blocked. No stage, rearm, live run,
+watchdog/recovery audit or kernel modification is authorized.
