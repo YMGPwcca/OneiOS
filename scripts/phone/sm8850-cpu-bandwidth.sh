@@ -106,17 +106,30 @@ if [ "$probe_enforcement" = 1 ]; then
     manifest="$stage/thermal.guard.manifest"
     /system/bin/sh "$stage/oneios_sm8850_thermal_takeover_guard.sh" --check "$manifest" ||
         fail thermal_readiness
-    peak=$(while read -r flag idx typ grp extra; do
-        [ "$flag" = z ] || continue
-        case "$grp" in
-            cpu|gpu|ddr)
-                case "$idx" in ''|*[!0-9]*) exit 2 ;; esac
-                [ "$(cat "/sys/class/thermal/thermal_zone$idx/type")" = "$typ" ] || exit 2
-                cat "/sys/class/thermal/thermal_zone$idx/temp" || exit 2 ;;
-        esac
-    done < "$manifest" | awk 'NF!=1 || $1 !~ /^[0-9]+$/ || $1<=0 {bad=1} {if($1>p)p=$1} END {if(bad||p<=0)exit 2; print p}') ||
-        fail thermal_sample
-    [ "$peak" -lt 45000 ] || fail cool_probe_required
+    peak=0
+    seen=0
+    {
+        read -r version boot count extra || fail thermal_header
+        [ "$version" = v1 ] && [ "$boot" = "$(cat /proc/sys/kernel/random/boot_id)" ] && [ -z "$extra" ] ||
+            fail thermal_header
+        case "$count" in ''|*[!0-9]*) fail thermal_header ;; esac
+        while read -r flag idx typ grp extra; do
+            [ "$flag" = z ] && [ -z "$extra" ] || fail thermal_row
+            case "$idx" in ''|*[!0-9]*) fail thermal_index ;; esac
+            [ "$(cat "/sys/class/thermal/thermal_zone$idx/type")" = "$typ" ] || fail thermal_identity
+            case "$grp" in
+                cpu|gpu|ddr)
+                    read -r temp < "/sys/class/thermal/thermal_zone$idx/temp" || fail thermal_sample
+                    case "$temp" in ''|*[!0-9]*) fail thermal_sample ;; esac
+                    [ "$temp" -gt 0 ] && [ "$temp" -le 200000 ] || fail thermal_sample
+                    [ "$temp" -le "$peak" ] || peak=$temp ;;
+                xo) ;;
+                *) fail thermal_group ;;
+            esac
+            seen=$((seen+1))
+        done
+    } < "$manifest"
+    [ "$seen" = "$count" ] && [ "$peak" -gt 0 ] && [ "$peak" -lt 45000 ] || fail cool_probe_required
     sm8850_cpu_quota_apply "$group" 10 || fail enforcement_quota
     before=$(awk '$1=="nr_throttled"{print $2}' "$group/cpu.stat")
     case "$before" in ''|*[!0-9]*) fail cpu_stat_before ;; esac
@@ -126,8 +139,8 @@ if [ "$probe_enforcement" = 1 ]; then
     timeout -s KILL 1 /system/bin/sh -c '
         set -eu
         group=$1
-        printf "%s\n" "$" > "$group/cgroup.procs"
-        awk -F: -v expected="/${group##*/}" '"'"'$2=="cpu" && $3==expected {ok=1} END{exit !ok}'"'"' /proc/$/cgroup
+        printf "%s\n" "$$" > "$group/cgroup.procs"
+        awk -F: -v expected="/${group##*/}" '"'"'$2=="cpu" && $3==expected {ok=1} END{exit !ok}'"'"' /proc/$$/cgroup
         echo CPU_BANDWIDTH_LOAD_CHILD_JOINED=YES
         while :; do :; done
     ' probe "$group" || rc=$?
@@ -140,7 +153,7 @@ if [ "$probe_enforcement" = 1 ]; then
     [ "$after" -gt "$before" ] || fail enforcement_not_observed
     echo CPU_BANDWIDTH_ENFORCEMENT=PASS
 fi
-[ "$(grep -E '^[0-9]+:cpu:' /proc/$/cgroup)" = "$parent_membership" ] || fail caller_moved
+[ "$(grep -E '^[0-9]+:cpu:' /proc/$$/cgroup)" = "$parent_membership" ] || fail caller_moved
 [ "$(cat "$root/cpu.cfs_period_us")" = "$parent_period" ] && [ "$(cat "$root/cpu.cfs_quota_us")" = "$parent_quota" ] || fail parent_limits_changed
 cat "$group/cpu.stat"
 rmdir "$group" || fail remove_private_group
