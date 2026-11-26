@@ -641,3 +641,32 @@ integration must provide independent deadline/ownership and fault
 handling, display/IO lifecycle, CPU freeze/resume, and an independently
 owned adaptive frequency provider. No fixed cap 40%, temperature-triggered
 return/reboot, Android kernel changes or new physical recovery tests.
+
+
+### G24.5 acceptance / G24.6 frequency-provider evidence inventory
+
+Operator WSL at OneiOS `4b12df8e7f2617238087f9a3adbb322a50211b29`, pinned OneOS
+`2967fda7d727babbb52b8b8675543cc326e97890`: 19,824 native checks, 0 failed;
+Android ARM64 static link and three combined quiesce symbols PASS;
+SHA256 `c36826976b9763d5874412fb89a7e3fb99d23095f58b28180f69105699a7e2e4`,
+evidence `/tmp/oneios-g245.SNrfRT`, DEVICE_ACCESS=NONE. Prior G24.1–G24.4
+offline acceptance unchanged. No hardware certification.
+
+G24.6 adds a focused read-only firmware inventory, not another simulated
+frequency provider. `scripts/phone/sm8850-frequency-inventory.py` checks
+SM-S948B/S948BXXS4BZIG, normal boot and absent xnuhost, then reads CPU
+policy, candidate shared nodes, service names/states, resource config
+paths/mappings and static candidate library exports. Vendor ELF bytes
+are read into a temporary host directory for readelf only and deleted
+on exit. There is no vendor function invocation, vote write, device file
+creation, mount, service stop, SELinux change, push, or benchmark. Scope
+is bounded; missing/filtered/truncated evidence is not absence proof.
+The script is not yet run on the exact firmware. Its completion is not
+provider qualification. No guessed numeric perf-lock ID or test vote.
+
+Need exact max-frequency resource semantics, independent client
+ownership/readback, aggregation and release/expiry proof and service
+availability during takeover. Linux scaling_max_freq readback alone
+cannot show request ownership. No adaptive frequency implementation
+is enabled. Independent supervisor and display/IO lifecycle remain
+unfinished; no live admission or kernel/recovery audit.
