@@ -3,8 +3,8 @@
 
 Uses the existing OneiOS full-takeover wrapper and its bounded DEVICE-SIDE
 framework deadline. Telemetry is read-only. On the dedicated SM8850 performance
-branch, the independently prearmed guarded 180s CFS-v1 thermal budget is
-the fixed profile. Other guarded durations retain the legacy monotonic cap. Android
+branch, guarded 180s uses a hybrid downward-only 40% frequency ceiling and
+reversible CFS-v1 CPU budget. Other guarded durations retain the legacy cap. Android
 kernel/firmware protection, emergency guard, watchdog and deadline remain.
 This is not safety certification.
 """
@@ -61,7 +61,8 @@ if [ "$ctl_boot" = "$current_boot" ] && [ "$ctl_state" = running ]; then
                [ -z "$stopline" ] || meta framework_stop_log "$stopline"
            fi ;;
     esac
-    if [ "$(cat "$ST/control/framework.cpu-budget" 2>/dev/null)" = cfs-v1-180s ]; then
+    case "$(cat "$ST/control/framework.cpu-budget" 2>/dev/null)" in
+        cfs-v1-180s|hybrid-v1-180s)
         case "$tok" in
             ''|*[!0-9a-f]*) ;;
             *)
@@ -83,7 +84,8 @@ if [ "$ctl_boot" = "$current_boot" ] && [ "$ctl_state" = running ]; then
                     fi
                 fi ;;
         esac
-    fi
+        ;;
+    esac
     if [ -f "$ST/control/display.log" ] && grep -qm1 'first frame posted' "$ST/control/display.log" 2>/dev/null; then
         meta first_frame 1
     fi
@@ -286,8 +288,10 @@ def snapshot_summary(record: dict) -> str:
     active = bool(current and meta.get("ctl/boot") == current and meta.get("ctl/state") == "running")
     guard_cpu = guard[8] if active and len(guard) == 14 and guard[:2] == ["v1", current] and guard[7] == "OK" else "NA"
     cap_pct = cap[9] if active and len(cap) == 10 and cap[:2] == ["v1", current] and cap[7] == "OK" else "NA"
-    cfs = active and meta.get("ctl/framework.cpu-budget") == "cfs-v1-180s" and len(cap) == 10 and cap[8] == "7"
+    profile = meta.get("ctl/framework.cpu-budget")
+    cfs = active and profile in ("cfs-v1-180s", "hybrid-v1-180s") and len(cap) == 10 and cap[8] == "7"
     budget_pct = cap_pct if cfs else "NA"
+    hybrid_freq_request = "40" if cfs and profile == "hybrid-v1-180s" and budget_pct != "NA" else "NA"
     if cfs:
         cap_pct = "NA"  # quota is CPU time, not a frequency percentage
     cpu0 = metrics.get("/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq", "NA")
@@ -295,6 +299,7 @@ def snapshot_summary(record: dict) -> str:
     return (f"SNAPSHOT={record['kind']} T={record['elapsed_from_framework_stop_s']}s "
             f"guard_cpu_mC={guard_cpu} cap_pct={cap_pct} cpu_budget_pct={budget_pct} "
             f"nr_throttled={meta.get('cpu_budget/nr_throttled', 'NA') if cfs else 'NA'} "
+            f"freq_ceiling_request_pct={hybrid_freq_request} "
             f"policy0_max_kHz={cpu0} policy6_max_kHz={cpu6} "
             f"guest_ready={meta.get('guest_ready', 'unseen')} "
             f"first_frame={meta.get('first_frame', 'unseen')} "
@@ -466,7 +471,7 @@ def run_monitor(args, repo: Path, out: Path, console: Console) -> int:
         console.say("SOFTWARE_THERMAL_GUARD=OFF_NO_ON_DEVICE_PROCESS; WARNING=NO_USERSPACE_TEMP_CUTOFF")
         console.say("CPU_UNDERCLOCK=OFF_NO_ROOT_CAP_WORKER; KERNEL_FIRMWARE_THERMAL_UNCHANGED")
     elif args.duration == 180:
-        console.say("SOFTWARE_THERMAL_GUARD=REQUIRED; CPU_BUDGET=CFS_V1; TARGET_45_70C; HARD_80C_RELEASE_70C; 90C_EMERGENCY_RETURN_SEPARATE")
+        console.say("SOFTWARE_THERMAL_GUARD=REQUIRED; CPU_BUDGET=HYBRID_FREQ40_CFS_V1; TARGET_45_70C; HARD_80C_RELEASE_70C; 90C_EMERGENCY_RETURN_SEPARATE")
     else:
         console.say("SOFTWARE_THERMAL_GUARD=REQUIRED; CPU_TARGET_30_70C; 75C_THROTTLE_NOT_RETURN; 90C_EMERGENCY_RETURN")
     console.say("GPU_3D=REQUIRED_NO_2D_FALLBACK; BACKEND_PROOF=CHECK_XNUHOST_KGSL_LOG")
@@ -719,6 +724,8 @@ def main() -> int:
         record["meta"]["ctl/thermal.cap.heartbeat"] = "v1 a g 13 35 5 6 OK 7 80"
         record["meta"]["cpu_budget/nr_throttled"] = "12"
         assert "cap_pct=NA cpu_budget_pct=80 nr_throttled=12" in snapshot_summary(record)
+        record["meta"]["ctl/framework.cpu-budget"] = "hybrid-v1-180s"
+        assert "freq_ceiling_request_pct=40" in snapshot_summary(record)
         record["meta"]["ctl/boot"] = "previous"
         assert "guard_cpu_mC=NA cap_pct=NA" in snapshot_summary(record)
         print("SELF_TEST=PASS NO_DEVICE_ACCESS")
@@ -768,7 +775,7 @@ def main() -> int:
         cap_disabled = "SM8850_CPU_CAP=DISABLED_NO_ROOT_WORKER" in result
         if no_guard != cap_disabled:
             raise RuntimeError("root preflight CPU cap profile mismatch; no Framework stop or data consumption")
-        thermal_marker = ("SM8850_CPU_THROTTLE_POLICY=CFS_V1_TARGET_45_70_HARD_80_RELEASE_70"
+        thermal_marker = ("SM8850_CPU_THROTTLE_POLICY=HYBRID_FREQ40_CFS_V1_TARGET_45_70_HARD_80_RELEASE_70"
                           if args.duration == 180 else
                           "SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC")
         if not no_guard and thermal_marker not in result.splitlines():

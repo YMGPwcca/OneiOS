@@ -17,8 +17,9 @@ REPORT = ROOT / "scripts/phone/sm8850-frame-stall-report.py"
 PERF_BRANCH = "feat/sm8850-xnuhost-perf-p0"
 LEGACY_BRANCH = "feat/oneios-sm8850-m3q"
 OFF_TOKEN = "I_ACCEPT_SOFT_GUARD_OFF_180S"
-GUARDED_MARKER = "SM8850_CPU_THROTTLE_POLICY=CFS_V1_TARGET_45_70_HARD_80_RELEASE_70"
+GUARDED_MARKER = "SM8850_CPU_THROTTLE_POLICY=HYBRID_FREQ40_CFS_V1_TARGET_45_70_HARD_80_RELEASE_70"
 LEGACY_GUARDED_MARKER = "SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC"
+CFS_ONLY_MARKER = "SM8850_CPU_THROTTLE_POLICY=CFS_V1_TARGET_45_70_HARD_80_RELEASE_70"
 
 
 def load(name, path):
@@ -96,6 +97,10 @@ class BoundedTimingTest(unittest.TestCase):
 
     def test_guarded_preflight_refuses_stale_monotonic_180s_stage(self):
         self.preflight_fixture(PERF_BRANCH, "", LEGACY_GUARDED_MARKER + "\nPREFLIGHT OK\n",
+                               "guarded thermal policy marker missing")
+
+    def test_guarded_preflight_refuses_cfs_only_stage_after_thermal_trip(self):
+        self.preflight_fixture(PERF_BRANCH, "", CFS_ONLY_MARKER + "\nPREFLIGHT OK\n",
                                "guarded thermal policy marker missing")
 
     def test_performance_branch_refuses_unexpected_unguarded_ack(self):

@@ -573,7 +573,7 @@ def launch(phone, mode, output, *, reboot_only=False, duration=600,
               file=sys.stderr, flush=True)
         return 2
     if mode == "run":
-        thermal_marker = ("SM8850_CPU_THROTTLE_POLICY=CFS_V1_TARGET_45_70_HARD_80_RELEASE_70"
+        thermal_marker = ("SM8850_CPU_THROTTLE_POLICY=HYBRID_FREQ40_CFS_V1_TARGET_45_70_HARD_80_RELEASE_70"
                           if duration == 180 else
                           "SM8850_CPU_THROTTLE_POLICY=TARGET_30_70_THROTTLE_BY_75_MONOTONIC")
         if not passive_soft_thermal and thermal_marker not in check_output.splitlines():
@@ -637,7 +637,7 @@ mkdir launches/{token}
                 print("CPU_UNDERCLOCK=OFF_NO_ROOT_CAP_WORKER", flush=True)
                 print("WARNING=CAP_FAILURE_NO_SOFTWARE_REBOOT_AND_VENDOR_MINIMUM_MAY_OVERRIDE_CAP", flush=True)
             elif duration == 180:
-                print("SM8850_SOFT_THERMAL_GUARD=DEFAULT_FAIL_CLOSED; CPU_BUDGET=CFS_V1; TARGET_45_70C; HARD_80C_RELEASE_70C; EMERGENCY_GUARD_SEPARATE", flush=True)
+                print("SM8850_SOFT_THERMAL_GUARD=DEFAULT_FAIL_CLOSED; CPU_BUDGET=HYBRID_FREQ40_CFS_V1; TARGET_45_70C; HARD_80C_RELEASE_70C; EMERGENCY_GUARD_SEPARATE", flush=True)
             else:
                 print("SM8850_SOFT_THERMAL_GUARD=DEFAULT_FAIL_CLOSED; CPU_TARGET_30_70C; 75C_THROTTLE_NOT_RETURN", flush=True)
             print("BRIDGES=1; CPU_PIN=1; CPU_AFFINITY_BENCH=0; GPU=3D_REQUIRED", flush=True)

@@ -125,6 +125,18 @@ class TakeoverTest(unittest.TestCase):
             self.assertEqual(2, rc)
             self.assertEqual(1, device.root.call_count)
 
+    def test_guarded_180s_rejects_cfs_only_stage_after_thermal_trip(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(TAKEOVER, "audit", return_value=0), \
+             patch.object(TAKEOVER, "upload", return_value=0):
+            device = unittest.mock.Mock()
+            device.root.return_value = subprocess.CompletedProcess([], 0,
+                b"SM8850_CPU_THROTTLE_POLICY=CFS_V1_TARGET_45_70_HARD_80_RELEASE_70\nPREFLIGHT OK\n")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = TAKEOVER.launch(device, "run", Path(folder), duration=180)
+            self.assertEqual(2, rc)
+            self.assertEqual(1, device.root.call_count)
+
     def test_detached_run_carries_explicit_no_guard_profile_token(self):
         with tempfile.TemporaryDirectory() as folder, \
              patch.object(TAKEOVER, "audit", return_value=0), \
