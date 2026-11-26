@@ -23,6 +23,11 @@ stall = load("sm8850-frame-stall-report")
 perf = load("sm8850-ios-interactive-perf")
 takeover = load("sm8850-takeover")
 
+# Mock only the current guarded 180s preflight contract; otherwise the
+# profile tests stop at the independent thermal gate before testing profiles.
+GUARDED_180 = "SM8850_CPU_THROTTLE_POLICY=HYBRID_FREQ40_CFS_V1_TARGET_45_70_HARD_80_RELEASE_70\n"
+DEFAULT_SESSION_PROFILES = "SM8850_OWN_PRESENCE=0\nSM8850_INTERACTION_PROFILE=off\n"
+
 def window(mono, posts, gaps, over60, over120, p95, maximum, all_gap):
     return (f"oneios-display: perf: mono_ms={mono} window_ms=5000 posts={posts} "
             f"posted_rate=20 active_cadence=34 active_gaps={gaps} "
@@ -122,7 +127,10 @@ class PhaseA(unittest.TestCase):
                         patch.object(takeover, "status", return_value="boot=mock\n"), \
                         patch.object(takeover.time, "monotonic", side_effect=[0.0, 1000.0]):
                     phone = Mock()
-                    phone.root.side_effect = [subprocess.CompletedProcess([], 0, f"SM8850_PERF_PROFILE={acknowledged}\n".encode()),
+                    lines = (GUARDED_180 + DEFAULT_SESSION_PROFILES +
+                             "SM8850_CPU_PROFILE_REQUESTED=default\n" +
+                             f"SM8850_PERF_PROFILE={acknowledged}\n")
+                    phone.root.side_effect = [subprocess.CompletedProcess([], 0, lines.encode()),
                                               subprocess.CompletedProcess([], 0, b"")]
                     rc = takeover.launch(phone, "run", Path(d), duration=180, perf_profile=profile)
                     calls = [c.args[0] for c in phone.root.call_args_list]
@@ -149,7 +157,7 @@ class PhaseA(unittest.TestCase):
                     patch.object(takeover, "status", return_value="boot=mock\n"), \
                     patch.object(takeover.time, "monotonic", side_effect=[0.0, 1000.0]):
                 phone = Mock()
-                lines = "SM8850_PERF_PROFILE=frame-task\n"
+                lines = GUARDED_180 + DEFAULT_SESSION_PROFILES + "SM8850_PERF_PROFILE=frame-task\n"
                 if acknowledged:
                     lines += f"SM8850_CPU_PROFILE_REQUESTED={acknowledged}\n"
                 phone.root.side_effect = [subprocess.CompletedProcess([], 0, lines.encode()),
