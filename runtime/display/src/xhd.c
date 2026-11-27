@@ -209,7 +209,26 @@ static int drain_trace_limit(int fd, const struct xhd_frame *frame, struct xhd_r
       return -1;
     }
     if (n == 0) { fprintf(stderr, "oneios-display: xnuhost closed the socket\n"); return -1; }
+    if (trace && n >= 4 &&
+        (!memcmp(packet.base.base.magic, "XHDQ", 4) || !memcmp(packet.base.base.magic, "XHDR", 4))) {
+      struct xh_display_barrier p;
+      if (n != (ssize_t)sizeof p) return -1;
+      memcpy(&p, &packet, sizeof p);
+      uint64_t t = xh_display_barrier_ticket(&p);
+      if (xh_display_barrier_valid(&p, 'Q') && trace->barrier == XHD_OPEN &&
+          t > trace->barrier_ticket) {
+        trace->barrier_ticket = t;
+        trace->barrier = XHD_PARK_ACK;
+      } else if (xh_display_barrier_valid(&p, 'R') &&
+                 trace->barrier == XHD_PARKED && t == trace->barrier_ticket) {
+        trace->barrier = XHD_RESUME_ACK;
+      } else return -1;
+      // Preserve record order. If called after a successful window lock,
+      // finish that copy/post first; do not ACK from this parser.
+      return 0;
+    }
     if (n < 4 || memcmp(packet.base.base.magic, "XHDF", 4)) continue;
+    if (trace && trace->barrier != XHD_OPEN) return -1;
     // Keep legacy-compatible damage for an unknown/truncated extension only
     // when the complete 20-byte rectangle exists; never use its metadata.
     if (trace && n != 20) trace->active = true;
@@ -236,6 +255,25 @@ static int drain_trace_limit(int fd, const struct xhd_frame *frame, struct xhd_r
     else trace->pending.bad++;
   }
   return 0;
+}
+
+int xhd_quiesce_boundary(int fd, const struct xhd_frame *frame,
+                         struct xhd_rect *damage, struct xhd_trace_state *trace)
+{
+  if (trace->barrier == XHD_OPEN) return 0;
+  if (trace->barrier == XHD_PARKED) return 1;
+  bool park = trace->barrier == XHD_PARK_ACK;
+  if (park) {
+    *damage = (struct xhd_rect){0};
+    trace->pending = (struct xhd_trace_pending){0};
+  }
+  struct xh_display_barrier p = xh_display_barrier_make(park ? 'A' : 'B', trace->barrier_ticket);
+  ssize_t n = send(fd, &p, sizeof p, MSG_DONTWAIT | MSG_NOSIGNAL);
+  if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 1;
+  if (n != (ssize_t)sizeof p) return -1;
+  trace->barrier = park ? XHD_PARKED : XHD_OPEN;
+  if (!park) *damage = (struct xhd_rect){0, 0, frame->width, frame->height};
+  return park ? 1 : 0;
 }
 
 int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace)

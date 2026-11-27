@@ -671,6 +671,41 @@ static int as_helper(const char *socket_path)
   return 7;
 }
 
+static void test_barrier(void)
+{
+  int fd[2];
+  int r = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd);
+  CHECK(!r);
+  if (r) return;
+  struct xhd_frame f = { .width = 16, .height = 8 };
+  struct xhd_rect damage = {0,0,16,8};
+  struct xhd_trace_state trace = {0};
+  const uint64_t t = UINT64_C(0x100000001);
+  struct xh_display_barrier p = xh_display_barrier_make('Q', t), ack;
+  CHECK(send(fd[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  unsigned accepted = 99;
+  CHECK(!xhd_drain_after_lock(fd[1], &f, damage, &damage, &trace, &accepted));
+  CHECK(accepted == 0 && trace.barrier == XHD_PARK_ACK && trace.barrier_ticket == t);
+  CHECK(recv(fd[0], &ack, sizeof ack, MSG_DONTWAIT) < 0 && errno == EAGAIN);
+  CHECK(xhd_quiesce_boundary(fd[1], &f, &damage, &trace) == 1 && !damage.w);
+  CHECK(recv(fd[0], &ack, sizeof ack, MSG_DONTWAIT) == (ssize_t)sizeof ack &&
+        xh_display_barrier_valid(&ack,'A') && xh_display_barrier_ticket(&ack) == t);
+  CHECK(xhd_quiesce_boundary(fd[1], &f, &damage, &trace) == 1);
+  CHECK(recv(fd[0], &ack, sizeof ack, MSG_DONTWAIT) < 0 && errno == EAGAIN);
+  p = xh_display_barrier_make('R',t);
+  CHECK(send(fd[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  CHECK(!xhd_drain_trace(fd[1], &f, &damage, &trace) && trace.barrier == XHD_RESUME_ACK);
+  CHECK(!xhd_quiesce_boundary(fd[1], &f, &damage, &trace) &&
+        damage.w == 16 && damage.h == 8 && trace.barrier == XHD_OPEN);
+  CHECK(recv(fd[0], &ack, sizeof ack, MSG_DONTWAIT) == (ssize_t)sizeof ack &&
+        xh_display_barrier_valid(&ack,'B') && xh_display_barrier_ticket(&ack) == t);
+  // Replay of the completed pause ticket is not a new pause.
+  p = xh_display_barrier_make('Q',t);
+  CHECK(send(fd[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  CHECK(xhd_drain_trace(fd[1], &f, &damage, &trace) < 0);
+  close(fd[0]); close(fd[1]);
+}
+
 int main(int argc, char **argv)
 {
   if (argc > 2 && !strcmp(argv[1], "--socket")) return as_helper(argv[2]);
@@ -686,6 +721,7 @@ int main(int argc, char **argv)
   test_copy_formats();
   test_frame_trace();
   test_post_lock_drain();
+  test_barrier();
   test_panel_report();
   test_hold_first(dir);
   test_protocol(dir);

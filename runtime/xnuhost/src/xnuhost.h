@@ -676,6 +676,15 @@ struct xh_frame_scanout;
 bool  xh_display_trace_enabled(void);
 void  xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
                                const struct xh_frame_scanout *scanout);
+// SHM helper barrier. Caller must first stop every shadow producer
+// (including GPU and boot-console writers), and independently verify
+// the helper's process identity/lifetime. Close gives a ticket, poll
+// waits for userspace buffer-post boundary, resume completes handshake.
+// -EAGAIN means retry under an external BOOTTIME deadline. No physical
+// panel/SurfaceFlinger fence claim. No live caller yet.
+int xh_display_quiesce_close(uint64_t *ticket);
+int xh_display_quiesce_poll(uint64_t ticket);
+int xh_display_quiesce_resume(uint64_t ticket);
 void  xh_display_close(void);
 
 // Input (input.c): /dev/input/event* into the virtio-input device; with `pen` (NULL: none) the pen's device too, read on

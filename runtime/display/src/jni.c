@@ -267,6 +267,10 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
   struct xhd_trace_state trace = { 0 };
   xhd_perf_begin(&perf, xhd_perf_clock_ns());
   for (;;) {
+    // If a barrier was received during the previous window lock, the
+    // buffer has now been posted/released. Never ACK inside that lock.
+    int parked = xhd_quiesce_boundary(c->fd, f, &pending, &trace);
+    if (parked < 0) { result = -5; break; }
     // Held: the guest's frame is not shown yet, the damage adds up, and `ready` is looked for at every flush and
     // every XHD_HOLD_POLL_MS between them (a guest that drew its frame with content and then nothing more).
     bool hold = frames == 0 && xhd_hold_first(ready_file);
@@ -275,13 +279,17 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
       clock_gettime(CLOCK_MONOTONIC, &hold_start);
       fprintf(stderr, "oneios-display: the first frame waits for %s (xnuhost's first frame of the guest's own with content); the boot screen stays\n", ready_file);
     }
-    struct pollfd fds[2] = { { c->fd, POLLIN, 0 }, { signal_pipe[0], POLLIN, 0 } };
+    short events = POLLIN;
+    if (trace.barrier == XHD_PARK_ACK || trace.barrier == XHD_RESUME_ACK) events |= POLLOUT;
+    struct pollfd fds[2] = { { c->fd, events, 0 }, { signal_pipe[0], POLLIN, 0 } };
     // Wake once per second while static, so the five-second profiler prints
     // idle windows as idle (not as phantom 60 FPS). No timer touches the guest.
-    int ready = poll(fds, 2, hold ? XHD_HOLD_POLL_MS : pending.w ? 0 : 1000);
+    int ready = poll(fds, 2, parked ? 1000 : hold ? XHD_HOLD_POLL_MS : pending.w ? 0 : 1000);
     if (ready < 0 && errno != EINTR) { result = -3; break; }
     if (stopping || (ready > 0 && fds[1].revents)) { result = 1; break; }
     if (xhd_drain_trace(c->fd, f, &pending, &trace) < 0) { result = 0; break; }
+    parked = xhd_quiesce_boundary(c->fd, f, &pending, &trace);
+    if (parked < 0) { result = -5; break; }
     uint64_t tick_ns = xhd_perf_clock_ns();
     if (xhd_perf_due(&perf, tick_ns)) {
       log_frame_perf(&perf, tick_ns);
@@ -289,6 +297,7 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
       if (trace.active) log_scanout_perf(&perf, tick_ns);
       xhd_perf_next_window(&perf, tick_ns);
     }
+    if (parked) continue;  // no new native-window buffer while parked
     if (hold) { if (ready > 0) held_flushes++; continue; }
     if (!pending.w) continue;
     // The first posts fill whole buffers; after that the window copies back what the last frame

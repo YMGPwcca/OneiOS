@@ -770,3 +770,40 @@ supervisor must own deadline, membership, lifecycle, and whole-session
 coordination; it must not call these APIs from a device handler.
 No new live caller, no thermal-triggered return or reboot, no kernel
 change. Display/bridge IO and actual supervisor integration remain.
+
+
+### G24.8 receipt / G24.9 SHM display helper barrier (2026-11-27)
+
+Operator local G24.8 OneiOS `b0e5f3c60a6c75c612ff7f2ae317f2d336c8baa5`, pinned OneOS
+`fc7754d1e095d775c082d2c2261583380abc5e27`: 19,858 native checks,
+0 failed, Android ARM64 build and three block quiesce symbols PASS.
+Runtime SHA256 `b2e343abe3c1e460eb3ed34aaab92c1fb36f4308265fd64360c8a11afb87eba8`;
+evidence `/tmp/oneios-g248.Dudezu`, DEVICE_ACCESS=NONE.
+Real udmabuf import skipped as in earlier offline runs.
+
+G24.9 adds ticketed Q/A (park/ACK) and R/B (resume/ACK) records on
+the existing SHM display SOCK_SEQPACKET connection. No physical panel
+fence claim. The caller must first park every producer of shadow pixels
+(including GPU and boot-console writers); a late notification latches
+fault. The helper parses a barrier in FIFO order but emits its ACK only
+at a native-window boundary outside lock/copy/unlockAndPost. A barrier
+received by post-lock drain completes the outstanding buffer attempt
+before ACK. Park discards unposted damage/trace metadata; explicit
+resume schedules a full redraw, not a new guest-generated frame.
+No new producer posts while helper parked. An older helper cannot ACK
+and must time out; it is not treated as quiesced. Host wire operations
+are nonblocking and ticket-checked; new helper connections are refused
+while closed and previously replaced connections cannot qualify.
+Both sides must be updated together for barrier use; regular frame
+protocol remains backward compatible when gate not used.
+
+Local tests pending: helper parser/ACK and real host-to-helper socket
+with simulated native-window boundaries, stale ACK/refusal, full
+redraw, late producer and Android XNUHost + JNI link. No real
+ANativeWindow, SurfaceFlinger, HWC, panel fence, hardware power or
+physical quiesce is tested. Independent helper identity/lifetime,
+remaining bridge and input producers, whole-session coordination,
+freeze/thaw and independent supervisor still missing. No live caller
+or admission change. Frequency provider remains blocked at stock
+owned-readback requirement. No device access, thermal-triggered
+return/reboot, Android kernel change or shared frequency write.

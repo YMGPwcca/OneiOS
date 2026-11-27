@@ -2,6 +2,8 @@
 // The real display.c against a stand-in helper on the real socket: where the guest's mode comes from.
 #define _GNU_SOURCE
 #include "xnuhost.h"
+#include "../../display/src/xhd.h"
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +20,7 @@ static unsigned guest_flushes;
 void xh_input_frame_shown(void) { __atomic_add_fetch(&guest_flushes, 1u, __ATOMIC_RELAXED); }
 
 struct message { char magic[4]; uint32_t a, b, c, d; };
-static struct { char path[300]; uint32_t w, h, stride, format; off_t memfd_size; int ok; } helper;
+static struct { char path[300]; uint32_t w, h, stride, format; off_t memfd_size; int ok, fd; } helper;
 
 static uint32_t report_w = 1440, report_h = 3120, report_hz = 120;
 
@@ -41,8 +43,74 @@ static void *helper_main(void *arg)
     fstat(memfd, &st);
     helper.w = hello.a; helper.h = hello.b; helper.stride = hello.c; helper.format = hello.d; helper.memfd_size = st.st_size;
     helper.ok = 1;
+    helper.fd = fd;
+    close(memfd);
   }
   return NULL;
+}
+
+static int barrier_case;
+static int retry_display(int (*op)(uint64_t), uint64_t ticket, int expected)
+{
+  for (unsigned i = 0; i < 2000; i++) {
+    int r = op(ticket);
+    if (r != -EAGAIN || expected == -EAGAIN) return r;
+    usleep(1000);
+  }
+  return -ETIMEDOUT;
+}
+// Real host transport + real helper parser on the existing socket.
+// Only ANativeWindow's boundary is simulated; no physical present claim.
+static int barrier_test(unsigned w, unsigned h)
+{
+#define B(cond, code) do { if (!(cond)) return code; } while (0)
+  uint64_t t = 0, t2 = 0;
+  int rc = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && rc == -EAGAIN; i++) {
+    rc = xh_display_quiesce_close(&t);
+    if (rc == -EAGAIN) usleep(1000);
+  }
+  B(!rc && t, 10);
+  B(xh_display_quiesce_close(&t2) == -EBUSY && !t2, 11);
+  B(xh_display_quiesce_resume(t) == -EBUSY, 12);
+  B(xh_display_quiesce_poll(t+1) == -ESTALE, 13);
+  B(xh_display_quiesce_poll(t) == -EAGAIN, 14);
+  struct xhd_frame frame = { .width = w, .height = h };
+  struct xhd_rect damage = {0,0,w,h};
+  struct xhd_trace_state trace = {0};
+  if (barrier_case == 2) {
+    // A forged/stale ticket on the connected peer must not certify park.
+    struct xh_display_barrier bad = xh_display_barrier_make('A', t+1);
+    B(send(helper.fd, &bad, sizeof bad, MSG_NOSIGNAL) == (ssize_t)sizeof bad, 15);
+    B(retry_display(xh_display_quiesce_poll, t, -EPROTO) == -EPROTO, 16);
+    B(xh_display_quiesce_resume(t) == -EPROTO, 17);
+    return 0;
+  }
+  unsigned accepted = 0;
+  // Q is read while the helper hypothetically owns a full window lock.
+  B(!xhd_drain_after_lock(helper.fd, &frame, damage, &damage, &trace, &accepted), 18);
+  B(trace.barrier == XHD_PARK_ACK && trace.barrier_ticket == t, 19);
+  B(xh_display_quiesce_poll(t) == -EAGAIN, 20); // no premature ACK
+  // Only the boundary after copy/post may emit A.
+  B(xhd_quiesce_boundary(helper.fd, &frame, &damage, &trace) == 1, 21);
+  B(trace.barrier == XHD_PARKED && !damage.w, 22);
+  B(!retry_display(xh_display_quiesce_poll, t, 0), 23);
+  B(!xh_display_quiesce_poll(t), 24);
+  B(xh_display_quiesce_resume(t+1) == -ESTALE, 25);
+  B(xh_display_quiesce_resume(t) == -EAGAIN, 26);
+  B(!xhd_drain_trace(helper.fd, &frame, &damage, &trace), 27);
+  B(trace.barrier == XHD_RESUME_ACK && !damage.w, 28);
+  B(!xhd_quiesce_boundary(helper.fd, &frame, &damage, &trace), 29);
+  B(trace.barrier == XHD_OPEN && damage.w == w && damage.h == h, 30);
+  B(!retry_display(xh_display_quiesce_resume, t, 0), 31);
+  B(xh_display_quiesce_poll(t) == -ESTALE, 32);
+  B(!xh_display_quiesce_close(&t2) && t2 > t, 33);
+  // A producer that was not stopped invalidates the next receipt.
+  xh_display_flush(0,0,1,1);
+  B(xh_display_quiesce_poll(t2) == -EIO, 34);
+  B(xh_display_quiesce_resume(t2) == -EIO, 35);
+  return 0;
+#undef B
 }
 
 // In a child: display.c's state is once per process. 0 when the frame, the hello and the time are as expected.
@@ -73,6 +141,7 @@ static int run(const char *dir, const char *mode, unsigned cw, unsigned ch, unsi
   if (__atomic_load_n(&guest_flushes, __ATOMIC_RELAXED) != 0) _exit(8);
   xh_display_flush(0, 0, 1, 1);
   if (__atomic_load_n(&guest_flushes, __ATOMIC_RELAXED) != 1) _exit(9);
+  if (barrier_case) _exit(barrier_test(w,h));
   _exit(0);
 }
 
@@ -89,6 +158,10 @@ int main(void)
   report_w = 1440; report_h = 3120; report_hz = 120;
   CASE("a configured mode wins, without waiting", "takeover", 1080, 2340, 60, 1080, 2340, 60, 1.0);
   CASE("a bench run assumes the S24 Ultra's, without waiting", "bench", 0, 0, 0, 1440, 3120, 120, 1.0);
+  barrier_case = 1;
+  CASE("real socket: park only at helper boundary, resume, late producer refusal", "takeover", 0, 0, 0, 1440, 3120, 120, 5.0);
+  barrier_case = 2;
+  CASE("real socket: wrong ACK ticket latches fault", "takeover", 0, 0, 0, 1440, 3120, 120, 5.0);
   char command[100];
   snprintf(command, sizeof command, "rm -rf %s", dir);
   if (system(command)) failures++;

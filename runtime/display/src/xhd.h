@@ -10,6 +10,7 @@
 
 #include "../../xnuhost/include/xnuhost/pixels.h"
 #include "../../xnuhost/include/xnuhost/frame_trace.h"
+#include "../../xnuhost/include/xnuhost/display_quiesce.h"
 
 // The hello's format: what the frame's pixels hold (xnuhost's pixels.h says it in full).
 #define XHD_FORMAT_BGRX    XH_PIXELS_BGRX8      // bytes B,G,R,X, 8-bit sRGB: iOS's 'BGRA' framebuffer
@@ -76,7 +77,10 @@ struct xhd_trace_pending {
   uint32_t provenance_resource_id, provenance_owner_ctx;
   bool provenance_mixed;
 };
+enum xhd_barrier_phase { XHD_OPEN, XHD_PARK_ACK, XHD_PARKED, XHD_RESUME_ACK };
 struct xhd_trace_state {
+  uint64_t barrier_ticket;            // never reset on a successful post
+  enum xhd_barrier_phase barrier;
   uint64_t last_seq;                 // survives per-post pending resets
   bool active;                       // extended or malformed XHDF observed (even before a valid one)
   struct xhd_trace_pending pending;
@@ -84,6 +88,11 @@ struct xhd_trace_state {
 // Extended packets are optional: a legacy XHDF remains valid, and older helpers
 // receive the exact 20-byte prefix even when the sender writes 40, 64 or 88 bytes.
 int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace);
+// ONLY call outside ANativeWindow lock/copy/post. 0 open; 1 parked
+// (including ACK waiting for socket capacity); -1 protocol/socket error.
+// Drop unposted damage at park; resume requests one full shadow redraw.
+int xhd_quiesce_boundary(int fd, const struct xhd_frame *frame,
+                         struct xhd_rect *damage, struct xhd_trace_state *trace);
 // After a successful full-frame window lock, absorb a bounded number of
 // late notifications before copying the shadow. Partial locks do not
 // consume anything: their Android dirty rectangle cannot be enlarged.

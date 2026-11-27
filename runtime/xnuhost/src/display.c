@@ -11,6 +11,7 @@
 #define _GNU_SOURCE
 #include "xnuhost.h"
 #include "xnuhost/frame_trace.h"
+#include "xnuhost/display_quiesce.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -47,6 +48,13 @@ static uint64_t frame_seq;  // protected by client_lock
 // The next flush must repair all damage, not assume disjoint rectangles
 // will be repeated. Reset on a new connection (which gets a full frame).
 static bool need_full_damage;
+// Protected by client_lock. A replacement helper is not evidence that
+// the previous helper stopped using its shared mapping. Refuse quiesce
+// on that connection history until an external owner can prove it.
+static bool helper_ready, helper_ever_attached, helper_replaced, helper_panel_seen;
+static bool display_closed, display_q_sent, display_q_acked, display_r_sent;
+static int display_fault;
+static uint64_t display_ticket;
 static void notify_flush(unsigned x, unsigned y, unsigned w, unsigned h,
                          const struct xh_frame_scanout *scanout);
 
@@ -69,14 +77,27 @@ static void helper_attach(int fd)
   cm->cmsg_type = SCM_RIGHTS;
   cm->cmsg_len = CMSG_LEN(sizeof(int));
   memcpy(CMSG_DATA(cm), &shm_fd, sizeof(int));
-  if (sendmsg(fd, &msg, MSG_NOSIGNAL) < 0) { close(fd); return; }
   pthread_mutex_lock(&client_lock);
+  // Do not hand the shadow mapping to a new helper during a barrier.
+  if (display_closed || sendmsg(fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT) != (ssize_t)sizeof hello) {
+    pthread_mutex_unlock(&client_lock);
+    close(fd);
+    return;
+  }
+  if (helper_ever_attached) helper_replaced = true;
+  helper_ever_attached = true;
   if (client_fd >= 0) close(client_fd);          // the newest helper wins
   client_fd = fd;
+  helper_ready = false;
+  helper_panel_seen = false;
   need_full_damage = true;
   pthread_mutex_unlock(&client_lock);
   LOGI("display: a helper connected");
   notify_flush(0, 0, display.width, display.height, NULL); // not a new guest-rendered frame
+  pthread_mutex_lock(&client_lock);
+  // helper_attach is serialized by initialization / the accept thread.
+  if (client_fd == fd) helper_ready = true;
+  pthread_mutex_unlock(&client_lock);
 }
 
 static void *accept_main(void *arg)
@@ -300,6 +321,14 @@ static void notify_flush(unsigned x, unsigned y, unsigned w, unsigned h,
 {
   if (backend != BACK_SHM) return;
   pthread_mutex_lock(&client_lock);
+  if (display_closed) {
+    // An unexpected notification means some producer was not parked.
+    // The shadow copy may already have happened. Never certify it.
+    display_fault = -EIO;
+    need_full_damage = true;
+    pthread_mutex_unlock(&client_lock);
+    return;
+  }
   if (client_fd >= 0) {
     bool repair = need_full_damage;
     if (repair) { x = y = 0; w = display.width; h = display.height; scanout = NULL; }
@@ -364,6 +393,115 @@ static void notify_flush(unsigned x, unsigned y, unsigned w, unsigned h,
     }
   }
   pthread_mutex_unlock(&client_lock);
+}
+
+// All wire I/O below is nonblocking; retry only under the caller's
+// independent deadline. No lock is held across a native-window operation.
+static int display_gate_lock(void)
+{
+  if (backend != BACK_SHM) return -ENOTSUP;
+  int r = pthread_mutex_trylock(&client_lock);
+  return r == EBUSY ? -EAGAIN : -r;
+}
+static int display_ticket_locked(uint64_t t)
+{
+  if (!t || !display_closed || t != display_ticket) return -ESTALE;
+  if (display_fault) return display_fault;
+  if (client_fd < 0 || !helper_ready || helper_replaced)
+    return display_fault = -ENOTCONN;
+  return 0;
+}
+static int display_barrier_send(char op, uint64_t t)
+{
+  struct xh_display_barrier p = xh_display_barrier_make(op, t);
+  ssize_t n = send(client_fd, &p, sizeof p, MSG_DONTWAIT | MSG_NOSIGNAL);
+  if (n == (ssize_t)sizeof p) return 0;
+  if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return -EAGAIN;
+  return display_fault = -EIO;
+}
+// A configured-mode/bench helper may have sent the initial panel report
+// without helper_report() reading it. Accept at most one such record.
+// After ACK, any unsolicited packet or disconnected peer invalidates
+// the receipt. Never accept a truncated or mismatched control record.
+static int display_barrier_recv(char op, uint64_t t)
+{
+  for (unsigned i = 0; i < 2; i++) {
+    struct xh_display_barrier p;
+    ssize_t n = recv(client_fd, &p, sizeof p, MSG_DONTWAIT | MSG_TRUNC);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return -EAGAIN;
+    if (n == 0) return display_fault = -ENOTCONN;
+    if (n != (ssize_t)sizeof p) return display_fault = -EPROTO;
+    if (!helper_panel_seen && !memcmp(p.magic, "XHDP", 4)) {
+      helper_panel_seen = true;
+      continue;
+    }
+    if (op && xh_display_barrier_valid(&p, op) && xh_display_barrier_ticket(&p) == t) return 0;
+    return display_fault = -EPROTO;
+  }
+  return -EAGAIN;
+}
+int xh_display_quiesce_close(uint64_t *ticket)
+{
+  if (!ticket) return -EINVAL;
+  int r = display_gate_lock();
+  if (r) return r;
+  if (display_closed) r = -EBUSY;
+  else if (client_fd < 0 || !helper_ready) r = -ENOTCONN;
+  else if (helper_replaced) r = -ESTALE;
+  else if (display_ticket == UINT64_MAX) r = -EOVERFLOW;
+  else {
+    display_closed = true;
+    display_q_sent = display_q_acked = display_r_sent = false;
+    display_fault = 0;
+    *ticket = ++display_ticket;
+  }
+  pthread_mutex_unlock(&client_lock);
+  return r;
+}
+int xh_display_quiesce_poll(uint64_t ticket)
+{
+  int r = display_gate_lock();
+  if (r) return r;
+  r = display_ticket_locked(ticket);
+  if (!r && display_r_sent) r = -EBUSY;
+  if (!r && !display_q_sent) {
+    r = display_barrier_send('Q', ticket);
+    if (!r) display_q_sent = true;
+  }
+  if (!r && !display_q_acked) {
+    r = display_barrier_recv('A', ticket);
+    if (!r) display_q_acked = true;
+  } else if (!r) {
+    r = display_barrier_recv(0, ticket);
+    if (r == -EAGAIN) r = 0;
+  }
+  pthread_mutex_unlock(&client_lock);
+  return r;
+}
+int xh_display_quiesce_resume(uint64_t ticket)
+{
+  int r = display_gate_lock();
+  if (r) return r;
+  r = display_ticket_locked(ticket);
+  if (!r && !display_q_acked) r = -EBUSY;
+  if (!r && !display_r_sent) {
+    r = display_barrier_recv(0, ticket);
+    if (r == -EAGAIN) {
+      r = display_barrier_send('R', ticket);
+      if (!r) display_r_sent = true;
+    }
+  }
+  if (!r && display_r_sent) {
+    r = display_barrier_recv('B', ticket);
+    if (!r) {
+      display_closed = false;
+      // The helper redraws on resume; the next producer notification
+      // also repairs all damage, without claiming a new guest frame.
+      need_full_damage = true;
+    }
+  }
+  pthread_mutex_unlock(&client_lock);
+  return r;
 }
 
 void xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
