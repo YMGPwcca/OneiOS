@@ -1920,3 +1920,22 @@ the reactivation question. Include effect in future admitted
 session validation rather than opening another diagnostic
 milestone. No source or phone change in this receipt; full-run
 admission remains blocked.
+
+### 2026-11-28 — upstream-inspired SM8850 boot animation suppression
+
+OneOS 95f0efa0a2306d9c24ba0b9a0ac40ed5aa62548b suppresses the stock
+init bootanim service in the existing admitted Framework stop-loop,
+initially and every five 200ms iterations, including restarting.
+Return request and stop-loop.off checked before the extra write;
+existing return ordering unchanged. Legacy non-Framework branch and
+zygote cadence unchanged. No compositor stop/freeze/restart, HAL or
+thermal changes, no full-run admission changes. Upstream reference
+fahadalijaved/OneOS 5d0cddf6c063527522b201e4359172071d9d4178.
+The old bootui redraws at 150ms; do not enable it blindly as a
+replacement. A change-driven splash remains a separate integration
+item. Blank/retained frame during preparation is possible. New
+OneOS tests/test_sm8850_bootanim.py exercises the actual loop with
+inert shell functions; operator local validation pending. No live
+smoke or reboot in this batch; physical layer removal and temperature
+benefit not yet measured. Integrate verification into a future
+admitted session rather than repeat standalone diagnostic smoke.
