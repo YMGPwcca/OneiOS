@@ -1869,3 +1869,54 @@ performance milestone or causal A/B intervention. Source-only
 patch and added host fixture; WSL validation pending, no phone
 access. Separate explicit consent for existing mandatory reboot
 still applies. Root may be lost after reboot.
+
+### 2026-11-28 — Samsung boot animation reactivation observed
+
+Operator display observer 6044782 / OneOS d1ff949, evidence
+/tmp/oneios-display-observer.e488Ws and /tmp/oneios-native-off.xh16d3di.
+DISPLAY_OBSERVER_FIXTURE and NATIVE_OFF_OBSERVER_SELFTEST PASS.
+Real ADB push printed 2,521,920 bytes in 0.008 s but timed out at
+30 s; independent root-private hash/ownership readback PASS.
+ON/OFF same boot 4b8ed790-7970-459d-a490-457aa5a6d78e,
+OFF launch fd5edf65ed1443029941193ed0a3e848. NATIVE_ON and
+NATIVE_OFF=READERS_OK, DISPLAY_ON/OFF=SAMPLED. Five native
+service PID/birth pairs unchanged. Deadline request and One UI
+observed; smoke exit 4, unassisted return remains unverified.
+Root diagnostic cleanup returned without warning.
+
+ON bootanim stopped, service.bootanim.exit=1; OFF bootanim
+running PID 4013 birth 141053, service.bootanim.exit=0;
+SurfaceFlinger layer list only samsungani565#193 z=3000000.
+Samsung boot animation reactivation is observed, not inferred.
+ON 3.300 s total CPU busy 3.58%; OFF 3.180 s 12.57%.
+OFF bootanim 25 ticks / 0.99% aggregate CPU time,
+surfaceflinger 6 / 0.24%, display composer 5 / 0.20%,
+watcher 6 / 0.24%, stop-loop 4 / 0.16%, feeder 0.
+bootanimation alias duplicates bootanim PID/birth: count ONCE.
+These are direct process CPU times, not power, and exclude
+unattributed child/kernel work. The three display processes
+account for ~1.43% aggregate CPU time in this OFF interval,
+not the whole 8.99 percentage-point difference. Raw KGSL
+gpu_busy_percentage "0 %" and gpubusy "0 0" both ON/OFF;
+this parser-format observation does not prove no GPU activity
+between reads or no display engine power. Actual brightness
+nodes 0 both phases; panel0-backlight requested 493 unchanged.
+Physical panel state/luminance not established by these nodes.
+
+ON/OFF native-raw samples 1328089..1328094 and
+1414220..1414223 ms (~86 s apart); CPU max 40.5 -> 41.3 C,
+GPU 39.3 -> 38.6, DDR 39.3 -> 39.0, battery 31.3 -> 29.9,
+SKIN 34.4 -> 32.6. Raw thermal snapshots precede display
+CPU windows. Not matched causal intervention or power A/B.
+No proof boot animation explains prior +4.3 C hotspot change.
+The confirmed unnecessary boot animation is a display-handoff
+optimization candidate for the replacement runner: stop only
+the stock animation after verified Framework stop at the
+appropriate display handoff, keep SurfaceFlinger/composer
+and stock thermal/recovery intact, verify layer/process exit.
+Do not infer an existing live guest overlay conflict from a
+guest-free smoke. No further standalone smoke required for
+the reactivation question. Include effect in future admitted
+session validation rather than opening another diagnostic
+milestone. No source or phone change in this receipt; full-run
+admission remains blocked.
