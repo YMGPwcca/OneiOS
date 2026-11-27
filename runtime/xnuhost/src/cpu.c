@@ -29,6 +29,7 @@ unsigned xh_gpu_vcpu_boost;
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <ucontext.h>
+#include "timer_program.h"
 
 #define SIG_KICK  (SIGRTMIN + 1)      // another thread raised this CPU's interrupt line
 #define SIG_TIMER (SIGRTMIN + 2)      // this CPU's timer is due
@@ -101,18 +102,19 @@ void xh_cpu_timer_set(xh_vcpu *v, uint64_t deadline)
   v->perf.timer_sets++;
   // The same future deadline again (XNU sets it at each dispatch and idle exit, often unchanged): the host timer is armed
   // for it already, so no timer_settime (host-overhead, 2026-11-15: the PC's boot made 2,000 a second, each a host call).
-  if (deadline != UINT64_MAX && __atomic_load_n(&v->timer_armed, __ATOMIC_ACQUIRE) &&
+  if (deadline != UINT64_MAX && xh_timer_future_programmed(v->host_timer_program) &&
+      __atomic_load_n(&v->timer_armed, __ATOMIC_ACQUIRE) &&
       __atomic_load_n(&v->timer_deadline, __ATOMIC_ACQUIRE) == deadline && deadline > xh_counter()) {
     if (xh_perf_detail_enabled) xh_detail_timer_result(&v->detail, XH_DT_SAME_FUTURE, 0);
     xh_cpu_line(v->cpu.index, false);
     return;
   }
-  v->perf.timer_calls++;
+  bool skipped;
   if (deadline == UINT64_MAX) {
     bool was_armed = xh_perf_detail_enabled && __atomic_load_n(&v->timer_armed, __ATOMIC_ACQUIRE);
     __atomic_store_n(&v->timer_armed, false, __ATOMIC_RELEASE);
-    int rc = timer_settime(*(timer_t *)v->timer, 0, &spec, NULL);
-    if (xh_perf_detail_enabled) xh_detail_timer_result(&v->detail, was_armed ? XH_DT_CANCEL_ARMED : XH_DT_CANCEL_DISARMED, rc);
+    int rc = xh_timer_apply(&v->host_timer_program, *(timer_t *)v->timer, &spec, &v->perf.timer_calls, &skipped);
+    if (xh_perf_detail_enabled) xh_detail_timer_result(&v->detail, skipped ? XH_DT_CANCEL_SKIPPED : was_armed ? XH_DT_CANCEL_ARMED : XH_DT_CANCEL_DISARMED, rc);
     xh_cpu_line(v->cpu.index, false);
     return;
   }
@@ -120,8 +122,8 @@ void xh_cpu_timer_set(xh_vcpu *v, uint64_t deadline)
   __atomic_store_n(&v->timer_armed, true, __ATOMIC_RELEASE);
   uint64_t now = xh_counter();
   if (deadline <= now) {
-    int rc = timer_settime(*(timer_t *)v->timer, 0, &spec, NULL);
-    if (xh_perf_detail_enabled) xh_detail_timer_result(&v->detail, XH_DT_DUE, rc);
+    int rc = xh_timer_apply(&v->host_timer_program, *(timer_t *)v->timer, &spec, &v->perf.timer_calls, &skipped);
+    if (xh_perf_detail_enabled) xh_detail_timer_result(&v->detail, skipped ? XH_DT_DUE_SKIPPED : XH_DT_DUE, rc);
     xh_cpu_line(v->cpu.index, xh_gic_pending(v->cpu.index));
     return;
   }
@@ -131,7 +133,7 @@ void xh_cpu_timer_set(xh_vcpu *v, uint64_t deadline)
   spec.it_value.tv_sec = (time_t)(ns / 1000000000ull);
   spec.it_value.tv_nsec = (long)(ns % 1000000000ull) + 1;
   if (spec.it_value.tv_nsec >= 1000000000l) { spec.it_value.tv_sec++; spec.it_value.tv_nsec -= 1000000000l; }
-  int rc = timer_settime(*(timer_t *)v->timer, 0, &spec, NULL);
+  int rc = xh_timer_apply(&v->host_timer_program, *(timer_t *)v->timer, &spec, &v->perf.timer_calls, &skipped);
   if (xh_perf_detail_enabled) xh_detail_timer_result(&v->detail, XH_DT_ARM, rc);
   xh_cpu_line(v->cpu.index, false);
 }
@@ -417,6 +419,7 @@ static void *vcpu_main(void *arg)
   ev.sigev_notify_thread_id = v->tid;
   if (timer_create(CLOCK_MONOTONIC, &ev, &timers[v->cpu.index])) { LOGE("cpu%u: timer_create: %s", v->cpu.index, strerror(errno)); xh_stop(XH_HALT_PANIC, 0, "no timer"); return NULL; }
   v->timer = &timers[v->cpu.index];
+  v->host_timer_program = XH_TIMER_UNKNOWN;
   char name[16];
   snprintf(name, sizeof name, "xnu-cpu%u", v->cpu.index);
   pthread_setname_np(pthread_self(), name);

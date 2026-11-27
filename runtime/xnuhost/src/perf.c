@@ -172,6 +172,9 @@ static void detail_report(const xh_vcpu *v)
        (unsigned long long)xh_detail_read(&d->timer[XH_DT_DUE]),
        (unsigned long long)xh_detail_read(&d->timer[XH_DT_ARM]),
        (unsigned long long)xh_detail_read(&d->timer[XH_DT_ERRORS]));
+  LOGI("perf-timer-skip: vcpu=%u cancel_skipped=%llu due_skipped=%llu (cumulative)",
+       v->cpu.index, (unsigned long long)xh_detail_read(&d->timer[XH_DT_CANCEL_SKIPPED]),
+       (unsigned long long)xh_detail_read(&d->timer[XH_DT_DUE_SKIPPED]));
   for (unsigned side = 0; side < 2; side++)
     LOGI("perf-futex: vcpu=%u scope=%s returned=%llu changed=%llu signal=%llu timeout=%llu other=%llu "
          "(cumulative wait syscall outcomes; not proof of interrupt delivery)",

@@ -8,6 +8,8 @@
 
 **Operator priority clarification (2026-11-24):** The active performance branch is exclusively focused on XNUHost CPU/VM, GPU submission, display and measured iOS responsiveness. Watchdog qualification, watchdog attribution and recovery certification are separate workstreams; the operator explicitly does not want them repeatedly reopened or requested as routine performance tasks. Do not insert additional readiness/attribution rounds into local CI, synthetic CPU benchmarks, or GPU source work. Existing independently documented physical-device safety/release boundaries are unchanged; this is a prioritization decision, not an assertion that an unqualified recovery path has passed or permission to disable thermal protections.
 
+**Active scope correction (2026-11-27):** return to the original PERF-P0–P4 / Phase G CPU, VM, GPU and display performance roadmap. The G24–G25 audio, microphone, camera, encoder, network and whole-session park workstream is deferred, not an automatic prerequisite for offline optimization. Preserve completed receipts and the current live-admission block. Do not invent further provider milestones or reopen recovery qualification as routine performance work. The independent adaptive frequency actuator remains blocked; no policy or physical launch is authorized by resuming source optimization.
+
 **Requested final CPU experiment — Framework ON/OFF:** Reuse the lifecycle and bounded telemetry architecture of the previously executed 180-second experiment rather than restart a watchdog investigation. Historical run: OneiOS `f244b5cdfdedd592cc68bcbbb0770762def9e140`, OneOS `f5c1b4a44fc45d78987694a230f7ffabb213e99c`, runner `scripts/phone/sm8850-600s-thermal-telemetry.py`, duration 180 seconds, `--no-rearm`, with full-bridge experimental profile. That runner boots full iOS and is not a drop-in runner for the current synthetic test kernel. The requested comparison is a separate bounded, headless synthetic workload: identical runtime/fixture hashes, launch UID/environment and CPU placement, 3-vCPU latency on 0-2/0-5 and parallel 6-vCPU pinned/8-vCPU shared, with Framework state as the intended variable. Keep thermal protections unchanged in both arms, capture the actual effective masks and state; do not attribute any difference to Framework alone if UID, CPU policy or other conditions differ. No live launch or safety-policy change is included in this documentation update. The prior 180-second physical receipt is historical evidence, not a new authorization. Do not repeat watchdog audit for this performance question.
 
 ## What is measured (not assumed)
@@ -1317,3 +1319,44 @@ producers, independent membership, repeated-cycle release,
 owner launcher and G25.2 remain pending. Frequency provider
 BLOCKED_NO_OWNED_READBACK. No thermal policy, OneOS, kernel,
 frequency write, recovery, live staging/admission or device access.
+
+### 2026-11-27 — scope correction and PERF-P1-03 timer hot path
+
+Record operator G25.1B4B2B1 PASS at 412efe31a7a280417baefdacac7fed31b3ee8178:
+99,669 drain, 58 IPC, 56 active, 26 idle, 28 spawn, 20,516 full
+audio, 492 bridge and 2,666 board checks, zero failures. Android
+XNUHost/audio build and eight requested symbols PASS.
+Evidence /tmp/oneios-g251b4b2b1.513HER, DEVICE_ACCESS=NONE.
+Preserve this branch history; no new microphone/provider lifecycle.
+
+Resume existing PERF-P1-03/PERF-P0-06, not a new G25 subphase.
+Historical 180.6s baseline had about 1,895,124 actual host timer
+calls (all kinds, not the redundant-cancel count). Existing same
+future deadline skip already exists; the physical fraction of zero
+programming duplicates is not measured. Source audit shows repeated
+cancel/already-due requests still call timer_settime with an all-zero
+spec even after a successful disarm. The vCPU owner now caches the
+last successful host programming, skips only identical zero writes
+after proven zero, and invalidates the cache on any syscall failure.
+Same-future-deadline skip additionally requires last successful
+nonzero programming; never reuse a failed arm. Do not infer expiry
+from the cache. Guest timer_armed/deadline publication, GIC line
+recomputation, signal delivery, counter conversion, idle and futex
+semantics unchanged. Host call totals count actual attempted syscalls;
+existing opt-in perf-timer fields retain their meanings; separate
+perf-timer-skip line counts cancel/due skips, no per-event logging.
+This does not implement a new timer-failure recovery policy.
+
+Exact timer_program.h and test_timer_program.c: 14,028 checks each
+under GCC and Clang ASan/UBSan, real Linux signal POSIX timer,
+timer_gettime, EINVAL and actual expiration/rearm signal delivery.
+Synthetic 1,000 repetitions of arm/cancel/cancel/cancel: 4,000
+old calls versus 2,000 new calls; NOT a real workload speedup or FPS
+measurement. The initial fixture used SIGEV_NONE, whose observed
+readback was unsuitable for this signal-timer test; final fixture
+uses SIGEV_SIGNAL with blocked SIGUSR1. Host/ARM64 integrated CI
+pending operator WSL. No OneOS, thermal policy, kernel, recovery,
+staging/rearm or phone access. Frequency still BLOCKED_NO_OWNED_READBACK.
+Next performance decisions: use existing G2.2/Phase F frame and
+task evidence, prioritize measured CPU/VM and GPU/display hot paths;
+no re-opening the deferred hardware lifecycle without operator scope.

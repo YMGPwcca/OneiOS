@@ -496,6 +496,7 @@ struct xh_vcpu {
   uint8_t  *boot_stack, *host_stack, *sig_stack;
   void     *timer;          // timer_t
   bool      timer_armed;
+  unsigned  host_timer_program; // vCPU owner only: last successful host programming
   uint64_t  timer_deadline;
   uint32_t  idle;           // 1 while in cpu_idle
   xh_sysreg_state sys;

@@ -170,6 +170,11 @@ $(H)/test_sm8850_stage_admission: tests/test_sm8850_stage_admission.c src/sm8850
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O2 $(WARN) -Isrc tests/test_sm8850_stage_admission.c -o $@
 
+# Actual POSIX timer programming, readback and signal delivery.
+$(H)/test_timer_program: tests/test_timer_program.c src/timer_program.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O2 -g $(WARN) -Isrc -fsanitize=address,undefined tests/test_timer_program.c -lrt -o $@
+
 # The actual deferred-only task ordering diagnostic; no Android, guest or hardware required.
 $(H)/test_task_order_diag: tests/test_task_order_diag.c src/task_order_diag.h stub/stub_abi.h
 	@mkdir -p $(H)
@@ -307,7 +312,8 @@ parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
 
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_quiesce_input $(H)/test_quiesce_vcpu $(H)/test_quiesce_peer $(H)/test_quiesce_board $(H)/test_quiesce_supervisor $(H)/test_quiesce $(H)/test_kgsl_drain $(H)/test_stub_event $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_task_timing_totals $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
+test: $(H)/test_timer_program $(H)/test_quiesce_input $(H)/test_quiesce_vcpu $(H)/test_quiesce_peer $(H)/test_quiesce_board $(H)/test_quiesce_supervisor $(H)/test_quiesce $(H)/test_kgsl_drain $(H)/test_stub_event $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_task_timing_totals $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
+	ASAN_OPTIONS=detect_leaks=0 $(H)/test_timer_program
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_input
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_vcpu
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_peer
