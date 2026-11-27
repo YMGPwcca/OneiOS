@@ -1835,3 +1835,37 @@ bounded quiesce/resume with real runtime providers; not new diagnostic
 or peripheral milestones. Existing legacy full-run block remains;
 this receipt is not live admission. No runtime/OneOS changes and no
 new device action or GitHub Actions in this docs-only commit.
+
+### 2026-11-28 — operator-requested boot animation attribution
+
+OneOS d1ff949 switcher/assets/oneios_switch.sh:
+bootui_begin returns immediately for FRAMEWORK=1 (line 906);
+--stop-loop stops bootanim only in the FRAMEWORK=0 branch
+(lines 1618..1629). SurfaceFlinger and Qualcomm display composer
+are retained, and smoke exits before any xnuhost/display helper
+launch (lines 2935..2940). This supports the operator's hypothesis
+that Android's own boot animation or retained display path might
+remain active when "Powered by Android" is visible. Prior OFF
+receipt did not record bootanim state, CPU-time deltas, raw KGSL
+gpubusy or layers; it cannot attribute the 4.3 C rise to display.
+The old native-raw GPU busy integer parser reported invalid; keep
+the original raw strings in this additional diagnostic.
+
+Optional --display-probe reuses the existing 20s Framework-only
+smoke, same exact binary, no extra build. Observe two snapshots
+3s apart in each phase: bootanim/bootanimation, surfaceflinger,
+display composer, system_server, and OFF takeover helpers;
+PID/birth-paired utime+stime against aggregate CPU ticks, raw
+KGSL gpuclk/max/pwrlevel/gpu_busy_percentage/gpubusy and backlight,
+and one optional bounded SurfaceFlinger --list AFTER the sample.
+No screen capture, brightness/refresh changes, bootanim stop,
+thermal writes or new recovery mechanism. All extra OFF work
+requires sufficient remaining existing deadline, and is skipped
+or marked incomplete otherwise. Raw GPU counters are not FPS or
+proof of continuous composition. CPU percentages use the total
+measured ticks across all CPUs, not per-core percentages.
+This is a targeted operator-requested observation, not a new
+performance milestone or causal A/B intervention. Source-only
+patch and added host fixture; WSL validation pending, no phone
+access. Separate explicit consent for existing mandatory reboot
+still applies. Root may be lost after reboot.

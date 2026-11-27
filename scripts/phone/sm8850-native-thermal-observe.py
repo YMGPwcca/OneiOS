@@ -54,7 +54,162 @@ def classify(text, phase, rc):
     return "READERS_OK" if start <= end and 1 <= count <= 64 else "HAL_NOT_VERIFIED"
 
 
-def probe_command(remote, digest, boot, phase, token="", generation="", deadline=""):
+# Optional read-only display workload attribution. Keep the normal
+# reader observation and lifecycle unchanged. No screenshot, backlight,
+# refresh-rate, service stop/start or SurfaceFlinger latency-clear call.
+DISPLAY_SNAPSHOT = r"""
+display_process() {
+    label=$1
+    pid=$2
+    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$pid" -gt 1 ] || return 0
+    [ -r "/proc/$pid/stat" ] || return 0
+    # After stripping pid/comm, columns are state=1, utime=12,
+    # stime=13, starttime=20. Match PID+birth across samples.
+    sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null |
+        awk -v n="$label" -v p="$pid" '
+            $1!="Z" && $1!="X" && $12~/^[0-9]+$/ &&
+            $13~/^[0-9]+$/ && $20~/^[0-9]+$/ {
+                printf "display-cpu: name=%s pid=%s birth=%s utime=%s stime=%s\n", n,p,$20,$12,$13
+            }'
+}
+display_node() {
+    node=$1
+    value=
+    if [ -r "$node" ]; then
+        IFS= read -r value < "$node" || :
+    fi
+    printf 'display-node: path=%s raw=%s\n' "$node" "${value:-UNAVAILABLE}"
+}
+display_sample() {
+    sample=$1
+    read -r up rest < /proc/uptime || return 1
+    printf 'DISPLAY_SAMPLE_BEGIN=%s uptime=%s\n' "$sample" "$up"
+    head -n 1 /proc/stat | awk '$1=="cpu" && NF>=9 {
+        printf "display-total: %s %s %s %s %s %s %s %s\n",$2,$3,$4,$5,$6,$7,$8,$9
+    }'
+    for svc in bootanim surfaceflinger vendor.qti.hardware.display.composer; do
+        state=$(getprop "init.svc.$svc")
+        pid=$(getprop "init.svc_debug_pid.$svc")
+        printf 'display-service: name=%s state=%s pid=%s\n' "$svc" "${state:-unknown}" "${pid:-unknown}"
+        display_process "$svc" "$pid"
+    done
+    # Discover actual bootanimation processes independently of init's
+    # recorded service PID, including when the property is absent.
+    for pid in $(pidof bootanimation 2>/dev/null); do
+        display_process bootanimation "$pid"
+    done
+    for pid in $(pidof system_server 2>/dev/null); do
+        display_process system_server "$pid"
+    done
+    if [ "${DISPLAY_PHASE}" = OFF ]; then
+        for name in watcher feeder stop-loop; do
+            read -r pid < "$DISPLAY_CTL/$name.pid" 2>/dev/null || pid=
+            display_process "$name" "$pid"
+        done
+    fi
+    printf 'display-property: service.bootanim.exit=%s\n' "$(getprop service.bootanim.exit)"
+    for node in gpuclk max_gpuclk thermal_pwrlevel gpu_busy_percentage gpubusy; do
+        display_node "/sys/class/kgsl/kgsl-3d0/$node"
+    done
+    for node in /sys/class/backlight/*/actual_brightness /sys/class/backlight/*/brightness; do
+        [ -e "$node" ] && display_node "$node"
+    done
+    printf 'DISPLAY_SAMPLE_END=%s\n' "$sample"
+}
+display_sample A || exit 3
+sleep 3
+display_sample B || exit 3
+"""
+
+
+def display_report(text):
+    """CPU share of measured aggregate ticks; do not assume a CLK_TCK.
+    GPU fields remain raw: KGSL implementations can differ in interval
+    and reset-on-read behavior. Neither a clock nor these fields prove FPS.
+    """
+    samples = {}
+    current = None
+    complete = set()
+    for line in text.splitlines():
+        match = re.fullmatch(r"DISPLAY_SAMPLE_BEGIN=([AB]) uptime=(\d+(?:\.\d+)?)", line)
+        if match:
+            current = match[1]
+            if current in samples:
+                return []
+            samples[current] = {"up": float(match[2]), "total": None, "processes": {}}
+            continue
+        if line.startswith("DISPLAY_SAMPLE_END="):
+            if current is None or line != "DISPLAY_SAMPLE_END=" + current:
+                return []
+            complete.add(current)
+            current = None
+            continue
+        if current is None:
+            continue
+        data = samples[current]
+        match = re.fullmatch(r"display-total: ((?:\d+ ){7}\d+)", line)
+        if match:
+            if data["total"] is not None:
+                return []
+            data["total"] = list(map(int, match[1].split()))
+        match = re.fullmatch(r"display-cpu: name=([A-Za-z0-9_.-]+) pid=(\d+) birth=(\d+) utime=(\d+) stime=(\d+)", line)
+        if match:
+            key = match[1], int(match[2]), int(match[3])
+            if key in data["processes"]:
+                return []
+            data["processes"][key] = int(match[4]) + int(match[5])
+    if complete != {"A", "B"} or "DISPLAY_OBSERVATION_END" not in text.splitlines():
+        return []
+    a, b = samples["A"], samples["B"]
+    if a["total"] is None or b["total"] is None or not 2.5 <= b["up"] - a["up"] <= 7:
+        return []
+    delta = [y-x for x,y in zip(a["total"],b["total"])]
+    total = sum(delta)
+    if total <= 0 or min(delta) < 0:
+        return []
+    busy = total - delta[3] - delta[4]
+    lines = [f"DISPLAY_INTERVAL_SECONDS={b['up']-a['up']:.3f}",
+             f"DISPLAY_TOTAL_CPU_BUSY_PCT={100*busy/total:.2f}"]
+    for key, ticks in sorted(b["processes"].items()):
+        name, pid, birth = key
+        previous = a["processes"].get(key)
+        if previous is None or not 0 <= ticks-previous <= total:
+            lines.append(f"DISPLAY_CPU name={name} pid={pid} birth={birth} status=UNMATCHED")
+        else:
+            lines.append(f"DISPLAY_CPU name={name} pid={pid} birth={birth} "
+                         f"delta_ticks={ticks-previous} aggregate_pct={100*(ticks-previous)/total:.2f}")
+    return lines
+
+
+def display_command(phase):
+    # Use the existing phase_valid and remaining functions in the parent
+    # shell before and after the bounded child. Do not extend the deadline.
+    script = "DISPLAY_PHASE=" + phase + "\nDISPLAY_CTL=" + shlex.quote(STAGE + "/control") + "\n" + DISPLAY_SNAPSHOT
+    return (
+        "if phase_valid && remaining 10; then\n"
+        "    echo DISPLAY_OBSERVATION_BEGIN\n"
+        "    timeout -k 1 6 /system/bin/sh -c " + shlex.quote(script) + " </dev/null\n"
+        "    display_rc=$?\n"
+        "    if [ \"$display_rc\" = 0 ] && phase_valid && remaining 2; then\n"
+        "        echo DISPLAY_OBSERVATION_END\n"
+        # Binder listing happens AFTER the measurement window; it is
+        # optional and separately bounded, never required for raw receipt.
+        "        if remaining 4; then\n"
+        "            echo DISPLAY_LAYERS_BEGIN\n"
+        "            timeout -k 1 2 dumpsys SurfaceFlinger --list </dev/null\n"
+        "            echo DISPLAY_LAYERS_RC=$?\n"
+        "        fi\n"
+        "    else\n"
+        "        echo DISPLAY_OBSERVATION_INCOMPLETE\n"
+        "    fi\n"
+        "else\n"
+        "    echo DISPLAY_OBSERVATION_SKIPPED_DEADLINE\n"
+        "fi\n"
+    )
+
+
+def probe_command(remote, digest, boot, phase, token="", generation="", deadline="", *, display=False):
     require(re.fullmatch(r"/data/adb/\.oneios-natm\.[a-f0-9]{32}", remote),
             "invalid temporary path")
     require(re.fullmatch(r"[a-f0-9]{64}", digest), "invalid digest")
@@ -141,13 +296,14 @@ timeout -k 1 2 '{remote}/thermalctl' native-hal </dev/null
 echo "NATIVE_HAL_RC=$?"
 phase_valid && remaining 1 || exit 3
 echo 'NATIVE_PROBE_END={phase}'
+{display_command(phase) if display else ''}
 """
 
 
-def capture(phone, output, phase, command):
+def capture(phone, output, phase, command, *, display=False):
     try:
         p = phone.root(command, stdin=subprocess.DEVNULL,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=9)
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=16 if display else 9)
         text = p.stdout.decode(errors="replace")
         rc = p.returncode
     except subprocess.TimeoutExpired as error:
@@ -159,6 +315,12 @@ def capture(phone, output, phase, command):
     print(text, end="" if text.endswith("\n") else "\n", flush=True)
     result = classify(text, phase, rc)
     print("NATIVE_" + phase + "=" + result, "exit=" + str(rc), flush=True)
+    if display:
+        report = display_report(text) if rc == 0 else []
+        print("DISPLAY_" + phase + "=" + ("SAMPLED" if report else "INCOMPLETE"), flush=True)
+        for line in report:
+            print(line, flush=True)
+        (output / ("display-" + phase.lower() + ".txt")).write_text("\n".join(report) + "\n")
     return result
 
 
@@ -338,13 +500,13 @@ def run(args):
     (output / "stock-status.txt").write_text(initial)
     boot = values(initial).get("boot", "")
     remote = "/data/adb/.oneios-natm." + uuid.uuid4().hex
-    on_command = probe_command(remote, args.sha256, boot, "ON")
+    on_command = probe_command(remote, args.sha256, boot, "ON", display=args.display_probe)
     off_result = "NOT_OBSERVED"
     transferred = False
     try:
         transfer_diagnostic(phone, data, remote, args.sha256)
         transferred = True
-        require(capture(phone, output, "ON", on_command) == "READERS_OK",
+        require(capture(phone, output, "ON", on_command, display=args.display_probe) == "READERS_OK",
                 "stock diagnostic incomplete; do not request Framework stop")
 
         def ready(p, state, expected_boot, token):
@@ -353,8 +515,8 @@ def run(args):
             require(expected_boot == boot, "boot changed before smoke")
             cmd = probe_command(remote, args.sha256, boot, "OFF", token,
                                 kv.get("control/framework.takeover-confirmed", ""),
-                                kv.get("control/framework.deadline", ""))
-            off_result = capture(p, output, "OFF", cmd)
+                                kv.get("control/framework.deadline", ""), display=args.display_probe)
+            off_result = capture(p, output, "OFF", cmd, display=args.display_probe)
 
         lifecycle = output / "existing-smoke"
         lifecycle.mkdir(mode=0o700)
@@ -475,6 +637,38 @@ def test_transfer():
     print("NATIVE_TRANSFER_FIXTURE=PASS DEVICE_ACCESS=NONE")
 
 
+def test_display_report():
+    fixture = """DISPLAY_SAMPLE_BEGIN=A uptime=10.00
+display-total: 100 10 50 500 20 0 0 0
+display-cpu: name=bootanim pid=20 birth=123 utime=30 stime=5
+display-cpu: name=surfaceflinger pid=21 birth=124 utime=100 stime=20
+DISPLAY_SAMPLE_END=A
+DISPLAY_SAMPLE_BEGIN=B uptime=13.00
+display-total: 200 10 150 2500 20 0 0 0
+display-cpu: name=bootanim pid=20 birth=123 utime=50 stime=7
+display-cpu: name=surfaceflinger pid=21 birth=125 utime=101 stime=21
+DISPLAY_SAMPLE_END=B
+DISPLAY_OBSERVATION_END
+"""
+    report = display_report(fixture)
+    assert "DISPLAY_INTERVAL_SECONDS=3.000" in report
+    assert "DISPLAY_TOTAL_CPU_BUSY_PCT=9.09" in report
+    assert "DISPLAY_CPU name=bootanim pid=20 birth=123 delta_ticks=22 aggregate_pct=1.00" in report
+    assert "DISPLAY_CPU name=surfaceflinger pid=21 birth=125 status=UNMATCHED" in report
+    assert not display_report(fixture.replace("DISPLAY_OBSERVATION_END", ""))
+    assert not display_report(fixture.replace("uptime=13.00", "uptime=11.00"))
+    assert not display_report(fixture.replace("200 10 150 2500", "90 10 150 2500"))
+    remote = "/data/adb/.oneios-natm." + "a"*32
+    for phase in ("ON", "OFF"):
+        cmd = probe_command(remote, "b"*64, "c"*36, phase,
+                            "d"*32, "e"*32, "12345", display=True)
+        assert "remaining 10" in cmd and "dumpsys SurfaceFlinger --list" in cmd
+        assert "ctl.stop bootanim" not in cmd and "screencap" not in cmd
+        subprocess.run(["sh", "-n"], input=cmd, text=True, check=True)
+    subprocess.run(["sh", "-n"], input=DISPLAY_SNAPSHOT, text=True, check=True)
+    print("DISPLAY_OBSERVER_FIXTURE=PASS DEVICE_ACCESS=NONE")
+
+
 def self_test():
     summary = ("native-hal: schema=oneios.native-thermal.diagnostic.v1 clock=boottime "
                "start_ms=123 end_ms=124 version=3 count=6 status=OK native_max_severity=0 "
@@ -497,6 +691,7 @@ def self_test():
     subprocess.run(["sh", "-n"], input=cmd, text=True, check=True)
     subprocess.run(["sh", "-n"], input=probe_command(remote, "b"*64, "c"*36, "ON"),
                    text=True, check=True)
+    test_display_report()
     test_file_backed_transport()
     test_transfer()
     print("NATIVE_OFF_OBSERVER_SELFTEST=PASS DEVICE_ACCESS=NONE")
@@ -505,6 +700,8 @@ def self_test():
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--display-probe", action="store_true",
+                    help="optional passive 3-second ON/OFF CPU/GPU/display attribution")
     ap.add_argument("--thermalctl", type=Path)
     ap.add_argument("--sha256")
     ap.add_argument("--adb", type=Path, default=TAKEOVER["ADB_DEFAULT"])
