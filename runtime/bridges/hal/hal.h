@@ -93,4 +93,23 @@ typedef struct hal_temperature { int32_t type; char name[24]; float celsius; int
 int  hal_temperatures_decode(ab_reader *r, hal_temperature *out, unsigned max);
 void hal_temperatures_encode(ab_parcel *p, const hal_temperature *in, unsigned n);
 
+/* Standalone read-only SM8850 diagnostic. Keep named HAL temperatures
+ * and Android severity separate from raw sysfs junctions. Strict full
+ * array decoder requires severity fields and never silently truncates.
+ * The current guest-facing permissive decoder/ABI is unchanged. */
+typedef struct hal_thermal_snapshot {
+  int32_t version;
+  unsigned count;
+  hal_temperature temps[HAL_TEMPS_MAX];
+} hal_thermal_snapshot;
+int hal_thermal_snapshot_decode(ab_reader *r, hal_thermal_snapshot *out);
+bool hal_thermal_value_valid(const hal_temperature *t);
+// Only exact, qualified Samsung AP/BAT/SKIN (+ PA/USB if present);
+// -1 for unknown/invalid/duplicate required data, never global status.
+int hal_thermal_snapshot_severity(const hal_thermal_snapshot *s);
+// Synchronous diagnostic only. Isolate in a bounded process; never
+// invoke on the independent guard or a guest/display critical path.
+int br_hal_thermal_snapshot_read(const char *device, hal_thermal_snapshot *s,
+                                 char *why, size_t size);
+
 #endif

@@ -213,3 +213,40 @@ thermalctl top -i 10        # in a session: xnuhost's busiest threads and the bu
 "CPU% phone" is all eight cores (800 = all busy), "xnuhost" its own threads, "session" every process in xnuhost's mount
 namespace (iOS's processes). "battery mA" is `current_now` as the phone gives it: on USB power it is the battery's net
 current, not the phone's draw.
+
+## Native stock thermal diagnostics (SM8850)
+
+The operator's 2026-11-27 native thermal handoff distinguishes real sysfs
+CPU/GPU/DDR junctions from Samsung Thermal HAL AP/SKIN/BAT estimates.
+Do not assume that Framework stop destroys or preserves the vendor
+policy. The new one-shot `thermalctl native-raw` and
+`thermalctl native-hal` modes reuse existing sensor discovery and
+Binder transport; they are separate so a slow HAL cannot block a
+raw observation. Invoke the HAL probe in its own externally bounded
+process. Neither mode writes clocks/properties, creates an ADPF session,
+changes the guest bridge, or requires XNUHost to be running.
+
+native-raw lists qualified zone families (excluding cpu-hw-trip-*),
+per-zone and group maxima in millidegrees, auxiliary nodes in tenths,
+CPU policy current/effective/hardware limits in kHz, Samsung shared
+limit values (including sentinels, not owned votes), and KGSL in Hz
+or explicit units. Invalid/unreadable numbers are marked separately;
+this diagnostic is NOT the independently pinned raw guard manifest.
+native-hal asks the existing IThermal service using the existing
+getTemperatures transaction, requires reported AIDL v3, refuses
+truncated/oversized arrays and missing/out-of-range severity fields,
+preserves names/types/values/Android severity. Only exact qualified
+AP/BAT/SKIN and PA/USB if present enter the candidate native maximum
+severity; SUBBAT=0 is unavailable, not a cool battery. Required
+missing/duplicate/invalid data is PARTIAL/unknown, not severity zero.
+The timestamps are completed-acquisition diagnostic clocks, not
+session-bound guard health or proof of mitigation. No additional
+Binder calls for power modes or unsupported interfaces.
+
+Host regression: make -C runtime/bridges/thermal test.
+ARM64 build: make -C runtime/bridges/thermal all.
+A separate stock-One-UI read-only receipt and actual Framework-OFF
+policy/lifecycle evidence remain necessary before relying on native
+thermal as the frequency authority. The existing independent guard
+must not depend on these synchronous diagnostics. No new live
+admission, stage, rearm or physical run in this patch.

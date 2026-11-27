@@ -11,8 +11,11 @@
 #include "thermal.h"
 #include "bridges/bridges.h"
 #include "bridges/hw_backend.h"
+#include "../hal/hal.h"
 
+#include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -107,6 +110,158 @@ decide:;
       printf("step %u%s: E vCPUs on cpu %s, P vCPUs on cpu %s\n", cap, cap ? " (case or cell at 50 C)" : " (all cores)", e, p);
     }
   return 0;
+}
+
+// Separate one-shot diagnostics: run native-hal in its own bounded process,
+// never block the raw safety loop on Binder. No control writes or guest
+// initialization. These are diagnostic samples, NOT guard heartbeats.
+#ifdef CLOCK_BOOTTIME
+#define NATIVE_CLOCK CLOCK_BOOTTIME
+#define NATIVE_CLOCK_NAME "boottime"
+#else
+#define NATIVE_CLOCK CLOCK_MONOTONIC
+#define NATIVE_CLOCK_NAME "monotonic"
+#endif
+static int native_ms(uint64_t *ms)
+{
+  struct timespec t;
+  if (clock_gettime(NATIVE_CLOCK, &t)) return -1;
+  *ms = (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
+  return 0;
+}
+static bool native_number(const char *relative, long long *value)
+{
+  char path[512], text[128], *end;
+  int len = snprintf(path, sizeof path, "%s%s", root(), relative);
+  if (len < 0 || (size_t)len >= sizeof path) return false;
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return false;
+  size_t n = 0;
+  while (n < sizeof text - 1) {
+    ssize_t got = read(fd, text+n, sizeof text-1-n);
+    if (got < 0 && errno == EINTR) continue;
+    if (got < 0) { close(fd); return false; }
+    if (!got) break;
+    n += (size_t)got;
+  }
+  close(fd);
+  if (!n || n == sizeof text-1 || memchr(text, 0, n)) return false;
+  text[n] = 0;
+  errno = 0;
+  long long v = strtoll(text, &end, 10);
+  if (errno || end == text) return false;
+  while (isspace((unsigned char)*end)) end++;
+  if (*end) return false;
+  *value = v;
+  return true;
+}
+static void native_metric(const char *scope, const char *field, const char *base,
+                          const char *unit)
+{
+  char relative[300];
+  int n = snprintf(relative, sizeof relative, "%s/%s", base, field);
+  long long v;
+  bool valid = n > 0 && (size_t)n < sizeof relative && native_number(relative, &v);
+  if (valid && !strcmp(unit, "dc") && (v <= 0 || v > 1500)) valid = false;
+  printf("native-raw: source=%s field=%s unit=%s valid=%d", scope, field, unit, valid);
+  if (valid) printf(" value=%lld", v);
+  putchar('\n');
+}
+static bool policy_name(const char *name)
+{
+  if (strncmp(name, "policy", 6) || !name[6] || strlen(name) > 15) return false;
+  for (const char *p = name+6; *p; p++) if (!isdigit((unsigned char)*p)) return false;
+  return true;
+}
+static int native_raw(void)
+{
+  uint64_t began, ended;
+  // The existing zone discovery bounds its thermal directory prefix
+  // at 110 bytes; refuse a fixture root that would truncate that path.
+  if (strlen(root()) + strlen("/sys/class/thermal") > 110 || native_ms(&began))
+    return 2;
+  br_thermal_sensors sensors;
+  int found = br_thermal_find(root(), &sensors);
+  long long max[4] = {0};
+  bool have[4] = {0};
+  for (unsigned i = 0; i < sensors.nzone; i++) {
+    const br_thermal_zone *z = &sensors.zone[i];
+    long long v;
+    bool valid = native_number(z->path+strlen(root()), &v) && v > 0 && v <= 200000;
+    printf("native-raw: source=thermal-zone group=%s name=%s unit=mc valid=%d",
+           (const char *[]){"cpu","gpu","ddr","xo"}[z->group], z->type, valid);
+    if (valid) {
+      printf(" value=%lld", v);
+      if (!have[z->group] || max[z->group] < v) max[z->group] = v;
+      have[z->group] = true;
+    }
+    putchar('\n');
+  }
+  for (unsigned i = 0; i < 4; i++) {
+    printf("native-raw: source=junction-max group=%s unit=mc valid=%d",
+           (const char *[]){"cpu","gpu","ddr","xo"}[i], have[i]);
+    if (have[i]) printf(" value=%lld", max[i]);
+    putchar('\n');
+  }
+  native_metric("battery", "temp", "/sys/class/power_supply/battery", "dc");
+  native_metric("battery", "lrp", "/sys/class/power_supply/battery", "dc");
+  native_metric("board-ap", "temperature", "/sys/class/sec/sec-ap-thermistor", "dc");
+  const char *cpu = "/sys/devices/system/cpu/cpufreq";
+  char dir[300];
+  int len = snprintf(dir, sizeof dir, "%s%s", root(), cpu);
+  DIR *d = len > 0 && (size_t)len < sizeof dir ? opendir(dir) : NULL;
+  unsigned policies = 0;
+  if (d) {
+    struct dirent *e;
+    while (policies < 32 && (e = readdir(d))) {
+      if (!policy_name(e->d_name)) continue;
+      char base[200];
+      snprintf(base, sizeof base, "%s/%.15s", cpu, e->d_name);
+      const char *fields[] = {"scaling_cur_freq", "scaling_min_freq", "scaling_max_freq",
+                              "cpuinfo_min_freq", "cpuinfo_max_freq"};
+      for (unsigned i = 0; i < sizeof fields / sizeof fields[0]; i++)
+        native_metric(e->d_name, fields[i], base, "khz");
+      policies++;
+    }
+    closedir(d);
+  }
+  const char *limits = "/sys/devices/system/cpu/cpufreq_limit";
+  native_metric("samsung-limit", "cpufreq_max_limit", limits, "khz");
+  native_metric("samsung-limit", "cpufreq_min_limit", limits, "khz");
+  const char *gpu = "/sys/class/kgsl/kgsl-3d0";
+  native_metric("kgsl", "gpuclk", gpu, "hz");
+  native_metric("kgsl", "max_gpuclk", gpu, "hz");
+  native_metric("kgsl", "thermal_pwrlevel", gpu, "index");
+  native_metric("kgsl", "gpu_busy_percentage", gpu, "percent");
+  if (native_ms(&ended) || ended < began) return 1;
+  printf("native-raw: schema=oneios.native-thermal.diagnostic.v1 clock=%s start_ms=%llu end_ms=%llu "
+         "zones=%u policies=%u diagnostic_only=1\n", NATIVE_CLOCK_NAME,
+         (unsigned long long)began, (unsigned long long)ended, sensors.nzone, policies);
+  return found || !have[0] || !have[1] || !have[2] ? 1 : 0;
+}
+static int native_hal(void)
+{
+  uint64_t began, ended;
+  if (native_ms(&began)) return 2;
+  hal_thermal_snapshot s;
+  char why[256] = "";
+  int rc = br_hal_thermal_snapshot_read(NULL, &s, why, sizeof why);
+  if (native_ms(&ended) || ended < began) return 1;
+  int severity = rc ? -1 : hal_thermal_snapshot_severity(&s);
+  if (!rc)
+    for (unsigned i = 0; i < s.count; i++) {
+      const hal_temperature *t = &s.temps[i];
+      bool valid = hal_thermal_value_valid(t);
+      printf("native-hal: name=\"%s\" type=%d severity=%d valid=%d", t->name, t->type, t->throttling, valid);
+      if (valid) printf(" value_c=%.3f", (double)t->celsius);
+      putchar('\n');
+    }
+  if (rc) fprintf(stderr, "%s\n", why);
+  printf("native-hal: schema=oneios.native-thermal.diagnostic.v1 clock=%s start_ms=%llu end_ms=%llu "
+         "version=%d count=%u status=%s native_max_severity=%d diagnostic_only=1\n",
+         NATIVE_CLOCK_NAME, (unsigned long long)began, (unsigned long long)ended, s.version, s.count,
+         rc ? "UNAVAILABLE" : severity < 0 ? "PARTIAL" : "OK", severity);
+  return rc || severity < 0 ? 1 : 0;
 }
 
 // ---- watch --------------------------------------------------------------------------------------
@@ -360,8 +515,10 @@ static int top(int argc, char **argv)
 int main(int argc, char **argv)
 {
   if (argc == 1) return report();
+  if (argc == 2 && !strcmp(argv[1], "native-raw")) return native_raw();
+  if (argc == 2 && !strcmp(argv[1], "native-hal")) return native_hal();
   if (!strcmp(argv[1], "watch")) return watch(argc, argv);
   if (!strcmp(argv[1], "top")) return top(argc, argv);
-  fprintf(stderr, "usage: thermalctl [watch [-i SECONDS] [-n LINES] [-q] | top [-i SECONDS]]\n");
+  fprintf(stderr, "usage: thermalctl [native-raw | native-hal | watch [-i SECONDS] [-n LINES] [-q] | top [-i SECONDS]]\n");
   return 2;
 }

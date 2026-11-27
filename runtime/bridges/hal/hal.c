@@ -172,24 +172,105 @@ void hal_health_encode(ab_parcel *p, const hal_health_info *in)
 }
 
 // ---- thermal --------------------------------------------------------------------------------------
-int hal_temperatures_decode(ab_reader *r, hal_temperature *out, unsigned max)
+static int temperatures_decode(ab_reader *r, hal_temperature *out, unsigned max, bool complete)
 {
   int32_t n = ab_get_i32(r);
-  if (r->bad || n < -1 || n > 4096) return -EPROTO;
+  if (r->bad || n < -1 || n > 4096 ||
+      (complete && (n <= 0 || (unsigned)n > max))) return -EPROTO;
   unsigned kept = 0;
   for (int32_t i = 0; i < n; i++) {
     size_t end = ab_get_parcelable(r);
     if (!end) return -EPROTO;
     hal_temperature t = { 0 };
     t.type = ab_get_i32(r);
+    if (complete) {
+      ab_reader name = *r;
+      int32_t units = ab_get_i32(&name);
+      if (name.bad || units <= 0 || (unsigned)units >= sizeof t.name) return -EPROTO;
+    }
     if (!ab_get_string(r, t.name, sizeof t.name)) return -EPROTO;
     t.celsius = ab_get_float(r);
     if (r->position + 4 <= end) t.throttling = ab_get_i32(r);
-    if (r->bad || r->position > end) return -EPROTO;
+    else if (complete) return -EPROTO;
+    if (r->bad || r->position > end ||
+        (complete && (t.throttling < 0 || t.throttling > 6))) return -EPROTO;
     r->position = end;
     if (kept < max) out[kept++] = t;
   }
+  if (complete && r->position != r->size) return -EPROTO;
   return (int)kept;
+}
+int hal_temperatures_decode(ab_reader *r, hal_temperature *out, unsigned max)
+{
+  return temperatures_decode(r, out, max, false);
+}
+int hal_thermal_snapshot_decode(ab_reader *r, hal_thermal_snapshot *out)
+{
+  out->count = 0;
+  int n = temperatures_decode(r, out->temps, HAL_TEMPS_MAX, true);
+  if (n < 0) return n;
+  out->count = (unsigned)n;
+  return 0;
+}
+bool hal_thermal_value_valid(const hal_temperature *t)
+{
+  return t->name[0] && memchr(t->name, 0, sizeof t->name) &&
+      t->celsius >= -40.0f && t->celsius <= 200.0f &&
+      (strcmp(t->name, "SUBBAT") || t->celsius != 0.0f) &&
+      t->throttling >= 0 && t->throttling <= 6;
+}
+int hal_thermal_snapshot_severity(const hal_thermal_snapshot *s)
+{
+  static const struct { const char *name; int32_t type; } qualified[] = {
+    {"AP", HAL_TEMP_CPU}, {"BAT", HAL_TEMP_BATTERY}, {"SKIN", HAL_TEMP_SKIN},
+    {"PA", 5}, {"USB", 4}
+  };
+  if (!s || s->version != 3 || !s->count || s->count > HAL_TEMPS_MAX) return -1;
+  unsigned seen = 0;
+  int severity = 0;
+  for (unsigned i = 0; i < s->count; i++) {
+    const hal_temperature *t = &s->temps[i];
+    if (!memchr(t->name, 0, sizeof t->name)) return -1;
+    bool matched = false;
+    for (unsigned k = 0; k < sizeof qualified / sizeof qualified[0]; k++) {
+      if (strcmp(t->name, qualified[k].name)) continue;
+      if ((seen & (1u << k)) || t->type != qualified[k].type ||
+          !hal_thermal_value_valid(t) || t->celsius <= 0.0f) return -1;
+      seen |= 1u << k;
+      matched = true;
+      if (severity < t->throttling) severity = t->throttling;
+      break;
+    }
+    // An unqualified sensor is not a source of an actionable severity.
+    // A nonzero status on it must not authorize recovery at severity 0.
+    if (!matched && t->throttling != 0) return -1;
+  }
+  return (seen & 7u) == 7u ? severity : -1;
+}
+static int take_thermal_snapshot(void *ctx, ab_reader *r)
+{
+  return hal_thermal_snapshot_decode(r, ctx);
+}
+int br_hal_thermal_snapshot_read(const char *device, hal_thermal_snapshot *s,
+                                 char *why, size_t size)
+{
+  memset(s, 0, sizeof *s);
+  br_hal *h = br_hal_open(device, HAL_THERMAL_INSTANCE, HAL_THERMAL, why, size);
+  if (!h) return -ENODEV;
+  s->version = br_hal_version(h);
+  int rc;
+  if (s->version != 3) {
+    rc = -EPROTONOSUPPORT;
+    snprintf(why, size, "native thermal: expected AIDL v3, got %d", s->version);
+  } else {
+    ab_parcel p;
+    br_hal_parcel(&p, HAL_THERMAL);
+    rc = br_hal_call(h, HAL_THERMAL_GET_TEMPERATURES, &p, take_thermal_snapshot, s);
+    if (rc) snprintf(why, size, "native thermal: getTemperatures: %s", br_hal_error(rc));
+  }
+  br_hal_close(h);
+  if (rc) s->count = 0;
+  return rc;
 }
 
 void hal_temperatures_encode(ab_parcel *p, const hal_temperature *in, unsigned n)

@@ -757,7 +757,7 @@ def main() -> int:
             and args.duration != 180):
         ap.error("SM8850 full bridges live trial requires --duration 180")
     if not LIVE_THERMAL_POLICY_READY:
-        ap.error("SM8850_THERMAL_POLICY=BLOCKED_LEGACY_RETIRED; adaptive owned ceiling and non-reboot guest quiesce not qualified")
+        ap.error("SM8850_THERMAL_POLICY=BLOCKED_LEGACY_RETIRED; stock-managed thermal runner and non-reboot guest quiesce not integrated/qualified")
     # Apply once before either preflight or the rearm/run subprocesses.
     # Never depend on the caller remembering a separate shell export.
     if args.own_presence == "on" and (branch != "feat/sm8850-xnuhost-perf-p0" or args.duration != 180):

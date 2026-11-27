@@ -518,6 +518,47 @@ static void test_hal(void)
   CHECK(raw.soc == BR_THERMAL_UNKNOWN && raw.skin == BR_THERMAL_UNKNOWN && raw.battery == BR_THERMAL_UNKNOWN);
 }
 
+static void test_native_snapshot(void)
+{
+  hal_temperature in[] = {
+    {0,"AP",49.5f,0}, {5,"PA",48.6f,0}, {2,"BAT",40.9f,0},
+    {4,"USB",35.6f,0}, {3,"SKIN",42.8f,2}, {2,"SUBBAT",0.0f,0}
+  };
+  ab_parcel p;
+  ab_reader r;
+  hal_thermal_snapshot s = {.version=3};
+  ab_init(&p); hal_temperatures_encode(&p, in, 6);
+  ab_reader_init(&r,p.data,p.size,NULL,0);
+  CHECK(!hal_thermal_snapshot_decode(&r,&s) && s.count==6);
+  CHECK(hal_thermal_snapshot_severity(&s)==2);
+  CHECK(s.temps[0].type==HAL_TEMP_CPU && !strcmp(s.temps[0].name,"AP"));
+  CHECK(!hal_thermal_value_valid(&s.temps[5]));
+  s.temps[5].throttling=1; CHECK(hal_thermal_snapshot_severity(&s)==-1);
+  s.temps[5].throttling=0;
+  s.temps[4].throttling=3; CHECK(hal_thermal_snapshot_severity(&s)==3);
+  s.temps[4].celsius=0; CHECK(hal_thermal_snapshot_severity(&s)==-1);
+  s.temps[4].celsius=45.0f; s.temps[4].type=HAL_TEMP_CPU;
+  CHECK(hal_thermal_snapshot_severity(&s)==-1);
+  s.temps[4].type=HAL_TEMP_SKIN; s.version=2;
+  CHECK(hal_thermal_snapshot_severity(&s)==-1);
+  s.version=3; s.count=4; CHECK(hal_thermal_snapshot_severity(&s)==-1);
+  s.count=6; s.temps[5]=s.temps[4]; CHECK(hal_thermal_snapshot_severity(&s)==-1);
+  ab_reader_init(&r,p.data,p.size-4,NULL,0);
+  CHECK(hal_thermal_snapshot_decode(&r,&s)<0 && !s.count);
+  // Missing severity inside an otherwise complete older parcelable.
+  ab_init(&p); hal_temperatures_encode(&p, in, 1);
+  int32_t shorter; memcpy(&shorter,p.data+8,4); shorter-=4;
+  memcpy(p.data+8,&shorter,4);
+  ab_reader_init(&r,p.data,p.size-4,NULL,0);
+  CHECK(hal_thermal_snapshot_decode(&r,&s)<0 && !s.count);
+  ab_init(&p); in[0].throttling=7; hal_temperatures_encode(&p,in,6);
+  ab_reader_init(&r,p.data,p.size,NULL,0);
+  CHECK(hal_thermal_snapshot_decode(&r,&s)<0 && !s.count);
+  int32_t oversized=HAL_TEMPS_MAX+1;
+  ab_reader_init(&r,&oversized,sizeof oversized,NULL,0);
+  CHECK(hal_thermal_snapshot_decode(&r,&s)<0 && !s.count);
+}
+
 int main(void)
 {
   br_log_sink = quiet;
@@ -530,6 +571,7 @@ int main(void)
   test_worker();
   test_load();
   test_hal();
+  test_native_snapshot();
   char cmd[300];
   snprintf(cmd, sizeof cmd, "rm -rf %s", base);
   if (system(cmd)) fprintf(stderr, "could not remove %s\n", base);

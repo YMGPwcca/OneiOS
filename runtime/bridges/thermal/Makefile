@@ -21,6 +21,7 @@ build/host/thermalctl: thermalctl.c $(SRC) $(HDR)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined thermalctl.c $(SRC) -lpthread -o $@
 test: build/host/test_thermal build/host/thermalctl
 	build/host/test_thermal
+	python3 test_native_thermalctl.py build/host/thermalctl
 clean:
 	rm -rf build
 .PHONY: all test clean

@@ -1643,3 +1643,33 @@ repeat the successful offline suite merely to make progress.
 The next operator decision is whether to address the existing
 live-admission blocker in its separate workstream or retain
 this candidate offline. No OneOS change or GitHub Actions.
+
+### Operator correction: stock-managed thermal authority (2026-11-27)
+
+Do not require an independent Qualcomm PerfLock provider simply to run
+OneiOS. The supplied native thermal handoff shows stock One UI already
+reduces effective CPU/GPU ceilings, e.g. at Moderate SKIN 42.8 C:
+policy0 1555.2 MHz, policy6 1497.6 MHz, GPU 500 then 422 MHz.
+These are successive stock gaming snapshots, not proof of policy after
+Framework OFF. The earlier 104.8 C OneiOS peak is a separate session.
+Prefer retaining Samsung/Qualcomm adaptive clock policy, limiting our
+own workload, and keeping independent raw protection. Valid high
+temperature is a throttle/quiesce/resume input, not a reason to refuse
+a session or request a thermal reboot. Invalid or unprotected controller
+state is different.
+
+Pinned OneOS d1ff94975c355a219de4a13d667465eef91b3a65 adds explicit stock-managed controller
+mode (no frequency callbacks or vote), uses qualified fresh native
+severity as an additional demand constraint, preserves the raw
+70/80/70 policy, and retains verified session/group/quiesce requirements.
+This OneiOS slice exposes separate read-only native-raw/native-hal
+thermalctl probes via existing discovery/Binder helpers and strict
+complete AIDL v3 snapshot decoding; the current guest bridge ABI and
+defaults remain unchanged. See runtime/bridges/thermal/README.md.
+No automatic shared clock writes, no new mandatory PerfLock
+qualification, no new peripheral milestone. Existing live launch
+retirement stays in place: these are source components, not the
+connected stock-managed root runner or proof of Framework-OFF
+mitigation. Local focused regression/build pending. Retain the previous
+tested performance runtime artifact and source hash; no stage/rearm,
+live benchmark, stock-service restart or GitHub Actions.
