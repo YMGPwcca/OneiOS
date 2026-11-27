@@ -1702,3 +1702,39 @@ The separate frequency actuator is not required by the new design.
 Do not launch via the legacy profile or change any safety thresholds.
 No runtime code change in this receipt; the performance-only artifact
 at 8d463fa remains the tested offline candidate.
+
+### 2026-11-28 — native reader stock One UI physical receipt
+
+Operator diagnostic at /tmp/oneios-stock-thermal.GU1Pan; the earlier
+identity probe reported boot 99e016d0-42e9-451f-bfc1-973ac7fb32d7
+(the final diagnostic did not independently print boot ID). Tested thermalctl SHA256
+52dcece4826a716bbdc8a2d5149d63f17c13379dfaf8792f56d86cd6438d40a8:
+RAW_RC=0 HAL_RC=0. SM-S948B/S948BXXS4BZIG, root ksu:s0,
+SELinux Enforcing and five native services running at initial identity
+probe. 28 accepted zones, CPU 31900, GPU/DDR 30800 mC; BAT 265,
+LRP 286, board AP 272 deci-C. XO and gpu_busy_percentage unavailable;
+not fabricated zeroes. Effective policy0 3187200 and policy6
+3398400 kHz; Samsung virtual max 3398400 and min sentinel -1;
+KGSL 222000000 current/902000000 max Hz, thermal level 5.
+Raw acquisition BOOTTIME 24471901..24471910 ms. AIDL v3 returned
+AP 27.2, BAT 26.5, PA 27.4, SKIN 28.5, USB 26.1 C, all
+severity 0; SUBBAT=0 invalid, native_max_severity=0, OK.
+HAL acquisition 24471952..24471953 ms. The samples are sequential,
+not a synchronized physical measurement. The reader and its permissions
+are verified in stock One UI; no native policy qualification after OFF.
+
+The narrowly scoped sm8850-native-thermal-observe.py reuses the existing
+20s Framework-only reboot-smoke launch callback, with explicit separate
+operator consent. It transfers only the exact diagnostic binary to a
+unique root-private directory, confirms hash and stock read, and
+captures before/after verified OFF with the same boot, launch,
+generation and deadline. It never boots an iOS guest, consumes APFS
+Data, extends a deadline, issues thermal writes or invents a return
+path. Existing smoke admission and recovery semantics remain in force,
+including unqualified legacy watchdog risk and possible root loss
+after reboot. Temporary cleanup can be unverified on lost root.
+The observer is diagnostic only, not a live guard or root controller.
+A single idle OFF read cannot demonstrate active mitigation; no
+forced heating, new recovery experiment or automatic launch. Run
+the new script's self-test offline before considering the optional
+physical observation. No runtime rebuild or new peripheral work.
