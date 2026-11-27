@@ -6,7 +6,9 @@ The existing smoke owns admission and the deadline. Do not infer a working
 vendor mitigation policy or independent recovery from one successful read.
 """
 import argparse
+import contextlib
 import hashlib
+import os
 from pathlib import Path
 import re
 import runpy
@@ -160,6 +162,68 @@ def capture(phone, output, phase, command):
     return result
 
 
+def file_backed_run(command, **options):
+    """Wait for the actual subprocess, not EOF from an inherited pipe.
+
+    All observer phone calls use binary data. Preserve explicit file
+    sinks/sources, CompletedProcess and check=True semantics. A real
+    client timeout still kills/reaps the direct process via subprocess.run.
+    """
+    options = dict(options)
+    check = options.pop("check", False)
+    with contextlib.ExitStack() as stack:
+        files = {}
+        for name in ("stdout", "stderr"):
+            if options.get(name) == subprocess.PIPE:
+                files[name] = stack.enter_context(tempfile.TemporaryFile())
+                options[name] = files[name]
+        data = options.pop("input", None)
+        if data is not None:
+            if options.get("stdin") is not None:
+                raise ValueError("stdin and input both set")
+            f = stack.enter_context(tempfile.TemporaryFile())
+            f.write(data)
+            f.seek(0)
+            options["stdin"] = f
+        elif options.get("stdin") is None:
+            options["stdin"] = subprocess.DEVNULL
+
+        def read(name):
+            f = files.get(name)
+            return None if f is None else os.pread(
+                f.fileno(), os.fstat(f.fileno()).st_size, 0)
+
+        try:
+            p = subprocess.run(command, **options)
+        except subprocess.TimeoutExpired as error:
+            raise subprocess.TimeoutExpired(error.cmd, error.timeout,
+                                             output=read("stdout"),
+                                             stderr=read("stderr")) from None
+        result = subprocess.CompletedProcess(p.args, p.returncode,
+                                             read("stdout"), read("stderr"))
+        if check:
+            result.check_returncode()
+        return result
+
+
+class ObserverPhone(TAKEOVER["Phone"]):
+    """Scoped transport adapter, including calls by the existing smoke.
+
+    Non-streaming shell commands explicitly disable stdin. Audit's script
+    input and the existing upload's tar stream still use their original
+    data; neither the launcher nor its gates/deadline are modified.
+    """
+    def call(self, args, **options):
+        if (args[:2] == ["shell", "-T"] and options.get("input") is None and
+                options.get("stdin") in (None, subprocess.DEVNULL)):
+            args = ["shell", "-n", "-T", *args[2:]]
+        return file_backed_run(self.command + args, **options)
+
+
+class DiagnosticTimeout(RuntimeError):
+    pass
+
+
 def diagnostic_command(phone, step, args, *, timeout):
     """Never send diagnostic bytes via adb shell/su stdin."""
     print("NATIVE_TRANSFER_STEP=" + step, flush=True)
@@ -168,8 +232,8 @@ def diagnostic_command(phone, step, args, *, timeout):
                        stderr=subprocess.STDOUT, timeout=timeout)
     except subprocess.TimeoutExpired as error:
         output = (error.stdout or b"").decode(errors="replace").strip()
-        raise RuntimeError(f"{step}: timeout after {timeout}s" +
-                           (f": {output}" if output else "")) from None
+        raise DiagnosticTimeout(f"{step}: timeout after {timeout}s" +
+                               (f": {output}" if output else "")) from None
     output = p.stdout.decode(errors="replace").strip()
     require(p.returncode == 0, f"{step}: exit={p.returncode}: {output}")
     if output:
@@ -236,9 +300,20 @@ echo NATIVE_ROOT_COPY_VERIFIED
         with tempfile.TemporaryDirectory(prefix="oneios-natm-push.") as local:
             binary = Path(local) / "thermalctl"
             binary.write_bytes(data)
-            diagnostic_command(phone, "ADB_PUSH", ["push", str(binary), scratch + "/thermalctl"],
-                               timeout=30)
-        diagnostic_command(phone, "ROOT_COPY_AND_HASH", shell_args(copy, root=True), timeout=10)
+            try:
+                diagnostic_command(phone, "ADB_PUSH", ["push", str(binary), scratch + "/thermalctl"],
+                                   timeout=30)
+            except DiagnosticTimeout as error:
+                # A direct client timeout is NOT a success. It may have
+                # completed the transfer before hanging. The only acceptable
+                # receipt is an independent root-private copy with the exact
+                # original SHA256 and ownership, never the ADB progress line.
+                print(f"NATIVE_PUSH_EXIT=TIMEOUT {error}", flush=True)
+                print("NATIVE_PUSH_READBACK_REQUIRED=1", flush=True)
+        receipt = diagnostic_command(phone, "ROOT_COPY_AND_HASH",
+                                     shell_args(copy, root=True), timeout=10)
+        require("NATIVE_ROOT_COPY_VERIFIED" in receipt.splitlines(),
+                "root-private transfer receipt missing")
     finally:
         if scratch_created:
             try:
@@ -258,7 +333,7 @@ def run(args):
             hashlib.sha256(data).hexdigest() == args.sha256, "local thermalctl hash mismatch")
     output = Path(tempfile.mkdtemp(prefix="oneios-native-off."))
     print("EVIDENCE=" + str(output), flush=True)
-    phone = TAKEOVER["Phone"](args.adb, args.serial)
+    phone = ObserverPhone(args.adb, args.serial)
     initial = TAKEOVER["status"](phone)
     (output / "stock-status.txt").write_text(initial)
     boot = values(initial).get("boot", "")
@@ -303,22 +378,57 @@ def run(args):
         print("EVIDENCE=" + str(output), flush=True)
 
 
+def test_file_backed_transport():
+    # A real child retains inherited stdout for five seconds; the direct
+    # shell has already exited. Pipe-based communicate would wait for EOF.
+    cmd = ["/bin/sh", "-c", "sleep 5 & printf 'PUSH_DONE\\n'"]
+    p = file_backed_run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        timeout=2, check=True)
+    assert p.stdout == b"PUSH_DONE\n"
+    p = file_backed_run(["/bin/cat"], input=b"fixture\x00\xff",
+                        stdout=subprocess.PIPE, timeout=2, check=True)
+    assert p.stdout == b"fixture\x00\xff"
+    p = file_backed_run(["/bin/sh", "-c", "printf 'err\\n' >&2; exit 7"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+    assert p.returncode == 7 and p.stdout == b"" and p.stderr == b"err\n"
+    try:
+        file_backed_run(["/bin/sh", "-c", "exit 9"], timeout=2, check=True)
+    except subprocess.CalledProcessError as error:
+        assert error.returncode == 9
+    else:
+        raise AssertionError("nonzero exit accepted by check=True")
+    try:
+        file_backed_run(["/bin/sh", "-c", "printf 'partial\\n'; exec sleep 5"],
+                        stdout=subprocess.PIPE, timeout=2)
+    except subprocess.TimeoutExpired as error:
+        assert error.stdout == b"partial\n"
+    else:
+        raise AssertionError("real timeout accepted")
+    print("NATIVE_FILE_BACKED_TRANSPORT=PASS DEVICE_ACCESS=NONE")
+
+
 def test_transfer():
-    # Fake transport checks exact order, no stdin, no execution of the
-    # shell-owned file and no root copy after a failed push.
+    # Fake ADB checks exact order and no shell stdin streaming. A timed-out
+    # push needs an independent hash/ownership receipt; a nonzero exit is
+    # still terminal. No transfer case executes the diagnostic.
     class FakePhone:
-        def __init__(self, fail_push=False):
+        def __init__(self, push_result="ok", copy_result="ok"):
             self.calls = []
-            self.fail_push = fail_push
+            self.push_result = push_result
+            self.copy_result = copy_result
 
         def call(self, args, **kwargs):
             self.calls.append(args)
             assert kwargs["stdin"] == subprocess.DEVNULL
             assert "input" not in kwargs
+            out = b""
             if args[0] == "push":
                 assert Path(args[1]).read_bytes() == b"fixture"
-                if self.fail_push:
-                    raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+                if self.push_result == "timeout":
+                    raise subprocess.TimeoutExpired(args, kwargs["timeout"],
+                                                    output=b"1 file pushed\n")
+                if self.push_result == "error":
+                    return subprocess.CompletedProcess(args, 1, b"push failed\n")
             else:
                 assert args[:3] == ["shell", "-n", "-T"]
                 script = args[3]
@@ -326,26 +436,42 @@ def test_transfer():
                     script = shlex.split(script)[2]
                 subprocess.run(["sh", "-n"], input=script, text=True, check=True)
                 assert "cat >" not in script
-            return subprocess.CompletedProcess(args, 0, b"", b"")
+                if "echo NATIVE_ROOT_COPY_VERIFIED" in script:
+                    assert "sha256sum" in script
+                    if self.copy_result == "bad":
+                        return subprocess.CompletedProcess(args, 4, b"")
+                    if self.copy_result == "ok":
+                        out = b"NATIVE_ROOT_COPY_VERIFIED\n"
+            return subprocess.CompletedProcess(args, 0, out, b"")
 
     remote = "/data/adb/.oneios-natm." + "a"*32
     digest = hashlib.sha256(b"fixture").hexdigest()
-    p = FakePhone()
-    transfer_diagnostic(p, b"fixture", remote, digest)
-    assert len(p.calls) == 4
-    assert p.calls[1][0] == "push"
-    assert "su -c " in p.calls[2][3] and "sha256sum" in p.calls[2][3]
-    assert "rmdir" in p.calls[3][3]
-    failed = FakePhone(fail_push=True)
+    for result in ("ok", "timeout"):
+        p = FakePhone(push_result=result)
+        transfer_diagnostic(p, b"fixture", remote, digest)
+        assert len(p.calls) == 4
+        assert p.calls[1][0] == "push"
+        assert "su -c " in p.calls[2][3] and "sha256sum" in p.calls[2][3]
+        assert "rmdir" in p.calls[3][3]
+    failed = FakePhone(push_result="error")
     try:
         transfer_diagnostic(failed, b"fixture", remote, digest)
     except RuntimeError as error:
-        assert "ADB_PUSH: timeout" in str(error)
+        assert "ADB_PUSH: exit=1" in str(error)
     else:
         raise AssertionError("failed push accepted")
     assert len(failed.calls) == 3 and "rmdir" in failed.calls[2][3]
-    assert not any("ROOT_COPY" in " ".join(a) or "su -c " in " ".join(a)
-                   for a in failed.calls)
+    assert not any("su -c " in " ".join(a) for a in failed.calls)
+    for result in ("bad", "missing"):
+        failed = FakePhone(push_result="timeout", copy_result=result)
+        try:
+            transfer_diagnostic(failed, b"fixture", remote, digest)
+        except RuntimeError as error:
+            assert ("ROOT_COPY_AND_HASH: exit=4" in str(error) or
+                    "root-private transfer receipt missing" in str(error))
+        else:
+            raise AssertionError("unverified timed-out transfer accepted")
+        assert len(failed.calls) == 4 and "rmdir" in failed.calls[3][3]
     print("NATIVE_TRANSFER_FIXTURE=PASS DEVICE_ACCESS=NONE")
 
 
@@ -371,6 +497,7 @@ def self_test():
     subprocess.run(["sh", "-n"], input=cmd, text=True, check=True)
     subprocess.run(["sh", "-n"], input=probe_command(remote, "b"*64, "c"*36, "ON"),
                    text=True, check=True)
+    test_file_backed_transport()
     test_transfer()
     print("NATIVE_OFF_OBSERVER_SELFTEST=PASS DEVICE_ACCESS=NONE")
 

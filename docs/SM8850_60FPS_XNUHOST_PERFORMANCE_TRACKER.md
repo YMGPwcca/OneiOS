@@ -1755,3 +1755,30 @@ commands, bounded per-step logs and exact-file cleanup. No runtime or
 OneOS changes; existing 20 s smoke lifecycle, consent and launch gates
 unchanged. New fake transport fixture and shell syntax checks pending
 operator local self-test. No physical run performed by this change.
+
+### 2026-11-28 — observer subprocess completion correction
+
+Operator a6e33ee self-test PASS; the real ADB sync printed one file
+pushed (2,521,920 bytes / 0.009 s), then the Python invocation timed
+out at 30 s before root copy. Evidence /tmp/oneios-native-observer.kaI7Z8
+and /tmp/oneios-native-off.o9xj5zuc. Scratch cleanup was attempted;
+the root-copy step and launch callback were not reached. Do not
+interpret the progress message as an exit status or OFF observation.
+A similar inherited-stdout pipe wait was reproduced independently on
+a Linux host: shell printed completion and exited, descendant retained
+stdout, pipe-based run timed out at 2 s; file-backed run returned 0
+with the same output in ~5 ms. Binary stdin and genuine timeout
+preservation also passed the isolated helper test. This does not prove
+the exact cause on the operator's ADB/WSL setup.
+
+The observer now uses a scoped file-backed subprocess adapter for
+captured output/input and explicit disabled stdin on non-streaming
+shell calls. It does not change the existing smoke's scripts, deadline,
+consent or thermal/return policy. If an actual ADB push timeout still
+occurs, a single independent root-private copy/hash/ownership receipt
+is required before execution; a progress line never substitutes for
+that receipt, and a nonzero push exit still aborts. No automatic push
+retry, no runtime rebuild, no change to OneOS. Added local real-child
+and fake transport fixtures, including failed readback. Exact committed
+observer self-test remains pending operator WSL execution. No device
+access in this change.
