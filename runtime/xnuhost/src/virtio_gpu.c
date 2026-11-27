@@ -377,7 +377,11 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
       uint64_t in = at - seg_start, n = b->entries[seg].length - in < left ? b->entries[seg].length - in : left;
       const uint8_t *from = xh_virtio_translate(b->entries[seg].addr + in, n);
       if (!from || (n & 3)) { status = RESP_ERR_INVALID_PARAMETER; break; }
-      if (linear) {
+      // Same-layout spans need no pixel reassembly, even for padded
+      // or partial-width rows. A split half-float pixel is just bytes
+      // in the destination's identical layout. Keep per-segment
+      // translation and the alignment/range checks above.
+      if (raw) {
         memcpy(to, from, (size_t)n);
         to += n; at += n; left -= n;
         continue;
@@ -1229,9 +1233,12 @@ static void *worker(void *arg)
       pthread_mutex_lock(&g->cmd);
       bool current = sync_generation(g) == gen;
       bool slow = current && peek_hdr(iov, n, &h) && slow_lane(g, &h);
-      pthread_mutex_unlock(&g->cmd);
-      if (!current) continue;
+      if (!current) {
+        pthread_mutex_unlock(&g->cmd);
+        continue;
+      }
       if (slow) {
+        pthread_mutex_unlock(&g->cmd);
         slow_job *j = malloc(sizeof *j + n * sizeof *iov);
         if (!j) {
           // Preserve FIFO within the slow lane even on allocation failure.
@@ -1255,15 +1262,18 @@ static void *worker(void *arg)
         pthread_mutex_unlock(&g->pl);
         continue;
       }
-      pthread_mutex_lock(&g->pl);
-      uint64_t before = g->slow_queued;              // the slow lane's commands that came before this one
-      pthread_mutex_unlock(&g->pl);
-      pthread_mutex_lock(&g->cmd);
+      // Classify and serve the fast chain under the same cmd hold.
+      // work() still rechecks the device generation before execution.
       uint32_t status = work(g, head, iov, n, gen, true, queued_ns, false);
       pthread_mutex_unlock(&g->cmd);
       if (status == RESP_PENDING_RETRY) {
         uint64_t retry_ns = g->fence_trace ? scanout_now_ns() : 0;
         pthread_mutex_lock(&g->pl);
+        // Only this front worker enqueues slow jobs. No new enqueue
+        // can occur between classification and here; therefore the
+        // dependency watermark is identical to the earlier snapshot.
+        // Do not hold cmd while waiting for the slow worker.
+        uint64_t before = g->slow_queued;
         while (g->slow_done < before) pthread_cond_wait(&g->slow_cv, &g->pl);
         pthread_mutex_unlock(&g->pl);
         pthread_mutex_lock(&g->cmd);

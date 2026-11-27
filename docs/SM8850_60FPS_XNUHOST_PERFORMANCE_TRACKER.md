@@ -1412,3 +1412,59 @@ Do not claim a measured latency or FPS improvement. Continue to
 GPU/display hot paths rather than further speculative futex
 protocol changes. No OneOS, thermal policy, kernel, recovery,
 live admission, phone operation or GitHub Actions.
+
+### 2026-11-27 — PERF-P2-03/04 GPU dispatch and same-layout scanout
+
+Operator WSL PERF_TASK_ORDER_OFFLINE=PASS at
+bb950679edf3f95d903284c16201b7dd3f4e3d4e: 1,086 empty-order,
+11 order diagnostics, 67 profiler checks, 20,000 process-shared
+futex releases and 19,858 native checks passed. ARM64 test kernel,
+profiler OFF/ON and Android build PASS, zero reported invalid ACKs
+in the supplied profiler excerpt. Evidence
+/tmp/oneios-perf-order.CSNWTY, DEVICE_ACCESS=NONE. XNUHost SHA256
+0f137b7c17073c34eb884ab14db9a943f070f2a1c3695979fe4bf16e60bd99ed.
+No native physical latency improvement established.
+
+P2 source batch: historical frame evidence includes active cadence
+34.44/s, GPU fence max 55.354ms and frame copy max 14.87ms.
+These are different stages and not proof of a causal frame stall.
+The ordinary fast lane in virtio_gpu.c used two cmd acquisitions
+(classify then serve) plus a separate pl acquisition to read the
+slow-job watermark for every chain. Keep cmd held across successful
+fast classification and the initial work call. work() still
+reconciles generation immediately before execution; reset and
+generation checks, pending fences, used ring/IRQ, gate and backend
+calls are unchanged. Slow jobs release cmd before allocation/enqueue.
+Only the front worker increments slow_queued, so it can snapshot
+that same watermark under pl only on actual dependency retry.
+Release cmd before waiting and recheck generation on retry. No
+new lock order: work already takes pl under cmd. One cmd and one
+pl lock/unlock pair are removed per non-retried fast command,
+excluding locks inside work/other providers. This does not eliminate
+a wait for the slow worker's existing cmd hold during a backend
+call. Actual contention and scheduling impact remain to be measured.
+
+Also use the existing same-layout raw memcpy branch for padded
+or partial-width dirty rectangles, rather than passing each segment
+through pixel carry and format dispatch. Only BGRX/BGRA to BGRX
+and RGBA16F to RGBA16F qualify. The original linear predicate
+still decides when an entire unpadded full-width span can be copied.
+Per-segment address translation, length/alignment checks, clipping,
+dirty rectangle, format conversions and notification timing are
+unchanged. RGBA16F split across a disjoint page boundary is copied
+as its constituent bytes; no change to HDR, bytes copied or buffer
+ownership. A standalone differential segment-walker model passed
+40,000 checks (20,000 rectangles against independent flat-memory
+reference, both old and new algorithms) each under GCC and Clang
+ASan/UBSan; includes padded strides, partial/tight full rows, 4/8
+bytes per pixel and noncontiguous segments. This is a model test,
+not a complete production build or throughput benchmark. Extended
+the real fake-backend VirtIO test with exact full-buffer comparison
+for padded split-pixel damage and a slow-create/fast-attach pair
+under one kick; it checks exactly-once completion regardless of
+whether scheduling actually exercises retry. Existing reset, fence,
+random-chain and gate regressions remain. Integrated WSL build/test
+pending. No claim of physical FPS or lock-wait savings. Do not
+change fence semantics, guest/Android refresh, HDR, thermal,
+recovery, frequency ownership, OneOS or live admission in this
+batch. No device access or GitHub Actions.

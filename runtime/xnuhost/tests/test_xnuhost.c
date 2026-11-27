@@ -1170,6 +1170,29 @@ static void test_virtio_gpu3d(void)
     CHECK(last_scanout.start_ns > 0 && last_scanout.copied_ns >= last_scanout.start_ns);
     CHECK(last_scanout.resource_generation > 0 &&
           last_scanout.owner_context == 0);  // GUEST scanout's creator; not last GPU writer
+    // Padded source rows and a partial dirty rectangle crossing a
+    // disjoint backing boundary in the middle of an RGBA16F pixel.
+    // Every byte outside the rectangle must remain unchanged.
+    memcpy(xh_ram(GUEST_PA + 0x44000 + 44, sizeof want), want, sizeof want);
+    CLEAR(); cmd[0] = 0x10d; cmd[8] = 8; cmd[9] = 2; cmd[11] = 30;
+    cmd[12] = 8; cmd[13] = 2; cmd[14] = XH_VIRTIO_GPU_FORMAT_RGBA16F;
+    cmd[16] = 80; cmd[20] = 4060;
+    CHECK(G(24, 24) == 1 && resp[0] == 0x1100);
+    uint8_t expected[4 * 64];
+    memset(expected, 0xa5, sizeof expected);
+    memcpy(expected + 24, (const uint8_t *)want + 24, 24);
+    memcpy(expected + 64 + 24, (const uint8_t *)want + 24, 24);
+    memset(fake_display.pixels, 0xa5, sizeof expected);
+    CLEAR(); cmd[0] = 0x104; cmd[6] = 3; cmd[8] = 3; cmd[9] = 2; cmd[10] = 30;
+    CHECK(G(12, 24) == 1 && resp[0] == 0x1100);
+    CHECK(!memcmp(fake_display.pixels, expected, sizeof expected));
+    CHECK(flush_rect[0] == 3 && flush_rect[1] == 0 && flush_rect[2] == 3 && flush_rect[3] == 2);
+    // Restore the original one-row scanout and full-row flush below.
+    CLEAR(); cmd[0] = 0x10d; cmd[8] = 8; cmd[9] = 1; cmd[11] = 30;
+    cmd[12] = 8; cmd[13] = 1; cmd[14] = XH_VIRTIO_GPU_FORMAT_RGBA16F;
+    cmd[16] = 64; cmd[20] = 4060;
+    CHECK(G(24, 24) == 1 && resp[0] == 0x1100);
+    CLEAR(); cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 1; cmd[10] = 30;
     // half floats onto the 8-bit display: encoded to sRGB, clamped
     free(fake_display.pixels);
     fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .format = XH_PIXELS_BGRX8, .bpp = 4, .pixels = eight };
@@ -1406,6 +1429,24 @@ static void test_virtio_gpu3d(void)
     xh_virtio_gpu_idle(dev);
     CHECK(ra[0] == 0x1100 && (uint16_t)(used0[1] - seen) == 2);
     d.used_seen[0] = used0[1];
+    // Enqueue a slow resource creation and its fast dependent attach
+    // before a single kick. Depending on scheduling, the attach either
+    // finds the resource immediately or retries after the slow watermark.
+    // Both chains must complete once and the backend attach runs once.
+    memset(ca, 0, 4096); memset(cb, 0, 4096); memset(ra, 0xee, 64); memset(rb, 0xee, 64);
+    ca[0] = 0x10c; ca[4] = 40; ca[6] = 601; ca[7] = 2; ca[10] = 0x5106; ca[12] = 16384;
+    cb[0] = 0x202; cb[4] = 41; cb[6] = 601;
+    unsigned old_attaches = fake.attaches;
+    seen = d.used_seen[0];
+    driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0x33000, 14 * 4, 0 }, { GUEST_PA + 0x34000, 24, 1 } }, 2, false);
+    driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0x35000, 8 * 4, 0 }, { GUEST_PA + 0x36000, 24, 1 } }, 2, false);
+    W(&d, 0x50, 0);
+    xh_virtio_gpu_idle(dev);
+    CHECK(ra[0] == 0x1100 && rb[0] == 0x1100);
+    CHECK((uint16_t)(used0[1] - seen) == 2 && fake.attaches == old_attaches + 1);
+    d.used_seen[0] = used0[1];
+    CLEAR(); cmd[0] = 0x102; cmd[6] = 601;
+    CHECK(G(8, 24) == 1 && resp[0] == 0x1100);
     CLEAR(); cmd[0] = 0x201; cmd[4] = 40;
     CHECK(G(6, 24) == 1 && resp[0] == 0x1100);
     cmd[4] = 41;
