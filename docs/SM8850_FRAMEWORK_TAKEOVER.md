@@ -79,3 +79,33 @@ python3 scripts/phone/sm8850-ios-interactive-perf.py --archive /path/to/device-l
 ```
 
 Use the actual 32-character launch identifier; for a historical archive directory, also pass `--archive-session TOKEN` with the exact listed suffix. See the performance tracker for validation status. No new physical acceptance has been established.
+
+## Later physical evidence — native thermal and Samsung bootanim (2026-11-27/28)
+
+The historical full-guest execution revisions and FPS limitations above
+are distinct from later Framework-only observations. The 20-second
+observer captured native raw/AIDL v3 readings both ON and OFF without
+starting iOS. Five native thermal/power/perf services retained the same
+PID/birth identity within each sampled boot. The prior SM8850 path
+restarted Samsung bootanim and showed samsungani565; OneOS 95f0efa
+corrected the existing stop-loop without freezing the host compositor.
+
+Two operator retests with the fix installed confirmed bootanim stopped,
+successful empty OFF layer lists, and retained SurfaceFlinger/display
+composer with no additional direct CPU ticks in the short OFF windows.
+The first post-fix CPU/GPU/DDR readings were 34.6/33.2/33.6 C ON and
+38.9/36.3/36.3 C OFF; the fan-cooled comparison was 37.7/36.3/36.3 C
+ON and 38.9/34.3/34.7 C OFF. Fan-cooled SKIN 32.0->29.9 C and raw
+battery 29.7->27.8 C. CPU busy OFF 12.57% before fix, 8.17% and 8.73%
+afterward; separate sampled windows, not a controlled causal A/B.
+The ON/OFF measurements include intervening preflight and stage work;
+not a stable 20-second endpoint or native stress qualification.
+
+See [full report and exact sensor/clock/process provenance](https://github.com/YMGPwcca/OneOS/blob/4634d2a24de70c60927f3017e663f93815250624/docs/SM8850_FRAMEWORK_THERMAL_DISPLAY_FINDINGS.md).
+Both retests observed the deadline request and subsequent One UI,
+with OBSERVER_EXIT=4 and independent/unassisted return NOT VERIFIED.
+The bootanim task is closed on this evidence; do not launch another
+smoke solely to verify it. The existing full-run retirement, independent
+watchdog limits, and incomplete production thermal integration remain
+unchanged. No guest FPS, production admission, or new device action
+is claimed.

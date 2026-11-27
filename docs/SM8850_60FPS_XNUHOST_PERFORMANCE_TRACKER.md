@@ -2015,3 +2015,78 @@ membership and runtime drain/resume path, including the actual
 mapped providers. No new diagnostic smoke, repeat CI, phone
 operation, new performance measurement, production admission,
 or runtime source change is implied by this docs-only receipt.
+
+### 2026-11-27/28 — bootanim physical PASS and fan-cooled Framework comparison
+
+Canonical detailed cross-repo report:
+[SM8850_FRAMEWORK_THERMAL_DISPLAY_FINDINGS.md](https://github.com/YMGPwcca/OneOS/blob/4634d2a24de70c60927f3017e663f93815250624/docs/SM8850_FRAMEWORK_THERMAL_DISPLAY_FINDINGS.md)
+(OneOS 4634d2a24de70c60927f3017e663f93815250624, docs-only child of tested 497d4cc).
+It preserves prior stock/Framework-OFF/animation attribution receipts,
+upstream source comparison, full temperature tables (including all 28
+named raw junction zones for both post-fix runs), service identities,
+effective/current frequencies, CPU process attribution, acquisition times,
+evidence paths and recovery limits. Operator pasted logs
+Pasted text(20261127-202554).txt and Pasted text(20261127-203200).txt.
+
+First post-fix: /tmp/oneios-native-off.l9qnhzl9,
+ /tmp/oneios-bootanim-retest.XyDbSi.log; boot
+0830222c-c273-4a76-8438-5ddf1a07398b, launch
+0ff5490c883446eba122a8e81c82ef87. Fan-cooled retest:
+ /tmp/oneios-native-off.t6rqu73s,
+ /tmp/oneios-cooled-framework.f9NCW9.log; boot
+f2497b9e-f3da-4051-bdba-522b9d984017, launch
+12b64778bee94c90a8529f3f63fe2652. Both use the existing 20s
+Framework-only smoke; OneOS checked at 497d4cc, diagnostic binary
+2,526,648 bytes and NATIVE_ROOT_COPY_VERIFIED. The new binary's
+hash and exact parent HEAD are not separately printed in the logs.
+
+| Measurement | First post-fix ON -> OFF | Fan-cooled ON -> OFF |
+| --- | --- | --- |
+| CPU max C | 34.6 -> 38.9 | 37.7 -> 38.9 |
+| GPU max C | 33.2 -> 36.3 | 36.3 -> 34.3 |
+| DDR C | 33.6 -> 36.3 | 36.3 -> 34.7 |
+| Battery raw C | 28.2 -> 28.3 | 29.7 -> 27.8 |
+| LRP C | 30.3 -> 30.5 | 33.0 -> 29.9 |
+| Board AP C | 29.9 -> 32.2 | 32.6 -> 30.4 |
+| HAL SKIN C | 30.3 -> 30.5 | 32.0 -> 29.9 |
+| HAL max severity | 0 -> 0 | 0 -> 0 |
+| Aggregate CPU busy | 3.19% -> 8.17% | 3.63% -> 8.73% |
+| Raw sample start separation | 101.566 s | 89.492 s |
+| Display CPU OFF window | 3.200 s | 3.210 s |
+
+Both retests: NATIVE_ON/OFF=READERS_OK, DISPLAY_ON/OFF=SAMPLED.
+All five native thermal/power/perf service PID/birth pairs retained
+within each boot. Effective policy0 3187200 kHz and policy6
+3398400 kHz, Samsung max 3398400 kHz/min -1, KGSL 222 MHz current /
+902 MHz max and thermal level 5 unchanged. CPU current frequency
+and sensor readings are point samples, not average operating clocks.
+Bootanim stopped/no PID in both OFF samples, successful empty layer
+list, same compositor PID/birth and zero additional direct CPU ticks.
+service.bootanim.exit=0 is not proof of an active service.
+Compared with pre-fix OFF 12.57%, post-fix 8.17% and 8.73% are
+4.40/3.84 percentage points lower (~35.0%/~30.5% relative). These
+are distinct short observations, not causal power/thermal A/B.
+Raw KGSL busy strings "0 %" and "0 0" are sampled only; numeric
+diagnostic remains invalid. No FPS or panel power claim.
+
+Raw OFF samples were taken early in the 20s interval, not at
+steady state. The fan ran as requested across the comparison;
+speed, ambient and equilibrium were not logged. The CPU maximum
+still rose in both retests. Boot animation is a confirmed removable
+workload but not the sole cause of the temperature change.
+Reader access and service survival do not prove stress mitigation.
+
+Both retests record REBOOT_SMOKE=DEADLINE_REQUEST_CONFIRMED_ONEUI_OBSERVED,
+UNASSISTED_RETURN_TO_ONEUI=NOT_VERIFIED, PHYSICAL_KEY_REBOOT=NOT_VERIFIED,
+EXISTING_SMOKE_EXIT=4 and OBSERVER_EXIT=4. Root diagnostic cleanup
+had no unverified warning in these logs. No guest, frame trace,
+APFS rearm or observer thermal-control write.
+NATIVE_MITIGATION_AFTER_FRAMEWORK_OFF=NOT_QUALIFIED remains accurate.
+
+Disposition: Samsung boot animation suppression PHYSICAL PASS for
+the two sampled Framework-only retests; close that task and the
+operator's requested comparison. No additional standalone smoke,
+CI repeat, runtime build or device action required by this receipt.
+Production stock thermal supervisor and full guest admission remain
+unchanged/incomplete. This is a documentation-only gitlink refresh;
+the tested artifacts remain identified by their original revisions.
