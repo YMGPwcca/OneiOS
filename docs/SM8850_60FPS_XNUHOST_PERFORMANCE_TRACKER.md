@@ -1975,3 +1975,43 @@ unsupported active transports. The existing board contract rejects
 camera, encoder, network and active audio capture; no silent
 profile change or fabricated ACK. Full-run remains retired.
 No new physical test or recovery authorization in this batch.
+
+### 2026-11-28 — consolidated stock-source local CI receipt
+
+Operator local WSL log /tmp/oneios-stock-ci.PbVsji.log at
+OneiOS fe11aeef321ac64da1dddbb03b4897e784d494b6 /
+OneOS 497d4cc42b958b587418d591ed7f9764ecfaeb28.
+The fail-fast consolidated stock CI completed with exit 0,
+STOCK_SOURCE_BATCH_OFFLINE=PASS, DEVICE_ACCESS=NONE,
+LIVE_TAKEOVER_AUTHORIZED=NO. Elapsed 335.222s.
+The supplied tail includes the successful runtime/package/ELF
+checks, but not individual early fixture check counts; no
+invented individual counts. Earlier required stages passed by
+the script's fail-fast contract. Kernel compile/source audit
+and macOS-only camera checks are explicitly skipped as logged.
+Runtime-only archive (no kernel at out/kernel/current):
+out/release/oneios-runtime-0.0.0-stock.fe11aee-arm64.tar.zst
+5817926 bytes; SHA256
+cc85b886c3181a6710dc2cf30e7001888d36c745c96a8c7b7c9d41b914068efa
+verified. Companion oneios-tool-0.0.0-stock.fe11aee-android-arm64
+14795432 bytes; SHA256
+bf5f255b2bf668819b9b9d5b680793095677d0fc8cdf2fa526210d8f9aee7aa2.
+ELF check 7 dynamic/9 static, zero failures. Rust dead_code
+warnings for raw fields are not build failures.
+
+Scope clarification from the pinned source: OneOS
+oneios_switch.sh full-bridges launch already selects wifi=off,
+bluetooth=virtual, haptics=off, encoder=off (lines 1599-1600);
+the XNUHost profile enforces those selections. Encoder has no
+media pool when disabled. Camera can still be mapped when the
+helper is installed unless explicitly disabled; idle is not a
+proof of drained callbacks. Audio playback has partial park
+support but active capture remains unsupported. Network and
+encoder therefore are not reasons to expand the existing
+60-FPS profile's production work into full peripheral support.
+Do not silently change the camera/audio configuration. The
+remaining real blocker is the live root owner/sampler/guest
+membership and runtime drain/resume path, including the actual
+mapped providers. No new diagnostic smoke, repeat CI, phone
+operation, new performance measurement, production admission,
+or runtime source change is implied by this docs-only receipt.
