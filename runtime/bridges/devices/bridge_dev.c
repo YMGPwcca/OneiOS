@@ -3,6 +3,7 @@
 // guest are dispatched to the haptic and Bluetooth bridges; messages for the guest wait in a backlog
 // until it has posted a buffer.
 #include "bridges/devices.h"
+#include "bridges/quiesce.h"
 #include "oneios_bridge_proto.h"
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,9 @@ typedef struct {
   pending backlog[BACKLOG];
   unsigned head, count;
   uint64_t dropped;
+  brq_gate quiesce;
+  uint64_t bright_ticket;
+  brq_report reports[BRQ_REPORTS];
 } bridge_state;
 
 // Writes one message into a guest buffer chain. Returns false when the chain cannot hold it.
@@ -54,10 +58,34 @@ static void drain(bridge_state *s)
   }
 }
 
+// Latest-value telemetry is kept in host memory only while closed.
+static const struct { uint16_t channel, type; size_t length; } report_types[BRQ_REPORTS] = {
+  { OB_CH_BRIGHTNESS, OB_BRIGHT_ALS, sizeof(struct ob_bright_als) },
+  { OB_CH_BATTERY, OB_BATTERY_STATE, sizeof(struct ob_battery_state) },
+  { OB_CH_THERMAL, OB_THERMAL_STATE, sizeof(struct ob_thermal_state) },
+};
+_Static_assert(sizeof(struct ob_bright_als) <= BRQ_REPORT_BYTES &&
+               sizeof(struct ob_battery_state) <= BRQ_REPORT_BYTES &&
+               sizeof(struct ob_thermal_state) <= BRQ_REPORT_BYTES, "telemetry slot too small");
 static void to_guest(bridge_state *s, uint16_t channel, uint16_t type, const void *payload, size_t length)
 {
-  if (length > OB_MAX_PAYLOAD) { s->dropped++; return; }
   xh_virtio_lock(s->dev);
+  if (s->quiesce.closed) {
+    for (unsigned i = 0; i < BRQ_REPORTS; i++) {
+      if (channel != report_types[i].channel || type != report_types[i].type) continue;
+      if (length != report_types[i].length || brq_store(s->reports, i, payload, length)) s->quiesce.fault = true;
+      xh_virtio_unlock(s->dev);
+      return;
+    }
+    s->quiesce.fault = true;
+    // Preserve the existing explicitly requested return path, not an
+    // automatic thermal action. It invalidates the park receipt first.
+    if (channel != OB_CH_CONTROL || type != OB_CTL_SHUTDOWN || length) {
+      xh_virtio_unlock(s->dev);
+      return;
+    }
+  }
+  if (length > OB_MAX_PAYLOAD) { s->dropped++; xh_virtio_unlock(s->dev); return; }
   if (s->count == BACKLOG) {                         // the oldest is lost
     free(s->backlog[s->head].payload);
     s->head = (s->head + 1) % BACKLOG;
@@ -199,6 +227,7 @@ static void from_guest(bridge_state *s, const struct ob_header *h, const uint8_t
 static int64_t bridge_handle(xh_virtio *dev, unsigned queue, uint16_t head, xh_viov *iov, unsigned n)
 {
   bridge_state *s = xh_virtio_opaque(dev);
+  if (brq_late(&s->quiesce)) return -1; // guest violated the upstream vCPU fence
   uint8_t message[OB_MAX_MESSAGE];
   size_t size = 0;
   (void)head;
@@ -217,11 +246,17 @@ static int64_t bridge_handle(xh_virtio *dev, unsigned queue, uint16_t head, xh_v
   return 0;
 }
 
-static void bridge_kick(xh_virtio *dev, unsigned queue) { (void)queue; drain(xh_virtio_opaque(dev)); }
+static void bridge_kick(xh_virtio *dev, unsigned queue)
+{
+  (void)queue;
+  bridge_state *s = xh_virtio_opaque(dev);
+  if (!brq_late(&s->quiesce)) drain(s);
+}
 
 static void bridge_reset(xh_virtio *dev)
 {
   bridge_state *s = xh_virtio_opaque(dev);
+  (void)brq_late(&s->quiesce);
   while (s->count) { free(s->backlog[s->head].payload); s->head = (s->head + 1) % BACKLOG; s->count--; }
   br_haptic_stop(s->config.haptic);                  // a guest that resets (or panics into a reset) leaves no motor running
   if (s->hci) br_hci_close(s->hci);
@@ -250,6 +285,94 @@ xh_virtio *br_bridge_create(uint64_t base, unsigned spi, const br_bridge_config 
   if (!s->dev) { free(s); return NULL; }
   g_active_bridge = s;
   return s->dev;
+}
+
+// The sealed board and session owner must pin the single real bridge
+// and its backends. HCI and haptic actuators do not have drain receipts.
+static int bridge_gate_lock(xh_virtio *dev, bridge_state **out)
+{
+  bridge_state *s = g_active_bridge;
+  if (!dev || !s || s->dev != dev) return -ESTALE;
+  if (!xh_virtio_trylock(dev)) return -EAGAIN;
+  *out = s;
+  return 0;
+}
+int br_bridge_quiesce_close(xh_virtio *dev, uint64_t *ticket)
+{
+  if (!ticket) return -EINVAL;
+  bridge_state *s;
+  int r = bridge_gate_lock(dev, &s);
+  if (r) return r;
+  if (s->config.haptic || s->config.hci_factory || s->hci) r = -ENOTSUP;
+  else if (s->quiesce.fault) r = -ESTALE;
+  else if (s->quiesce.closed) r = -EBUSY;
+  else if (s->quiesce.generation == UINT64_MAX) r = -EOVERFLOW;
+  // Preserve all pre-park backlog, reserving one slot per telemetry type.
+  else if (s->count > BACKLOG - BRQ_REPORTS) r = -EAGAIN;
+  else {
+    uint64_t bright = 0;
+    if (s->config.brightness) r = br_bright_quiesce_close(s->config.brightness, &bright);
+    if (!r) {
+      s->bright_ticket = bright;
+      memset(s->reports, 0, sizeof s->reports);
+      r = brq_close(&s->quiesce, false, ticket);
+    }
+  }
+  xh_virtio_unlock(dev);
+  return r;
+}
+int br_bridge_quiesce_poll(xh_virtio *dev, uint64_t ticket, unsigned *deferred_mask)
+{
+  bridge_state *s;
+  int r = bridge_gate_lock(dev, &s);
+  if (r) return r;
+  r = brq_check(&s->quiesce, ticket, false);
+  if (!r && s->config.brightness) r = br_bright_quiesce_poll(s->config.brightness, s->bright_ticket);
+  if (!r) {
+    r = brq_poll(&s->quiesce, ticket, false);
+    if (deferred_mask) *deferred_mask = brq_report_mask(s->reports);
+  }
+  xh_virtio_unlock(dev);
+  return r;
+}
+int br_bridge_quiesce_resume(xh_virtio *dev, uint64_t ticket)
+{
+  bridge_state *s;
+  int r = bridge_gate_lock(dev, &s);
+  if (r) return r;
+  r = brq_can_resume(&s->quiesce, ticket, false);
+  uint8_t *copies[BRQ_REPORTS] = {0};
+  // Allocate everything before reopening either gate. No eviction of
+  // the existing backlog to make space for reports on this path.
+  if (!r && s->count > BACKLOG - BRQ_REPORTS) r = -EPROTO;
+  for (unsigned i = 0; !r && i < BRQ_REPORTS; i++) {
+    size_t n = s->reports[i].length;
+    if (!n) continue;
+    if (n != report_types[i].length) { r = -EPROTO; break; }
+    copies[i] = malloc(n);
+    if (!copies[i]) r = -ENOMEM;
+    else memcpy(copies[i], s->reports[i].bytes, n);
+  }
+  if (!r && s->config.brightness) r = br_bright_quiesce_resume(s->config.brightness, s->bright_ticket);
+  if (!r) {
+    // Gate was checked under this same lock; no competing close/resume.
+    r = brq_resume(&s->quiesce, ticket, false);
+    if (!r) {
+      for (unsigned i = 0; i < BRQ_REPORTS; i++) {
+        if (!copies[i]) continue;
+        pending *p = &s->backlog[(s->head + s->count++) % BACKLOG];
+        p->header = (struct ob_header){ report_types[i].channel, report_types[i].type, (uint32_t)s->reports[i].length };
+        p->payload = copies[i]; copies[i] = NULL;
+      }
+      memset(s->reports, 0, sizeof s->reports);
+      s->bright_ticket = 0;
+      drain(s);
+    }
+  }
+  if (r == -ENOMEM || r == -EPROTO) s->quiesce.fault = true;
+  for (unsigned i = 0; i < BRQ_REPORTS; i++) free(copies[i]);
+  xh_virtio_unlock(dev);
+  return r;
 }
 
 // The return's graceful-shutdown ask (OB_CTL_SHUTDOWN on the control channel). Queued like any host->guest message

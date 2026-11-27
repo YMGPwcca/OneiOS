@@ -105,6 +105,13 @@ uint32_t br_bright_current(br_bright *b);
 uint32_t br_bright_level(br_bright *b);
 // fn runs on the sensor's thread. One listener; NULL removes it.
 void br_bright_listen(br_bright *b, br_als_fn fn, void *ctx);
+// Requires guest and native key ingress already fenced and object lifetime
+// pinned. Wait for queued/in-flight panel, touch and ALS-enable writes;
+// no forced cancellation, new sysfs operation or physical idle proof.
+// Late set/power/key invalidates the ticket; ALS reads/reports continue.
+int br_bright_quiesce_close(br_bright *b, uint64_t *ticket);
+int br_bright_quiesce_poll(br_bright *b, uint64_t ticket);
+int br_bright_quiesce_resume(br_bright *b, uint64_t ticket);
 // Writes One UI's value back (the start value when that was 0), wakes the touch IC, turns the sensor off if this session turned it on. Within 300 ms.
 void br_bright_close(br_bright *b);
 

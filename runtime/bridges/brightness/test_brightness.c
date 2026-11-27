@@ -5,6 +5,8 @@
 #include "brightness.h"
 #include "bridges/hw_backend.h"
 #include <pthread.h>
+#include <errno.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -476,6 +478,66 @@ static void test_sm8850_manual_brightness_cap(void)
   CHECK(system(command) == 0);
 }
 
+// Hold the last panel syscall at its trace hook: pending may already
+// be false, but the worker is still in-flight outside its mutex.
+static int write_entered[2], write_release[2];
+static void hold_panel(const char *what, const char *value)
+{
+  (void)value;
+  if (strcmp(what, "panel")) return;
+  char c;
+  if (write(write_entered[1], "w", 1) != 1 || read(write_release[0], &c, 1) != 1) abort();
+}
+static int close_panel(br_bright *b, uint64_t *t)
+{
+  for (unsigned i = 0; i < 2000; i++) {
+    int r = br_bright_quiesce_close(b, t);
+    if (r != -EAGAIN) return r;
+    usleep(1000);
+  }
+  return -ETIMEDOUT;
+}
+static void test_panel_quiesce(void)
+{
+  char tmp[] = "/tmp/oneios-bright-quiesce-XXXXXX", panel[300], command[400];
+  if (!mkdtemp(tmp)) abort();
+  snprintf(panel, sizeof panel, "%s/panel", tmp);
+  if (mkdir(panel, 0755)) abort();
+  put(panel, "max_brightness", "255\n"); put(panel, "brightness", "100\n");
+  br_bright_options o = { .backlight_dir = tmp, .touch_dir = tmp, .no_als = true };
+  br_bright *b = br_bright_open(&o);
+  CHECK(b != NULL);
+  if (b) {
+    if (pipe(write_entered) || pipe(write_release)) abort();
+    br_bright_trace = hold_panel;
+    br_bright_set(b, BR_BRIGHT_FULL, false, 0);
+    struct pollfd p = { .fd = write_entered[0], .events = POLLIN };
+    char c;
+    if (poll(&p, 1, 2000) != 1 || read(write_entered[0], &c, 1) != 1) abort();
+    uint64_t t = 0, next = 0;
+    CHECK(br_bright_quiesce_close(b, &t) == -EAGAIN && !t);
+    CHECK(br_bright_current(b) == 100);
+    if (write(write_release[1], "r", 1) != 1) abort();
+    int rc = close_panel(b, &t);
+    CHECK(rc == 0 && t);
+    CHECK(br_bright_current(b) == 255);
+    br_bright_trace = NULL;
+    CHECK(br_bright_quiesce_poll(b, t+1) == -ESTALE);
+    CHECK(br_bright_quiesce_resume(b, t) == -EBUSY);
+    CHECK(br_bright_quiesce_poll(b, t) == 0 && br_bright_quiesce_resume(b, t) == 0);
+    CHECK(close_panel(b, &next) == 0 && next > t);
+    CHECK(br_bright_quiesce_poll(b, next) == 0);
+    br_bright_set(b, 0, false, 0); // forbidden late mutation
+    CHECK(br_bright_quiesce_poll(b, next) == -ESTALE && br_bright_quiesce_resume(b, next) == -ESTALE);
+    CHECK(br_bright_current(b) == 255);
+    br_bright_close(b); // existing terminal restoration must still work
+    CHECK(get(panel, "brightness") == 100);
+    close(write_entered[0]); close(write_entered[1]); close(write_release[0]); close(write_release[1]);
+  }
+  snprintf(command, sizeof command, "rm -rf %s", tmp);
+  CHECK(system(command) == 0);
+}
+
 int main(void)
 {
   test_curve();
@@ -484,6 +546,7 @@ int main(void)
   test_touch();
   test_treble();
   test_sm8850_manual_brightness_cap();
+  test_panel_quiesce();
   printf("brightness: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

@@ -1122,3 +1122,63 @@ launcher remain pending. Frequency provider remains
 BLOCKED_NO_OWNED_READBACK. No OneOS change, phone access, live
 admission, staging, rearm, thermal policy, kernel, recovery or
 frequency write change.
+
+### G25.1B4A operator receipt / G25.1B4B1 report bridge and brightness writer
+
+Operator WSL G25.1B4A OneiOS 4065a2ba7204e592e2e88ad3200633a41f9e08a6:
+155 input source, 1,550 board/console and 19,858 XNUHost native checks,
+zero failures; Android ARM64 link and nine requested symbols PASS.
+SHA256 c1f71da3e9e78d241783721c71bc484f557d2c3f78211011234fef1ccb19e11f.
+Evidence /tmp/oneios-g251b4a.e9j3tH, DEVICE_ACCESS=NONE.
+Real udmabuf import still not checked.
+
+G25.1B4B1 implements a control/report bridge provider with HCI and
+haptics disabled, and its actual brightness worker fence. Close uses
+the exact transport's existing try-lock, refuses unqualified actuators
+and preserves pending backlog. Brightness close waits for both queued
+and in-flight panel/touch writes (including the last write after pending
+becomes false) and the ALS worker's periodic enable write. No new
+sysfs action on close; no forced cancellation. Write failures, including
+short writes, prevent a verified receipt. Late brightness/power/key
+requests latch a fault and are refused. ALS re-enable is deferred until
+open; ALS reads and the battery/thermal sampling and cap callbacks
+continue. This is a host syscall completion boundary, NOT physical
+panel/IC readback or a qualified frequency actuator.
+
+During the closed bridge cycle, ALS, battery and thermal reports only
+update three bounded host-memory latest-value slots; they do not touch
+guest RX or used rings. No lossless history claim. Pre-existing messages
+remain in order; close reserves three backlog slots and resume prepares
+all payload copies before reopening either gate. The external owner
+must authorize release after full coordinator success. Late guest
+kick/handler/reset invalidates the receipt; the upstream vCPU/task
+fence is still required (generic transport mutation is not fenced by
+this provider). The existing explicit return ask remains available
+and invalidates the receipt before delivery; no new return trigger.
+Terminal brightness shutdown still restores as before. Backend
+identity/lifetime must be pinned externally; no production caller.
+The board adapter checks the actual single control/report bridge
+and its exact ticket on every guard; missing/extraneous ticket or
+unqualified media/net/unknown transport is refused. This is not
+whole-session admission.
+
+Standalone exact shared gate/telemetry header and unit test:
+3,650 checks, zero failures on GCC and Clang ASan/UBSan.
+This proves the ticket primitive and bounded latest-value storage,
+not the live hardware worker. Added integration fixtures for a real
+pthread blocked at the last panel write on fake sysfs, battery worker
+host-only report with an already posted RX buffer, stale/missing
+bridge ticket, late reset and explicit return invalidation. Actual
+bridge and brightness integration, board fixture, ARM64 build pending
+operator WSL. Also repair direct virtio.c link dependencies in
+bridge/camera/encoder Makefiles following G25.1B1 board registration.
+
+Remaining G25.1B4B: audio helper, camera/encoder media DMA and
+shared pools, network, optional HCI/haptics and other non-VirtIO
+producers. Full-bridges profile still not admitted. Independent
+factory/descendant membership, repeated-cycle release authorization,
+owner launcher and G25.2 freeze/thaw are pending. Independent thermal
+monitor must not be inadvertently frozen with guest workload.
+Frequency provider remains BLOCKED_NO_OWNED_READBACK.
+No OneOS, thermal policy, frequency, kernel, recovery or live
+admission/staging/rearm change. No device access.

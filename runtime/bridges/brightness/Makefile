@@ -6,7 +6,7 @@ ANDROID_CC ?= $(TOOLS)/aarch64-linux-android30-clang
 WARN := -Wall -Wextra -Werror
 INC := -I. -I../include
 SRC := brightness.c ../cpu/topology.c ../hw/hw_backend.c ../hw/hw_log.c
-HDR := brightness.h ../include/bridges/bridges.h ../include/bridges/hw_backend.h
+HDR := brightness.h ../include/bridges/bridges.h ../include/bridges/hw_backend.h ../include/bridges/quiesce.h
 
 all: build/android/brightctl
 build/android/brightctl: brightctl.c $(SRC) $(HDR)

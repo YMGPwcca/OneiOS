@@ -648,6 +648,8 @@ static void test_bridge_device(const char *tmp)
   br_bridge_config config = { .haptic = haptic, .hci_factory = radio_factory, .bt_address_path = address_path };
   xh_virtio *dev = br_bridge_create(0, 40, &config);
   CHECK(dev != NULL);
+  uint64_t blocked = 0;
+  CHECK(br_bridge_quiesce_close(dev, &blocked) == -ENOTSUP && !blocked);
   guest g;
   guest_up(&g, dev, 2, 0);
   CHECK(r32(&g, 0x008) == OB_VIRTIO_DEVICE_ID && r32(&g, 0x100) == OB_PROTO_VERSION);
@@ -917,9 +919,64 @@ static void test_bridge_battery(const char *tmp)
   memcpy(&state, rx[2] + 8, sizeof state);
   CHECK((state.flags & (OB_BATTERY_PLUGGED | OB_BATTERY_CHARGING)) == (OB_BATTERY_PLUGGED | OB_BATTERY_CHARGING) && state.current_ma == 500);
 
-  // A reset stops the updates: the guest is gone, nothing queues for it.
+  // The actual battery worker continues reading while the bridge is
+  // closed. Wait for a host-only report; the posted RX buffer is untouched.
+  uint64_t ticket = 0, second = 0;
+  int rc = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && rc == -EAGAIN; i++) {
+    rc = br_bridge_quiesce_close(dev, &ticket);
+    if (rc == -EAGAIN) usleep(1000);
+  }
+  CHECK(rc == 0 && ticket);
+  // Contention with telemetry is retryable, not a valid receipt.
+  rc = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && rc == -EAGAIN; i++) { rc = br_bridge_quiesce_resume(dev, ticket); if (rc == -EAGAIN) usleep(1000); }
+  CHECK(rc == -EBUSY);
+  rc = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && rc == -EAGAIN; i++) { rc = br_bridge_quiesce_poll(dev, ticket+1, NULL); if (rc == -EAGAIN) usleep(1000); }
+  CHECK(rc == -ESTALE);
+  // Publish the fixture sample atomically; do not let the actual reader
+  // observe a temporarily empty regular file during truncate/write.
+  char staged[520], capacity[520];
+  snprintf(staged, sizeof staged, "%s/capacity.next", dir);
+  snprintf(capacity, sizeof capacity, "%s/capacity", dir);
+  write_node(dir, "capacity.next", "43\n");
+  CHECK(rename(staged, capacity) == 0);
+  unsigned mask = 0;
+  for (unsigned i = 0; i < 2000 && !(mask & 2u); i++) {
+    rc = br_bridge_quiesce_poll(dev, ticket, &mask);
+    if (rc && rc != -EAGAIN) break;
+    if (!(mask & 2u)) usleep(1000);
+  }
+  CHECK(rc == 0 && (mask & 2u));
+  CHECK(reap(&g, OB_QUEUE_RX) == -1);
+  rc = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && rc == -EAGAIN; i++) {
+    rc = br_bridge_quiesce_resume(dev, ticket);
+    if (rc == -EAGAIN) usleep(1000);
+  }
+  CHECK(rc == 0);
+  CHECK(reap(&g, OB_QUEUE_RX) == 8 + (int)sizeof state);
+  memcpy(&state, rx[3] + 8, sizeof state);
+  CHECK(state.percent == 43);
+  rc = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && rc == -EAGAIN; i++) { rc = br_bridge_quiesce_poll(dev, ticket, NULL); if (rc == -EAGAIN) usleep(1000); }
+  CHECK(rc == -ESTALE);
+  rc = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && rc == -EAGAIN; i++) {
+    rc = br_bridge_quiesce_close(dev, &second);
+    if (rc == -EAGAIN) usleep(1000);
+  }
+  CHECK(rc == 0 && second > ticket);
+  // A reset stops the updates and invalidates the second park ticket.
   w32(&g, 0x70, 0);
-  write_node(dir, "capacity", "43\n");
+  rc = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && rc == -EAGAIN; i++) { rc = br_bridge_quiesce_poll(dev, second, NULL); if (rc == -EAGAIN) usleep(1000); }
+  CHECK(rc == -ESTALE);
+  rc = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && rc == -EAGAIN; i++) { rc = br_bridge_quiesce_resume(dev, second); if (rc == -EAGAIN) usleep(1000); }
+  CHECK(rc == -ESTALE);
+  write_node(dir, "capacity", "44\n");
   usleep(60000);
   CHECK(reap(&g, OB_QUEUE_RX) == -1);
   br_battery_close(battery);
@@ -976,11 +1033,53 @@ static void test_bridge_brightness(const char *tmp)
   send_message(&g, OB_CH_BRIGHTNESS, OB_BRIGHT_POWER, &power, sizeof power);
   usleep(100000);
   CHECK(br_bright_current(bright) == 255);
+  // Verify the real nested brightness ticket is part of the bridge receipt.
+  uint64_t ticket = 0;
+  int rc = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && rc == -EAGAIN; i++) {
+    rc = br_bridge_quiesce_close(dev, &ticket);
+    if (rc == -EAGAIN) usleep(1000);
+  }
+  CHECK(rc == 0 && ticket);
+  CHECK(br_bridge_quiesce_poll(dev, ticket, NULL) == 0);
+  CHECK(br_bridge_quiesce_resume(dev, ticket) == 0);
+  rc = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && rc == -EAGAIN; i++) {
+    rc = br_bridge_quiesce_close(dev, &ticket);
+    if (rc == -EAGAIN) usleep(1000);
+  }
+  CHECK(rc == 0);
+  CHECK(br_bridge_quiesce_poll(dev, ticket, NULL) == 0);
+  br_bright_set(bright, 0, false, 0);
+  CHECK(br_bridge_quiesce_poll(dev, ticket, NULL) == -ESTALE);
+  CHECK(br_bridge_quiesce_resume(dev, ticket) == -ESTALE && br_bright_current(bright) == 255);
   br_bright_close(bright);
   f = fopen(path, "r");
   unsigned back = 0;
   CHECK(f && fscanf(f, "%u", &back) == 1 && back == 100);
   if (f) fclose(f);
+}
+
+// The separate explicit return path must not be mistaken for telemetry.
+// It invalidates the receipt before sending the ordinary shutdown ask.
+static void test_bridge_quiesce_control(void)
+{
+  br_bridge_config config = {0};
+  xh_virtio *dev = br_bridge_create(0, 44, &config);
+  CHECK(dev != NULL);
+  guest g;
+  guest_up(&g, dev, 2, 0);
+  uint8_t rx[OB_MAX_MESSAGE] = {0};
+  post1(&g, OB_QUEUE_RX, rx, sizeof rx, true);
+  uint64_t t = 0;
+  CHECK(br_bridge_quiesce_close(dev, &t) == 0 && t);
+  CHECK(br_bridge_quiesce_poll(dev, t, NULL) == 0);
+  CHECK(br_bridge_request_shutdown());
+  CHECK(reap(&g, OB_QUEUE_RX) == (int)sizeof(struct ob_header));
+  struct ob_header header;
+  memcpy(&header, rx, sizeof header);
+  CHECK(header.channel == OB_CH_CONTROL && header.type == OB_CTL_SHUTDOWN);
+  CHECK(br_bridge_quiesce_poll(dev, t, NULL) == -ESTALE && br_bridge_quiesce_resume(dev, t) == -ESTALE);
 }
 
 static rx_record wire;
@@ -1211,6 +1310,7 @@ int main(void)
   test_bridge_native_impacts();
   test_bridge_brightness(tmp);
   test_bridge_battery(tmp);
+  test_bridge_quiesce_control();
   test_net_device();
   test_snd_device();
   char cmd[300];

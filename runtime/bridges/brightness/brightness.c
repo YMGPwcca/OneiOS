@@ -2,6 +2,7 @@
 // The brightness bridge (brightness.h, README.md).
 #define _GNU_SOURCE
 #include "brightness.h"
+#include "bridges/quiesce.h"
 #include "bridges/bridges.h"
 #include "bridges/hw_backend.h"
 #include <dirent.h>
@@ -118,6 +119,9 @@ struct br_bright {
   pthread_mutex_t lock;
   pthread_cond_t wake;
   bool stop, pending, linear;
+  brq_gate quiesce;
+  bool panel_busy, als_busy;
+  bool write_failed; // atomic: writes happen outside lock
   uint32_t from, target, fade_ms;         // level scale
   uint32_t level;                         // where the fade is now
   uint64_t started_ms;
@@ -168,9 +172,12 @@ static int write_text(const char *path, const char *text)
 {
   int fd = open(path, O_WRONLY | O_CLOEXEC);
   if (fd < 0) return -1;
-  ssize_t n = write(fd, text, strlen(text));
+  size_t length = strlen(text);
+  ssize_t n = write(fd, text, length);
+  int saved = errno;
   close(fd);
-  return n < 0 ? -1 : 0;
+  if (n != (ssize_t)length) { errno = n < 0 ? saved : EIO; return -1; }
+  return 0;
 }
 
 void (*br_bright_trace)(const char *what, const char *value);
@@ -182,6 +189,7 @@ static void panel_write(br_bright *b, uint32_t value)
   if (value == __atomic_load_n(&b->written, __ATOMIC_RELAXED)) return;
   if (br_bright_trace) { char plain[16]; snprintf(plain, sizeof plain, "%u", value); br_bright_trace("panel", plain); }
   if (pwrite(b->fd, text, (size_t)n, 0) == n) __atomic_store_n(&b->written, value, __ATOMIC_RELAXED);
+  else __atomic_store_n(&b->write_failed, true, __ATOMIC_RELEASE);
 }
 
 // The touch ICs: every <dir>/tsp*/enabled whose input/name is sec_touchscreen. Not the pen (sec_e-pen), not the
@@ -222,8 +230,11 @@ static void touch_power(br_bright *b, bool on)
       snprintf(text, sizeof text, "%u,%u", on ? 2u : 1u, event);
       if (br_bright_trace) br_bright_trace("touch", text);
       snprintf(text, sizeof text, "%u,%u\n", on ? 2u : 1u, event);
-      if (write_text(b->touch[i], text) && b->touch_failures++ < 3)
-        br_log(0, "brightness: touch: %s <- %c,%u: %s", b->touch[i], on ? '2' : '1', event, strerror(errno));
+      if (write_text(b->touch[i], text)) {
+        __atomic_store_n(&b->write_failed, true, __ATOMIC_RELEASE);
+        if (b->touch_failures++ < 3)
+          br_log(0, "brightness: touch: %s <- %c,%u: %s", b->touch[i], on ? '2' : '1', event, strerror(errno));
+      }
     }
   }
   b->touch_on = on;
@@ -281,6 +292,7 @@ static void *panel_worker(void *arg)
       value = br_bright_map(b->level, b->linear, b->info.floor, b->info.ceiling);
       more = b->pending;
     }
+    b->panel_busy = true; // includes the final write after pending becomes false
     pthread_mutex_unlock(&b->lock);
     // The touch IC follows iOS's display power (br_bright_display), never the backlight's level: asleep only when
     // iOS turns its display off, woken at every display on and at every power-key press (br_bright_key). Off: the
@@ -290,6 +302,7 @@ static void *panel_worker(void *arg)
     if (touch == TOUCH_WAKE) touch_power(b, true);
     if (more) usleep(STEP_MS * 1000u);
     pthread_mutex_lock(&b->lock);
+    b->panel_busy = false;
   }
   pthread_mutex_unlock(&b->lock);
   return NULL;
@@ -320,7 +333,10 @@ static int als_find(const char *dir, const char *name, char *node, size_t size, 
 
 static void als_enable(br_bright *b)
 {
-  if (b->als_enable[0] && write_text(b->als_enable, "1\n") == 0) b->als_enabled_here = true;
+  if (b->als_enable[0]) {
+    if (write_text(b->als_enable, "1\n") == 0) b->als_enabled_here = true;
+    else __atomic_store_n(&b->write_failed, true, __ATOMIC_RELEASE);
+  }
 }
 
 static void *als_worker(void *arg)
@@ -358,7 +374,21 @@ static void *als_worker(void *arg)
       break;
     }
     // The camera HAL turns the same sensor on and off (its flicker detection): turn it on again.
-    if (now - heard_at > ALS_STALE_MS && now - enabled_at > ALS_STALE_MS) { als_enable(b); enabled_at = now; }
+    if (now - heard_at > ALS_STALE_MS && now - enabled_at > ALS_STALE_MS) {
+      // ALS reports may continue while parked, but its periodic sysfs
+      // re-enable is a separate write producer. Defer it until reopened.
+      pthread_mutex_lock(&b->lock);
+      bool attempt = !b->stop && !b->quiesce.closed;
+      if (attempt) b->als_busy = true;
+      pthread_mutex_unlock(&b->lock);
+      if (attempt) {
+        als_enable(b);
+        enabled_at = now;
+        pthread_mutex_lock(&b->lock);
+        b->als_busy = false;
+        pthread_mutex_unlock(&b->lock);
+      }
+    }
   }
   return NULL;
 }
@@ -479,6 +509,7 @@ void br_bright_set(br_bright *b, uint32_t level, bool linear, uint32_t fade_ms)
   if (level > BR_BRIGHT_FULL) level = BR_BRIGHT_FULL;
   if (fade_ms > 10000) fade_ms = 10000;
   pthread_mutex_lock(&b->lock);
+  if (brq_late(&b->quiesce)) { pthread_mutex_unlock(&b->lock); return; }
   b->from = b->level;
   b->target = level;
   b->linear = linear;
@@ -493,6 +524,7 @@ void br_bright_display(br_bright *b, bool on, const char *why)
 {
   if (!b) return;
   pthread_mutex_lock(&b->lock);
+  if (brq_late(&b->quiesce)) { pthread_mutex_unlock(&b->lock); return; }
   bool was = b->display_on;
   b->display_on = on;
   if (!on && was) {
@@ -520,6 +552,7 @@ void br_bright_key(br_bright *b)
 {
   if (!b || !b->info.touch_nodes) return;
   pthread_mutex_lock(&b->lock);
+  if (brq_late(&b->quiesce)) { pthread_mutex_unlock(&b->lock); return; }
   b->touch_request = TOUCH_WAKE;            // iOS turns the display on or off next; an off sleeps it again
   pthread_cond_signal(&b->wake);
   pthread_mutex_unlock(&b->lock);
@@ -538,10 +571,51 @@ void br_bright_listen(br_bright *b, br_als_fn fn, void *ctx)
   pthread_mutex_unlock(&b->lock);
 }
 
+// Control worker only. The caller pins b for the entire lifecycle.
+// No physical panel/IC acknowledgement is inferred from syscall return.
+static int bright_gate_lock(br_bright *b)
+{
+  if (!b) return -EINVAL;
+  if (!b->info.panel) return -ENOTSUP;
+  int r = pthread_mutex_trylock(&b->lock);
+  if (r) return r == EBUSY ? -EAGAIN : -r;
+  if (b->stop || __atomic_load_n(&b->write_failed, __ATOMIC_ACQUIRE)) b->quiesce.fault = true;
+  return 0;
+}
+static bool bright_busy(const br_bright *b)
+{
+  return b->pending || b->touch_request || b->panel_busy || b->als_busy;
+}
+int br_bright_quiesce_close(br_bright *b, uint64_t *ticket)
+{
+  int r = bright_gate_lock(b);
+  if (r) return r;
+  r = brq_close(&b->quiesce, bright_busy(b), ticket);
+  pthread_mutex_unlock(&b->lock);
+  return r;
+}
+int br_bright_quiesce_poll(br_bright *b, uint64_t ticket)
+{
+  int r = bright_gate_lock(b);
+  if (r) return r;
+  r = brq_poll(&b->quiesce, ticket, bright_busy(b));
+  pthread_mutex_unlock(&b->lock);
+  return r;
+}
+int br_bright_quiesce_resume(br_bright *b, uint64_t ticket)
+{
+  int r = bright_gate_lock(b);
+  if (r) return r;
+  r = brq_resume(&b->quiesce, ticket, bright_busy(b));
+  pthread_mutex_unlock(&b->lock);
+  return r;
+}
+
 void br_bright_close(br_bright *b)
 {
   if (!b) return;
   pthread_mutex_lock(&b->lock);
+  b->quiesce.fault = true;
   b->stop = true;
   pthread_cond_signal(&b->wake);
   pthread_mutex_unlock(&b->lock);

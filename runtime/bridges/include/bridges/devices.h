@@ -26,6 +26,15 @@ typedef struct {
 xh_virtio *br_bridge_create(uint64_t base, unsigned spi, const br_bridge_config *config);
 // Sends the guest the graceful-shutdown ask (OB_CTL_SHUTDOWN) on the one bridge of this session. false: no bridge.
 bool br_bridge_request_shutdown(void);
+// Offline-capable provider for the report/control bridge, not audio,
+// camera, encoder, network, HCI or haptics. Requires guest/input parked
+// and pinned session/backend lifetime. While closed, ALS/battery/thermal
+// reports are coalesced in three host-only slots (mask bits 0/1/2).
+// Monitor/cap callbacks are not stopped. Explicit owner resumes only
+// after coordinator success; no automatic thaw, no physical idle proof.
+int br_bridge_quiesce_close(xh_virtio *dev, uint64_t *ticket);
+int br_bridge_quiesce_poll(xh_virtio *dev, uint64_t ticket, unsigned *deferred_mask);
+int br_bridge_quiesce_resume(xh_virtio *dev, uint64_t ticket);
 
 // "droidvm,net": virtio-net for en0 (VERSION_1 + MAC, 12-byte header, no offloads).
 // `net_open` makes the back end with the device's receive function (br_net_open_tap on the phone).

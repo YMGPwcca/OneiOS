@@ -41,9 +41,9 @@ $(H)/oneios-camera: helper.c $(HELPER) $(HDR)
 $(H)/camctl: camctl.c $(HELPER) link.c ../cpu/topology.c $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 $(SAN) $(WARN) $(INC) camctl.c $(HELPER) link.c ../cpu/topology.c -lpthread -lm -o $@
-$(H)/test_camera: tests/test_camera.c $(HELPER) $(LINK) $(XNUHOST)/src/virtio.c $(HDR)
+$(H)/test_camera: tests/test_camera.c $(HELPER) $(LINK) $(XNUHOST)/src/virtio.c $(XNUHOST)/src/quiesce_board.c $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 $(SAN) $(WARN) $(INC) tests/test_camera.c $(HELPER) link.c virtio_camera.c $(XNUHOST)/src/virtio.c -lpthread -lm -o $@
+	$(CC) -std=gnu11 $(SAN) $(WARN) $(INC) tests/test_camera.c $(HELPER) link.c virtio_camera.c $(XNUHOST)/src/virtio.c $(XNUHOST)/src/quiesce_board.c -lpthread -lm -o $@
 # detect_leaks=0: the device lives as long as xnuhost (the transport has no destroy).
 test: $(H)/test_camera $(H)/oneios-camera $(H)/camctl
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_camera $(H)/oneios-camera

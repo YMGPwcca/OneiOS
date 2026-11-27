@@ -47,9 +47,14 @@ $(H)/bridgectl: tools/bridgectl.c $(CORE:%=%.c) $(HDR)
 $(A)/wifictl: tools/wifictl.c $(CORE:%=$(A)/%.o) devices/virtio_net.c
 	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) $(INC) -static tools/wifictl.c $(CORE:%=$(A)/%.o) -lm -o $@
 
-$(H)/test_bridges: tests/test_bridges.c $(CORE:%=%.c) $(DEVICES:%=%.c) $(XNUHOST)/src/virtio.c $(HDR)
+$(H)/test_bridges: tests/test_bridges.c $(CORE:%=%.c) $(DEVICES:%=%.c) $(XNUHOST)/src/virtio.c $(XNUHOST)/src/quiesce_board.c $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_bridges.c $(CORE:%=%.c) $(DEVICES:%=%.c) $(XNUHOST)/src/virtio.c -lpthread -o $@
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_bridges.c $(CORE:%=%.c) $(DEVICES:%=%.c) $(XNUHOST)/src/virtio.c $(XNUHOST)/src/quiesce_board.c -lpthread -o $@
+
+# Ticket primitive and bounded latest-value telemetry slots.
+$(H)/test_quiesce_gate: tests/test_quiesce_gate.c include/bridges/quiesce.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_quiesce_gate.c -o $@
 
 # The backend layer (hw/): the settings, the choice, its log lines.
 $(H)/test_hw_backend: hw/test_hw_backend.c hw/hw_backend.c hw/hw_log.c cpu/topology.c $(HDR)
@@ -93,7 +98,8 @@ test-binder: $(H)/test_hidl_binder $(H)/test_aidl_binder $(H)/test_hal_binder
 	mkdir -p $(H)/binderfs; \
 	unshare -Urm sh -c 'mount -t binder binder "$$1" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_HWBINDER="$$1/hwbinder" "$$2" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_BINDER="$$1/binder" "$$3" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_BINDER="$$1/binder" "$$4"' sh $(H)/binderfs $(H)/test_hidl_binder $(H)/test_aidl_binder $(H)/test_hal_binder
 
-test: $(H)/test_bridges $(H)/test_wifi $(H)/test_audio_helper $(H)/test_hw_backend test-binder
+test: $(H)/test_quiesce_gate $(H)/test_bridges $(H)/test_wifi $(H)/test_audio_helper $(H)/test_hw_backend test-binder
+	$(H)/test_quiesce_gate
 	$(H)/test_hw_backend
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_bridges   # the devices live as long as xnuhost: the transport has no destroy
 	$(H)/test_wifi
