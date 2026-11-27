@@ -1939,3 +1939,39 @@ inert shell functions; operator local validation pending. No live
 smoke or reboot in this batch; physical layer removal and temperature
 benefit not yet measured. Integrate verification into a future
 admitted session rather than repeat standalone diagnostic smoke.
+
+### 2026-11-28 — bootanimation regression and stock thermal source batch
+
+Operator local receipt for OneiOS 57ba9b4 / OneOS 95f0efa:
+shell syntax PASS, boot animation 5/5, performance profile 5/5,
+guarded full 34/34, BOOTANIM_FIX_OFFLINE=PASS. No new physical
+layer or thermal-performance observation.
+
+OneOS 497d4cc implements a boot-pinned native raw source using
+the existing v1 manifest and all required sensors, with real
+stock-controller sample binding. OneiOS adds a typed native
+HAL adapter over the existing strict v3 decoder/reader. HAL
+conversion preserves identity, sequence and conservative scan
+start timestamp; partial/expired data yields no sample, never
+severity zero. The synchronous native HAL read is for a
+separately supervised process, not the raw control thread.
+The direct read-to-controller fixture does not reject hot
+readings (104.8 C exercises quiescence), and rejects mismatched
+zones, malformed data and stale boot. Mock group/GPU providers
+are explicit; real cgroup primitives are separately fixture-tested.
+The native source/adapter compile for Android in the local batch,
+but are not installed into a live launcher or the runtime package.
+
+Single operator CI entry: bash scripts/phone/sm8850-stock-thermal-local-ci.sh.
+Includes exact gitlink check, source/controller/owned-group fixtures,
+HAL tests and cross-compiles, admission/bootanim regressions,
+observer self-test and one existing full local CI/package run.
+New tests not yet executed on operator WSL. No GitHub Actions.
+
+Remaining production integration: independent reader scheduling
+and supervision, trusted root creator/membership including all
+helper descendants, actual runtime park/hold/resume wiring and
+unsupported active transports. The existing board contract rejects
+camera, encoder, network and active audio capture; no silent
+profile change or fabricated ACK. Full-run remains retired.
+No new physical test or recovery authorization in this batch.

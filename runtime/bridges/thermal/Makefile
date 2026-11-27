@@ -25,3 +25,17 @@ test: build/host/test_thermal build/host/thermalctl
 clean:
 	rm -rf build
 .PHONY: all test clean
+
+# Explicit cross-repository stock thermal integration tests. Ordinary
+# thermalctl and standalone bridge builds do not acquire an app dependency.
+ONEOS_NATIVE := ../../../app/switcher/native
+STOCK_HDR := stock_hal.h $(ONEOS_NATIVE)/sm8850_thermal_controller.h $(ONEOS_NATIVE)/sm8850_owned_groups.h
+build/host/test_stock_hal: test_stock_hal.c stock_hal.c $(SRC) $(HDR) $(STOCK_HDR)
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -I$(ONEOS_NATIVE) -fsanitize=address,undefined test_stock_hal.c stock_hal.c $(SRC) -lpthread -o $@
+build/android/stock_hal.o: stock_hal.c $(HDR) $(STOCK_HDR)
+	@mkdir -p $(dir $@)
+	$(ANDROID_CC) -std=gnu11 -O2 -g $(WARN) $(INC) -I$(ONEOS_NATIVE) -c stock_hal.c -o $@
+stock-test: build/host/test_stock_hal build/android/stock_hal.o
+	build/host/test_stock_hal
+.PHONY: stock-test
