@@ -954,3 +954,54 @@ whole-session freeze/thaw and independent actuator qualification remain
 separate. Frequency provider remains BLOCKED_NO_OWNED_READBACK. No
 OneOS change, live admission, staging, rearm, thermal policy, kernel,
 recovery or frequency write change.
+
+### G25.1B1 operator receipt / G25.1B2 display-helper identity
+
+Operator WSL G25.1B1 OneiOS 6b60a1871ff9e811b0bfd1999f5a8be1df178974:
+717 board/console checks, 19,858 XNUHost native checks, zero failed;
+Android ARM64 link and eleven board/console symbols PASS.
+SHA256 bb6b726ce643ac7e4bfef58586adb2b11306973aaf6cf2f796d101bc473a7c1c.
+Evidence /tmp/oneios-g251b1.UDOV3D, DEVICE_ACCESS=NONE.
+Actual udmabuf import still skipped.
+
+G25.1B2 adds fail-closed identity binding on the real SHM helper
+connection. A trusted launcher must supply the intended distinct
+helper's already-pinned pidfd and expected UID/GID; match SO_PEERCRED
+and the actual socket SO_PEERPIDFD with the supplied live pidfd
+using read-only /proc/self/fdinfo and the same PID namespace.
+No numeric-PID reopen fallback. The pin is process-lifetime, and
+new helper connections are refused after binding, even between
+cycles. Previous replacement history cannot qualify. Enable
+SO_PASSCRED before listen, verify SCM_CREDENTIALS on every barrier
+record, reject short/truncated/ancillary-FD/incorrect-sender packets,
+close any delivered ancillary FDs. Recheck process/socket lifetime
+before and after reception and before each barrier operation; the
+board-bound guard also checks the bound identity. Invalid identity
+or an unbound helper cannot produce a valid quiescence receipt.
+Normal non-quiescing rendering stays compatible; an unsupported
+SO_PEERPIDFD/credential interface blocks the new control path.
+This is not a security boundary against privileged root, a malicious
+trusted helper, exec/image changes, or a full session membership proof.
+
+Standalone GCC and Clang ASan/UBSan on Linux: 199 parent checks,
+zero failed; real fork, AF_UNIX accept, pidfd_open and SO_PEERPIDFD,
+queued pre-accept packet, mismatch UID/GID/pidfd, same-socket
+impostor, truncated SCM_RIGHTS with FD-count check, short/long packet,
+disconnect, and exact helper death while a descendant still holds
+the socket. Child assertions and relevant exit statuses checked.
+LSan disabled for process fixtures. Three standalone source/test
+blobs matched the tested originals. Real display integration fixture
+updated to use a distinct helper process, check missing/wrong bind,
+post-bind replacement refusal, real helper parser boundary, wrong
+ticket and right ticket from wrong sender. The integrated display/
+board tests and Android link are pending WSL; standalone test does
+not prove actual Android process identity or physical panel idle.
+Requires kernel SO_PEERPIDFD support for the new identity tests.
+
+No production launcher passes the helper pin yet; no live caller.
+Remaining: vCPU/task/reset and bridge/input producer lifecycle,
+complete session membership, repeated console ticket ownership,
+production independent owner loop and freeze/thaw integration.
+Frequency provider remains BLOCKED_NO_OWNED_READBACK.
+No OneOS change, live admission, staging, rearm, thermal policy,
+kernel, recovery or frequency write change.

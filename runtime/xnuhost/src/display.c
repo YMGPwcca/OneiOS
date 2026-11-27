@@ -12,6 +12,7 @@
 #include "xnuhost.h"
 #include "xnuhost/frame_trace.h"
 #include "xnuhost/display_quiesce.h"
+#include "quiesce_peer.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -55,6 +56,9 @@ static bool helper_ready, helper_ever_attached, helper_replaced, helper_panel_se
 static bool display_closed, display_q_sent, display_q_acked, display_r_sent;
 static int display_fault;
 static uint64_t display_ticket;
+// Once pinned, this connection and its pidfd belong to the process lifetime.
+// No rebind or replacement, even between quiescence cycles.
+static struct xhqp_peer helper_identity = { .pidfd = -1 };
 static void notify_flush(unsigned x, unsigned y, unsigned w, unsigned h,
                          const struct xh_frame_scanout *scanout);
 
@@ -78,8 +82,8 @@ static void helper_attach(int fd)
   cm->cmsg_len = CMSG_LEN(sizeof(int));
   memcpy(CMSG_DATA(cm), &shm_fd, sizeof(int));
   pthread_mutex_lock(&client_lock);
-  // Do not hand the shadow mapping to a new helper during a barrier.
-  if (display_closed || sendmsg(fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT) != (ssize_t)sizeof hello) {
+  // Never hand the shadow mapping to a replacement after identity binding.
+  if (display_closed || helper_identity.pidfd >= 0 || sendmsg(fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT) != (ssize_t)sizeof hello) {
     pthread_mutex_unlock(&client_lock);
     close(fd);
     return;
@@ -128,6 +132,12 @@ static int shm_listen(const xh_config *c)
   strcpy(addr.sun_path, socket_path);
   unlink(socket_path);
   listen_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+  // Enable before listen so even an early panel report carries credentials.
+  // Legacy rendering remains usable if the kernel lacks this option;
+  // identity binding will then fail closed.
+  int passcred = 1;
+  if (listen_fd >= 0 && setsockopt(listen_fd, SOL_SOCKET, SO_PASSCRED, &passcred, sizeof passcred))
+    LOGI("display: credentialed barrier unavailable (%s)", strerror(errno));
   if (listen_fd < 0 || bind(listen_fd, (struct sockaddr *)&addr, sizeof addr) || listen(listen_fd, 2)) {
     LOGE("display: %s: %s", socket_path, strerror(errno));
     return -1;
@@ -403,13 +413,39 @@ static int display_gate_lock(void)
   int r = pthread_mutex_trylock(&client_lock);
   return r == EBUSY ? -EAGAIN : -r;
 }
+static int helper_identity_locked(void)
+{
+  if (display_fault) return display_fault;
+  if (helper_identity.pidfd < 0) return -EPERM;
+  if (client_fd < 0 || !helper_ready || helper_replaced) return display_fault = -ENOTCONN;
+  int r = xhqp_check(&helper_identity, client_fd);
+  if (r) display_fault = r;
+  return r;
+}
+int xh_display_quiesce_bind_helper(int expected_pidfd, uid_t uid, gid_t gid)
+{
+  int r = display_gate_lock();
+  if (r) return r;
+  if (helper_identity.pidfd >= 0 || display_closed) r = -EBUSY;
+  else if (display_fault) r = display_fault;
+  else if (helper_replaced) r = -ESTALE;
+  else if (client_fd < 0 || !helper_ready) r = -ENOTCONN;
+  else r = xhqp_bind(&helper_identity, client_fd, expected_pidfd, uid, gid);
+  pthread_mutex_unlock(&client_lock);
+  return r;
+}
+int xh_display_quiesce_verify_helper(void)
+{
+  int r = display_gate_lock();
+  if (r) return r;
+  r = helper_identity_locked();
+  pthread_mutex_unlock(&client_lock);
+  return r;
+}
 static int display_ticket_locked(uint64_t t)
 {
   if (!t || !display_closed || t != display_ticket) return -ESTALE;
-  if (display_fault) return display_fault;
-  if (client_fd < 0 || !helper_ready || helper_replaced)
-    return display_fault = -ENOTCONN;
-  return 0;
+  return helper_identity_locked();
 }
 static int display_barrier_send(char op, uint64_t t)
 {
@@ -427,10 +463,9 @@ static int display_barrier_recv(char op, uint64_t t)
 {
   for (unsigned i = 0; i < 2; i++) {
     struct xh_display_barrier p;
-    ssize_t n = recv(client_fd, &p, sizeof p, MSG_DONTWAIT | MSG_TRUNC);
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return -EAGAIN;
-    if (n == 0) return display_fault = -ENOTCONN;
-    if (n != (ssize_t)sizeof p) return display_fault = -EPROTO;
+    int r = xhqp_recv(&helper_identity, client_fd, &p, sizeof p);
+    if (r == -EAGAIN) return r;
+    if (r) return display_fault = r;
     if (!helper_panel_seen && !memcmp(p.magic, "XHDP", 4)) {
       helper_panel_seen = true;
       continue;
@@ -446,14 +481,13 @@ int xh_display_quiesce_close(uint64_t *ticket)
   int r = display_gate_lock();
   if (r) return r;
   if (display_closed) r = -EBUSY;
-  else if (client_fd < 0 || !helper_ready) r = -ENOTCONN;
-  else if (helper_replaced) r = -ESTALE;
-  else if (display_ticket == UINT64_MAX) r = -EOVERFLOW;
-  else {
-    display_closed = true;
-    display_q_sent = display_q_acked = display_r_sent = false;
-    display_fault = 0;
-    *ticket = ++display_ticket;
+  else if (!(r = helper_identity_locked())) {
+    if (display_ticket == UINT64_MAX) r = -EOVERFLOW;
+    else {
+      display_closed = true;
+      display_q_sent = display_q_acked = display_r_sent = false;
+      *ticket = ++display_ticket;
+    }
   }
   pthread_mutex_unlock(&client_lock);
   return r;

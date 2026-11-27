@@ -1,10 +1,12 @@
 #include "quiesce_board.h"
+#include "xnuhost.h"
 #include <errno.h>
 
 static int membership(const struct xhqb_binding *b)
 {
   int r = xhqb_match(&b->board);
-  return r ? r : xhqb_console_poll(b->console_ticket);
+  if (!r) r = xhqb_console_poll(b->console_ticket);
+  return r ? r : xh_display_quiesce_verify_helper();
 }
 static int guard_board(void *ctx, uint64_t owner, uint64_t cycle, enum xhq_phase phase)
 {

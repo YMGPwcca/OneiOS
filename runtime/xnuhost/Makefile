@@ -17,7 +17,7 @@ ARM64_RUN := $(if $(ARM64_NATIVE),,$(QEMU))
 WARN := -Wall -Wextra -Werror
 INC := -Iinclude -Isrc -Istub -I../loader/include -I../bridges/include -I../bridges/encoder -I../../drivers/bridge -I../../drivers/camera
 CFLAGS ?= -O2 -g
-SRC := main return ready log perf config insn mem discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input virtio_gpu gpu3d display quiesce quiesce_runtime quiesce_supervisor quiesce_board quiesce_board_runtime input input_script pen cpu hostcalls task
+SRC := main return ready log perf config insn mem discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input virtio_gpu gpu3d display quiesce quiesce_runtime quiesce_supervisor quiesce_board quiesce_board_runtime quiesce_peer input input_script pen cpu hostcalls task
 PORTABLE := return ready log perf config insn discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input input input_script pen virtio_gpu gpu3d quiesce_board cpu task
 LOADER_SRC := $(wildcard ../loader/src/*.c)
 HDR := $(wildcard include/xnuhost/*.h src/*.h stub/*.h ../loader/include/xnuloader/*.h)
@@ -133,6 +133,11 @@ $(A)/xnuhost: $(SRC:%=$(A)/%.o) $(A)/kctx.o $(A)/arch.o $(patsubst ../loader/src
 	$(ANDROID_CC) -static -o $@ $^ -lm
 
 # ---- host unit tests ----
+# Exact connected-peer pidfd and per-record credential verification on real sockets.
+$(H)/test_quiesce_peer: tests/test_quiesce_peer.c src/quiesce_peer.c src/quiesce_peer.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_quiesce_peer.c src/quiesce_peer.c -o $@
+
 # Real board registry and console gate plus coordinator with stand-in providers.
 $(H)/test_quiesce_board: tests/test_quiesce_board.c src/quiesce_board.c src/quiesce_board_runtime.c src/quiesce.c src/quiesce_runtime.c $(HDR)
 	@mkdir -p $(H)
@@ -189,9 +194,9 @@ $(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../bridges/hw/hw_b
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DXH_HOST_TEST -fsanitize=address,undefined tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../loader/src/adt.c ../loader/src/boot.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
 # The real display.c (tests of test_xnuhost replace it) against a stand-in helper on the real socket. (config.c asks ramfix.c whether a lock can work: xh_ram_can_lock)
-$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../bridges/hw/hw_backend.c ../display/src/xhd.c ../display/src/xhd.h $(HDR)
+$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/quiesce_peer.c src/config.c src/ramfix.c src/log.c ../bridges/hw/hw_backend.c ../display/src/xhd.c ../display/src/xhd.h $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../bridges/hw/hw_backend.c ../display/src/xhd.c -lpthread -lm -o $@
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/quiesce_peer.c src/config.c src/ramfix.c src/log.c ../bridges/hw/hw_backend.c ../display/src/xhd.c -lpthread -lm -o $@
 # The image set (imageset.c) on stand-in files; ONEIOS_IMAGE_SET=DIR adds a real set's lists and trust caches.
 $(H)/test_imageset: tests/test_imageset.c src/imageset.c $(HDR)
 	@mkdir -p $(H)
@@ -292,7 +297,8 @@ parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
 
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_quiesce_board $(H)/test_quiesce_supervisor $(H)/test_quiesce $(H)/test_kgsl_drain $(H)/test_stub_event $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_task_timing_totals $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
+test: $(H)/test_quiesce_peer $(H)/test_quiesce_board $(H)/test_quiesce_supervisor $(H)/test_quiesce $(H)/test_kgsl_drain $(H)/test_stub_event $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_task_timing_totals $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
+	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_peer
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_board
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_supervisor
 	$(H)/test_quiesce

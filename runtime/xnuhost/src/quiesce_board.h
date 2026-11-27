@@ -39,9 +39,10 @@ int xhqb_console_poll(uint64_t ticket);
  * resume. Do not reopen on a partial receipt, owner loss or fault. */
 int xhqb_console_resume(uint64_t ticket);
 
-/* Binding uses the sealed actual board and an already parked console.
- * Caller must still independently verify helper identity, guest/reset,
- * remaining device/bridge/input producers, lifetime and authorization.
+/* Binding uses the sealed actual board, an already parked console and
+ * the separately bound display-helper pidfd. Caller must still verify
+ * helper launch provenance, guest/reset, other device/bridge/input
+ * producers, complete session lifetime and authorization.
  * No production caller or thaw mechanism is installed. */
 struct xhqb_binding {
   struct xhq_runtime runtime;

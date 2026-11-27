@@ -676,9 +676,16 @@ struct xh_frame_scanout;
 bool  xh_display_trace_enabled(void);
 void  xh_display_flush_scanout(unsigned x, unsigned y, unsigned w, unsigned h,
                                const struct xh_frame_scanout *scanout);
-// SHM helper barrier. Caller must first stop every shadow producer
-// (including GPU and boot-console writers), and independently verify
-// the helper's process identity/lifetime. Close gives a ticket, poll
+// SHM helper identity. A trusted launcher must provide a pidfd for the
+// intended distinct helper (same PID namespace) and its expected UID/GID.
+// The borrowed fd may be closed after binding. No rebind/replacement;
+// pin persists until process exit. Binding can involve procfs/syscalls.
+// Unsupported SO_PEERPIDFD or credentials cannot qualify. No live caller.
+int xh_display_quiesce_bind_helper(int expected_pidfd, uid_t uid, gid_t gid);
+int xh_display_quiesce_verify_helper(void);
+// SHM helper barrier. Caller must first bind the helper and stop every
+// shadow producer (including GPU and boot-console writers).
+// Close gives a ticket, poll
 // waits for userspace buffer-post boundary, resume completes handshake.
 // -EAGAIN means retry under an external BOOTTIME deadline. No physical
 // panel/SurfaceFlinger fence claim. No live caller yet.

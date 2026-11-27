@@ -12,6 +12,8 @@ static unsigned checks;
 struct xh_virtio { unsigned member; };
 static struct xh_virtio devices[32];
 static unsigned maps, closes, polls, resumes, order[8];
+static int helper_error;
+int xh_display_quiesce_verify_helper(void) { return helper_error; }
 static int map_ok(void *ctx) { CHECK(ctx == &maps); maps++; return 0; }
 static int map_fail(void *ctx) { CHECK(ctx == &maps); return -EIO; }
 #define BASE UINT64_C(0x10000)
@@ -83,6 +85,9 @@ static void lifecycle(int late)
   CHECK(xhqb_runtime_init(&q, &b, 17, 1, guard, &maps) == -ESTALE);
   CHECK(xhqb_console_close(&t) == 0 && t != 0);
   CHECK(xhqb_runtime_init(&q, &b, 17, t+1, guard, &maps) == -ESTALE);
+  helper_error = -EPERM;
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, guard, &maps) == -EPERM && !closes);
+  helper_error = 0;
   CHECK(xhqb_runtime_init(&q, &b, 17, t, guard, &maps) == 0 && q.nblocks == 6);
   CHECK(xhq_begin(&q, 17, UINT64_MAX, &cycle) == 0);
   CHECK(drive(&q, cycle) == 0 && q.phase == XHQ_PARKED && q.verified == 255 && closes == 255);
