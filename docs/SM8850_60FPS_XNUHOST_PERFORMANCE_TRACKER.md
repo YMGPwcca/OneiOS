@@ -1597,3 +1597,49 @@ BLOCKED_NO_OWNED_READBACK and incomplete qualified quiescence/
 admission. Keep operator thermal/recovery constraints unchanged.
 No runtime or OneOS changes, device access or GitHub Actions in
 this documentation receipt.
+
+### 2026-11-27 — consolidated performance runtime package receipt
+
+Operator WSL at OneiOS 8d463fad4832afb20d3415474f8881f566da853c:
+PERF_BATCH_OFFLINE=PASS, DEVICE_ACCESS=NONE,
+evidence /tmp/oneios-perf-batch.l9oagL. The initial all-mode
+CI reached packaging after successful host regressions, then
+package.sh rejected the version 0.0.0-perf-8d463fa (second
+hyphen is not permitted by its version regex). The corrected
+suffix 0.0.0-perf.8d463fa passed packaging and the remaining
+archive/checksum/backend/ELF checks without repeating the
+host suite. Mock legacy takeover messages in the CI log are
+not device-launch or current thermal-policy evidence.
+
+Runtime-only archive:
+out/release/oneios-runtime-0.0.0-perf.8d463fa-arm64.tar.zst
+5,817,329 bytes; SHA256
+dac7d7b8ade3ae66cc94f6cd4951f5a66de3b46940be09df6f8df5c6007b9cab.
+Companion tool:
+out/release/oneios-tool-0.0.0-perf.8d463fa-android-arm64
+14,795,432 bytes; SHA256
+bf5f255b2bf668819b9b9d5b680793095677d0fc8cdf2fa526210d8f9aee7aa2.
+Archive checksum and expected executable checks PASS; xnuhost
+and gpuctl passed the no-2D-only-fallback string check.
+Seven dynamic ELF files validated against API 30 NDK stubs,
+nine static files, zero failures. No kernel at out/kernel/current.
+Two unused-field Rust warnings are nonfatal. These are operator
+reported local receipts, not independently retrieved artifact
+bytes, physical GPU validation or FPS measurements.
+
+The cumulative timer, service-order, GPU dispatch/scanout and
+display coalescing batch is offline-validated. Retain this exact
+archive and its source provenance; this documentation-only
+receipt does not change the build commit. Stop speculative
+runtime micro-optimizations until new performance evidence.
+The HakiOS review is complete for this scope; no direct-Metal
+port planned. Physical P3 A/B and P4 stable 60 FPS acceptance
+remain blocked by the retired live-admission policy:
+BLOCKED_NO_OWNED_READBACK plus incomplete independently
+qualified guest quiescence/admission. No staging, rearm,
+thermal-policy change, or live run is authorized by this pass.
+Do not reopen individual peripheral lifecycle milestones or
+repeat the successful offline suite merely to make progress.
+The next operator decision is whether to address the existing
+live-admission blocker in its separate workstream or retain
+this candidate offline. No OneOS change or GitHub Actions.
