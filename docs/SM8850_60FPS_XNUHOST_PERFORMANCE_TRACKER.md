@@ -709,3 +709,28 @@ execution, device-side file creation or control write. Archive is for
 private analysis only; never commit the proprietary binaries. The
 collector is unrun; it does not qualify the provider. No live admission
 change, device staging or thermal-triggered reboot.
+
+
+### G24.7 static analysis result (2026-11-27 ICT)
+
+Received perflock-static.zip, all seven exact firmware ELF images
+verified against manifest. Host readelf/LLVM objdump and APS2 relocation
+inspection identified CPU MAX queue index 9, lower_is_better comparator,
+ordinary lower-wins application, normal MHz -> kHz conversion and
+upward OPP selection. Server supports request timers and release
+infrastructure. Positive acquire handle is asynchronous queue submission,
+not apply ACK. Client perf_sync_request has an active-table diagnostic
+but server gates it on ro.debuggable or vendor.debug.trace.perf.level.
+The earlier empty default binder dump did not establish those values.
+See pinned OneOS `19f8a93118e5713b06aa1d79298c3fa0d807ba35` for binary hashes and exact ELF
+addresses. No vendor binary committed or executed, no phone access/write.
+
+G24.7 static analysis COMPLETE; frequency provider NOT QUALIFIED.
+Do not equate effective cpufreq readback or a returned handle with
+independent request ownership. Read the two stock diagnostic property
+values only; no enabling trace/debug, shared writes, or speculative
+resource calls. If no existing diagnostic is accessible, stop PerfLock
+qualification at that blocker; continue independent supervisor/IO
+development offline without silently replacing the user's adaptive
+frequency-ceiling requirement with duty or utilization. No live
+admission, benchmark, stage/rearm or thermal-triggered reboot.
