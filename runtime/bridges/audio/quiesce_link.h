@@ -87,15 +87,18 @@ static inline int auq_receive(auq_link *q, unsigned kind, bool stale)
   r = auq_live(q);
   return r == -EAGAIN ? auq_fault(q, -EINTR) : r;
 }
-static inline int auq_close(auq_link *q, uint64_t ticket)
+static inline int auq_close_kind(auq_link *q, uint64_t ticket, unsigned kind)
 {
+  if (kind != AU_QUIESCE && kind != AU_QUIESCE_PLAYBACK) return -EINVAL;
   if (q->phase == AUQ_FAULT) return -ESTALE;
   if (q->phase != AUQ_OPEN) return -EBUSY;
   if (!ticket || ticket > UINT32_MAX || ticket <= q->ticket) return -ESTALE;
-  int r = auq_send(q, AU_QUIESCE, (uint32_t)ticket);
+  int r = auq_send(q, kind, (uint32_t)ticket);
   if (!r) { q->ticket = (uint32_t)ticket; q->phase = AUQ_CLOSING; }
   return r;
 }
+static inline int auq_close(auq_link *q, uint64_t ticket)
+{ return auq_close_kind(q, ticket, AU_QUIESCE); }
 static inline int auq_poll(auq_link *q, uint64_t ticket)
 {
   if (ticket != q->ticket || !ticket || (q->phase != AUQ_CLOSING && q->phase != AUQ_PARKED)) return -ESTALE;

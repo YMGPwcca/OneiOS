@@ -1273,7 +1273,11 @@ static void test_snd_idle_quiesce(void)
   uint32_t command[2] = {0x0104, 0}, reply = 0;
   uint64_t t = 0, old = 0;
   CHECK(snd_control(&g, command, sizeof command, &reply, 4) == 0x8000);
-  CHECK(br_snd_quiesce_close(dev, &t) == -EBUSY && !t);
+  // Null output has no asynchronous stream. Keep its logical START.
+  CHECK(br_snd_quiesce_close(dev, &t) == 0 && t);
+  CHECK(br_snd_quiesce_poll(dev, t) == 0 && br_snd_quiesce_resume(dev, t) == 0);
+  CHECK(snd_control(&g, command, sizeof command, &reply, 4) == 0x8000);
+  t=0;
   command[0] = 0x0105;
   CHECK(snd_control(&g, command, sizeof command, &reply, 4) == 0x8000);
   command[0] = 0x0104; command[1] = 1;

@@ -520,6 +520,64 @@ static void test_idle_hold(void)
   CHECK(hold_reply(AU_QUIESCED, 1, 2000) == -1);
   helper_down();
 }
+// A short first period stays in the normal priming ring (less than
+// CHUNK). The active barrier must write it verbatim before closing,
+// even if the ordinary linger would otherwise be 60 seconds.
+static void short_tail(void)
+{
+  struct { struct au_header h; int16_t pcm[146]; } packet = {
+    .h={.kind=AU_PCM,.output=1,.channels=2,.value=73}
+  };
+  for (unsigned i=0;i<146;i++) packet.pcm[i]=1234;
+  CHECK(send(guest_fd,&packet,sizeof packet,MSG_NOSIGNAL)==sizeof packet);
+}
+static void test_active_hold(void)
+{
+  dac_ppm=0; dac_stall_s=0; dac_pull=dac_burst=1600;
+  mmap_policy_rc=AAUDIO_OK; fake_mmap_used=0;
+  fake_requires_prestart_buffer=false;
+  fake_force_no_timestamp=false;
+  unsetenv("ONEIOS_AUDIO_MMAP"); unsetenv("ONEIOS_AUDIO_PERF");
+  for (int mode=0;mode<2;mode++) {
+    fake_hal=mode?HAL_MMAP_EXCLUSIVE:HAL_NO_MMAP;
+    helper_up("60");
+    send_header(AU_START,true,2,48000);
+    short_tail();
+    send_header(AU_QUIESCE_PLAYBACK,false,0,1);
+    CHECK(hold_reply(AU_QUIESCED,1,5000)==1);
+    AAudioStream *first=last_out;
+    CHECK(first && first->closed && !first->server_on && first->nonzero==146);
+    CHECK(first && first->written>=73 && first->read>=73);
+    struct pollfd p={.fd=guest_fd,.events=POLLIN};
+    CHECK(poll(&p,1,100)==0);
+    send_header(AU_RESUME,false,0,1);
+    CHECK(hold_reply(AU_RESUMED,1,2000)==1);
+    CHECK(last_out && last_out!=first && !last_out->closed);
+    // No guest START is sent after resume: the logical output was saved.
+    short_tail();
+    send_header(AU_QUIESCE_PLAYBACK,false,0,2);
+    CHECK(hold_reply(AU_QUIESCED,2,5000)==1);
+    CHECK(last_out && last_out->closed && last_out->nonzero==146);
+    send_header(AU_RESUME,false,0,1);
+    CHECK(hold_reply(AU_RESUMED,1,2000)==-1);
+    helper_down();
+  }
+  fake_hal=HAL_NO_MMAP;
+  fake_force_no_timestamp=true;
+  helper_up("60");
+  send_header(AU_START,true,2,48000);
+  short_tail();
+  send_header(AU_QUIESCE_PLAYBACK,false,0,1);
+  CHECK(hold_reply(AU_QUIESCED,1,5000)==-1); // no extrapolated ACK
+  helper_down();
+  fake_force_no_timestamp=false;
+  helper_up("60");
+  send_header(AU_START,false,1,48000);
+  send_header(AU_START,true,2,48000);
+  send_header(AU_QUIESCE_PLAYBACK,false,0,1);
+  CHECK(hold_reply(AU_QUIESCED,1,2000)==-1); // active capture blocked
+  helper_down();
+}
 int main(int argc, char **argv)
 {
   setvbuf(stderr, NULL, _IOLBF, 0);
@@ -527,6 +585,11 @@ int main(int argc, char **argv)
   setenv("ONEIOS_AUDIO_SYSTEM_SERVER", "0", 1);          // as in a session (the host's /proc is not looked at)
   // The production backend can spawn this fake-HAL executable on fd 3.
   if (argc == 2 && !strcmp(argv[1], "3")) return helper_main(argc, argv);
+  if (argc == 2 && !strcmp(argv[1], "--active-quiescence-only")) {
+    test_active_hold();
+    printf("audio active playback barrier: %d checks, %d failed\n", checks, failures);
+    return failures != 0;
+  }
   if (argc == 2 && !strcmp(argv[1], "--quiescence-only")) {
     test_idle_hold();
     printf("audio idle barrier: %d checks, %d failed\n", checks, failures);
@@ -921,6 +984,7 @@ int main(int argc, char **argv)
   pthread_mutex_unlock(&ring_lock);
 
   test_idle_hold();
+  test_active_hold();
   printf("test_audio_helper: %d checks, %d failed\n", checks, failures);
   return failures != 0;
 }

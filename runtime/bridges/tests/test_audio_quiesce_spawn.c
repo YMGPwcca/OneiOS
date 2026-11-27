@@ -51,6 +51,18 @@ int main(int argc, char **argv)
   CHECK(br_audio_quiesce_close(b, ctx, 3) == 0);
   CHECK(wait_receipt(b, ctx, 3, false) == 0);
   CHECK(wait_receipt(b, ctx, 3, true) == 0);
+  CHECK(b->start(ctx, true, 48000, 2) == 0);
+  int16_t pcm[146];
+  for (unsigned i=0;i<146;i++) pcm[i]=1234;
+  CHECK(b->write(ctx, pcm, 73) == 73);
+  CHECK(br_audio_quiesce_close_playback(b, ctx, 4) == 0);
+  CHECK(wait_receipt(b, ctx, 4, false) == 0);
+  CHECK(wait_receipt(b, ctx, 4, true) == 0);
+  CHECK(b->write(ctx, pcm, 73) == 73); // no synthetic logical START
+  CHECK(br_audio_quiesce_close_playback(b, ctx, 5) == 0);
+  CHECK(wait_receipt(b, ctx, 5, false) == 0);
+  CHECK(wait_receipt(b, ctx, 5, true) == 0);
+  CHECK(b->stop(ctx, true) == 0);
   b->close(ctx);
   int status;
   CHECK(waitpid(-1, &status, 0) > 0 && WIFEXITED(status) && !WEXITSTATUS(status));

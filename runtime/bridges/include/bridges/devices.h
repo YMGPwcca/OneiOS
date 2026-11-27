@@ -64,9 +64,10 @@ int  br_wifi_sim_send(br_net *n, const uint8_t *frame, size_t length);
 // "droidvm,virtio-snd": virtio-snd with one output stream (48 kHz S16 stereo) and one input stream
 // (48 kHz S16 mono), 240-frame periods, as DroidVMVirtioSnd.c asks.
 xh_virtio *br_virtio_snd_create(uint64_t base, unsigned spi, const br_audio_backend *backend, void *backend_ctx);
-// Idle-only: reject active guest directions, joined STOP ambiguity and
-// unknown backend. The exact helper must ACK no streams/workers remain.
-// No forced STOP, PCM replay or physical hardware idle claim. Caller
+// Idle or active playback: reject active capture, STOP/join ambiguity,
+// and unknown backend. Exact helper ACK requires no streams/workers;
+// active playback keeps guest logical START. No forced guest STOP, PCM
+// replay or physical hardware idle claim. Caller
 // pins lifetime, fences vCPUs, enforces deadline, authorizes release.
 int br_snd_quiesce_close(xh_virtio *, uint64_t *ticket);
 int br_snd_quiesce_poll(xh_virtio *, uint64_t ticket);

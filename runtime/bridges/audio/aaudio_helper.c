@@ -77,6 +77,7 @@
 // overflows, slips, silence cut, the ring's fill, the level against its need, the latency.
 #define _GNU_SOURCE
 #include "audio_proto.h"
+#include "playback_drain.h"
 #include <aaudio/AAudio.h>
 #include <dirent.h>
 #include <dlfcn.h>
@@ -193,6 +194,7 @@ typedef struct {
 static dir_state out_dir, in_dir;
 static uint64_t in_sent, in_lost, in_short;
 static atomic_bool quiesce_io_failed; // errors invalidate qualification even if a report is lost
+static atomic_bool playback_cutover, playback_writer_done;
 
 static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (double)t.tv_sec + t.tv_nsec / 1e9; }
 static double since(const struct timespec *t) { return now_s() - ((double)t->tv_sec + t->tv_nsec / 1e9); }
@@ -701,6 +703,9 @@ static void *writer(void *arg)
     unsigned take = 0, length = CHUNK;
     bool play = false, cut = false;
     pthread_mutex_lock(&ring_lock);
+    // Cutover is published under this same lock. Finish the previously
+    // selected write, but do not select/resample another ring chunk.
+    if (atomic_load(&playback_cutover)) { pthread_mutex_unlock(&ring_lock); break; }
     pulls_saw(&pulls, read, now);
     // An MMAP reader (the DSP, or AAudio's endpoint every burst) takes frames all the time: what it takes before
     // the guest's next period comes in is a chunk, whatever the phase. A mixer takes a period at a time (its pulls).
@@ -843,7 +848,7 @@ static void *writer(void *arg)
       resample(chunk, length, from, take);
       for (unsigned done = 0; done < length && atomic_load(&d->run);) {
         aaudio_result_t n = AAudioStream_write(d->stream, chunk + 2 * done, (int32_t)(length - done), 200000000);   // 200 ms
-        if (n < 0) {
+        if (n < 0 || (unsigned)n > length - done) {
           fprintf(stderr, "oneios-audio: speaker write: %s\n", AAudio_convertResultToText(n));
           report(true, EIO);
           struct timespec nap = { 0, 50000000 };
@@ -856,6 +861,7 @@ static void *writer(void *arg)
     }
     if (since(&d->reported) >= 10) { clock_gettime(CLOCK_MONOTONIC, &d->reported); out_report("running"); demote_realtime(); }
   }
+  atomic_store(&playback_writer_done, true);
   return NULL;
 }
 
@@ -978,6 +984,10 @@ static int start_dir(bool output, unsigned rate, unsigned channels, bool prefill
   d->frames = output ? (uint64_t)AAudioStream_getFramesWritten(d->stream) : 0;
   clock_gettime(CLOCK_MONOTONIC, &d->started);
   d->reported = d->started;
+  if (output) {
+    atomic_store(&playback_cutover, false);
+    atomic_store(&playback_writer_done, false);
+  }
   atomic_store(&d->run, true);
   d->thread_on = pthread_create(&d->thread, NULL, output ? writer : reader, NULL) == 0;
   if (!d->thread_on) { stop_dir(output); return EAGAIN; }
@@ -1090,9 +1100,116 @@ static unsigned probe(void)
   return frames;
 }
 
-// A STOP is not a barrier: the speaker may still linger or hold PCM.
-// Do not shorten linger, cut a tail, stop an active direction, or reopen
-// a stream here. The owner must enforce a deadline independently.
+// Active playback uses a distinct FIFO boundary. The normal writer
+// exits after its last selected chunk; only the control thread owns the
+// retained ring and AAudio stream until that stream is closed. No normal
+// overflow, drift slips or silence cutting is used after cutover.
+static uint64_t drain_now(void)
+{
+  struct timespec t;
+  if (clock_gettime(CLOCK_BOOTTIME, &t) || t.tv_sec < 0) return 0;
+  return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
+}
+static int drain_peek(void *ctx, int16_t *pcm, unsigned n)
+{
+  (void)ctx;
+  if (n > ring_count) return -ESTALE;
+  for (unsigned i = 0; i < n; i++) {
+    unsigned at = (ring_head + i) % RING_FRAMES;
+    pcm[2*i] = ring[2*at]; pcm[2*i+1] = ring[2*at+1];
+  }
+  return (int)n;
+}
+static void drain_consume(void *ctx, unsigned n)
+{
+  (void)ctx;
+  ring_head = (ring_head+n) % RING_FRAMES;
+  ring_count -= n;
+  ostat.played += n;
+}
+static int drain_write(void *ctx, const int16_t *pcm, unsigned n)
+{
+  dir_state *d = ctx;
+  aaudio_result_t r = AAudioStream_write(d->stream, pcm, (int32_t)n, 0);
+  if (r < 0 || (unsigned)r > n) return -EIO;
+  d->frames += (uint64_t)r;
+  return (int)r;
+}
+static int64_t drain_written(void *ctx)
+{
+  return AAudioStream_getFramesWritten(((dir_state *)ctx)->stream);
+}
+static int drain_timestamp(void *ctx, int64_t *position, int64_t *stamp, int64_t *now)
+{
+  aaudio_result_t r = AAudioStream_getTimestamp(((dir_state *)ctx)->stream, CLOCK_MONOTONIC, position, stamp);
+  if (r != AAUDIO_OK) return r == AAUDIO_ERROR_INVALID_STATE ? -EAGAIN : -EIO;
+  struct timespec t;
+  if (clock_gettime(CLOCK_MONOTONIC, &t) || t.tv_sec < 0) return -EIO;
+  *now = (int64_t)t.tv_sec * INT64_C(1000000000) + t.tv_nsec;
+  return 0;
+}
+static const aupd_ops drain_ops = { drain_peek, drain_consume, drain_write, drain_written, drain_timestamp };
+typedef struct {
+  uint64_t deadline, requested;
+  unsigned rate, channels;
+  bool selected, initialized, closed, restored;
+  aupd_state drain;
+} active_playback;
+static int begin_playback_hold(active_playback *p)
+{
+  dir_state *d = &out_dir;
+  if (!guest_on || !d->stream || !d->thread_on || !atomic_load(&d->run) || in_dir.stream ||
+      atomic_load(&quiesce_io_failed)) return -ESTALE;
+  unsigned rate = (unsigned)AAudioStream_getSampleRate(d->stream);
+  unsigned channels = d->channels;
+  if (rate != RATE || channels != 2) return -ENOTSUP;
+  uint64_t now = drain_now();
+  if (!now || now > UINT64_MAX-AUPD_MAX_HOLD_NS) return -EIO;
+  *p = (active_playback){ .selected=true, .requested=now, .deadline=now+AUPD_MAX_HOLD_NS, .rate=rate, .channels=channels };
+  pthread_mutex_lock(&ring_lock);
+  atomic_store(&playback_cutover, true);
+  pthread_cond_signal(&ring_more);
+  pthread_mutex_unlock(&ring_lock);
+  return 0;
+}
+static int active_drain_step(active_playback *p)
+{
+  uint64_t now = drain_now();
+  if (!now || now < p->requested || now >= p->deadline) return -ETIMEDOUT;
+  if (atomic_load(&quiesce_io_failed) || in_dir.stream) return -ESTALE;
+  if (p->closed) return 1;
+  // Do not select further drain work after an unexpected command or
+  // disconnected owner. The main loop handles EOF/ordinary cleanup.
+  struct pollfd fd = { .fd=sock, .events=POLLIN | POLLRDHUP };
+  int ready = poll(&fd,1,0);
+  if (ready < 0) return errno == EINTR ? 0 : -EIO;
+  if (ready) return -ESTALE;
+  if (!out_dir.stream || !guest_on) return -ESTALE;
+  if (!p->initialized) {
+    if (!atomic_load(&playback_writer_done)) return 0;
+    if (!out_dir.thread_on || pthread_join(out_dir.thread,NULL)) return -EIO;
+    out_dir.thread_on=false;
+    atomic_store(&out_dir.run,false);
+    int r=aupd_init(&p->drain,ring_count,now,p->deadline,drain_written(&out_dir));
+    if (r) return r;
+    p->initialized=true;
+  }
+  int r=aupd_step(&p->drain,&drain_ops,&out_dir,now);
+  if (r<=0) return r;
+  now=drain_now();
+  if (ring_count || now < p->requested || now >= p->deadline || atomic_load(&quiesce_io_failed)) return -ESTALE;
+  // The observed presentation position covered all retained PCM. Only
+  // optional post-fence zero padding may be outstanding when closing.
+  stop_dir(true);
+  now=drain_now();
+  if (atomic_load(&quiesce_io_failed) || out_dir.stream || out_dir.thread_on || now < p->requested || now >= p->deadline) return -ESTALE;
+  p->closed=true;
+  fprintf(stderr,"oneios-audio: playback barrier: retained PCM presented, target %lld, padding %u frames\n",
+          (long long)p->drain.target,p->drain.padding);
+  return 1;
+}
+
+// Ordinary STOP still preserves its existing linger semantics.
 enum audio_hold { HOLD_OPEN, HOLD_WAIT, HOLD_PARKED, HOLD_RESUME, HOLD_FAULT };
 static bool idle_for_hold(void)
 {
@@ -1126,6 +1243,9 @@ int main(int argc, char **argv)
   ring_head = ring_count = 0;
   guest_on = false;
   enum audio_hold hold = HOLD_OPEN;
+  active_playback playback = {0};
+  atomic_store(&playback_cutover,false);
+  atomic_store(&playback_writer_done,false);
   uint32_t ticket = 0;
   const char *trace_env = getenv("ONEIOS_AUDIO_TRACE_STARTUP");
   audio_start_trace_enabled = trace_env && !strcmp(trace_env, "1");
@@ -1151,25 +1271,39 @@ int main(int argc, char **argv)
   static struct { struct au_header header; int16_t pcm[AU_MAX_FRAMES * 2]; } packet;
   for (;;) {
     if (hold == HOLD_WAIT) {
-      if (atomic_load(&quiesce_io_failed) || guest_on || in_dir.stream) hold_fault(&hold);
-      else if (idle_for_hold()) {
-        int r = hold_ack(AU_QUIESCED, ticket);
-        if (!r) hold = HOLD_PARKED;
-        else if (r != -EAGAIN) hold_fault(&hold);
-      } else if (!out_dir.stream && !out_dir.thread_on) hold_fault(&hold);
+      int active = playback.selected ? active_drain_step(&playback) : 1;
+      if (active < 0) hold_fault(&hold);
+      else if (active > 0) {
+        if (atomic_load(&quiesce_io_failed) || guest_on || in_dir.stream) hold_fault(&hold);
+        else if (idle_for_hold()) {
+          int r = hold_ack(AU_QUIESCED, ticket);
+          if (!r) hold = HOLD_PARKED;
+          else if (r != -EAGAIN) hold_fault(&hold);
+        } else if (!out_dir.stream && !out_dir.thread_on) hold_fault(&hold);
+      }
     } else if (hold == HOLD_RESUME) {
-      if (!idle_for_hold()) hold_fault(&hold);
-      else {
-        int r = hold_ack(AU_RESUMED, ticket);
-        if (!r) hold = HOLD_OPEN;
-        else if (r != -EAGAIN) hold_fault(&hold);
+      if (playback.selected && !playback.restored) {
+        if (!idle_for_hold() || start_dir(true, playback.rate, playback.channels, false)) hold_fault(&hold);
+        else playback.restored=true;
+      }
+      if (hold == HOLD_RESUME) {
+        bool ready=playback.selected ? playback.restored && guest_on && out_dir.stream && out_dir.thread_on &&
+                   atomic_load(&out_dir.run) && !atomic_load(&quiesce_io_failed) : idle_for_hold();
+        if (!ready) hold_fault(&hold);
+        else {
+          int r = hold_ack(AU_RESUMED, ticket);
+          if (!r) { hold = HOLD_OPEN; playback=(active_playback){0}; }
+          else if (r != -EAGAIN) hold_fault(&hold);
+        }
       }
     }
     struct pollfd wait = { .fd = sock, .events = POLLIN };
-    if (poll(&wait, 1, hold == HOLD_WAIT || hold == HOLD_RESUME ? 50 : 1000) == 0) {
+    int wait_ms = hold == HOLD_WAIT && playback.selected && !playback.closed ? 1 :
+                  hold == HOLD_WAIT || hold == HOLD_RESUME ? 50 : 1000;
+    if (poll(&wait, 1, wait_ms) == 0) {
       // Preserve the existing idle linger deadline; the barrier does
       // not shorten it. Poll more often only during control exchange.
-      if (out_dir.stream && !guest_on && since(&idle_since) >= linger_s) {
+      if ((hold == HOLD_OPEN || (hold == HOLD_WAIT && !playback.selected)) && out_dir.stream && !guest_on && since(&idle_since) >= linger_s) {
         stop_dir(true);
         fprintf(stderr, "oneios-audio: speaker closed after %u s of silence\n", linger_s);
       }
@@ -1191,9 +1325,13 @@ int main(int argc, char **argv)
       else hold_fault(&hold);
       continue;
     }
-    if (h.kind == AU_QUIESCE) {
-      if (!control || h.value <= ticket || guest_on || in_dir.stream || atomic_load(&quiesce_io_failed)) hold_fault(&hold);
-      else { ticket = h.value; hold = HOLD_WAIT; }
+    if (h.kind == AU_QUIESCE || h.kind == AU_QUIESCE_PLAYBACK) {
+      if (!control || h.value <= ticket || in_dir.stream || atomic_load(&quiesce_io_failed)) hold_fault(&hold);
+      else if (h.kind == AU_QUIESCE_PLAYBACK) {
+        if (begin_playback_hold(&playback)) hold_fault(&hold);
+        else { ticket=h.value; hold=HOLD_WAIT; }
+      } else if (guest_on) hold_fault(&hold);
+      else { playback=(active_playback){0}; ticket = h.value; hold = HOLD_WAIT; }
       continue;
     }
     if (h.kind >= AU_QUIESCED) { hold_fault(&hold); continue; }

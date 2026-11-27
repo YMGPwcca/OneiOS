@@ -244,10 +244,11 @@ int br_audio_probe_latency(const br_audio_backend *backend, void *ctx, unsigned 
 void br_audio_told(const br_audio_backend *backend, void *ctx, unsigned frames);
 // A back end that drops output and gives silence (no helper, tests).
 const br_audio_backend *br_audio_null(void **ctx);
-// Internal idle-only control path; exact built-in backend required.
-// Serialized by snd owner, no capture/probe reader or active streams.
+// Internal control path; exact built-in backend required. Serialized by
+// snd owner; no capture/probe reader. Active playback has its own barrier.
 // Retry EAGAIN within an independent deadline; no physical DAC receipt.
 int br_audio_quiesce_close(const br_audio_backend *, void *, uint64_t ticket);
+int br_audio_quiesce_close_playback(const br_audio_backend *, void *, uint64_t ticket);
 int br_audio_quiesce_poll(const br_audio_backend *, void *, uint64_t ticket);
 int br_audio_quiesce_resume(const br_audio_backend *, void *, uint64_t ticket);
 

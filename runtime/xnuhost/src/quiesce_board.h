@@ -42,7 +42,8 @@ int xhqb_console_resume(uint64_t ticket);
 /* Binding uses the sealed actual board, already parked console, vCPU
  * and input-source tickets, tracked task audit, and bound helper pidfd.
  * A mapped oneios control/report bridge requires its own exact ticket.
- * The single sound transport requires its idle-only helper receipt.
+ * The single sound transport requires its idle/active-playback receipt;
+ * active capture remains unsupported.
  * Camera, encoder, net and unknown transports remain refused.
  * Caller must still verify helper/factory provenance, complete process
  * membership, all non-VirtIO producers, lifetime and authorization.

@@ -1250,3 +1250,70 @@ independent complete membership, owner launcher and G25.2 remain
 pending. Frequency provider remains BLOCKED_NO_OWNED_READBACK.
 No OneOS change, thermal policy change, live admission/staging/rearm,
 kernel, frequency write, recovery or device access.
+
+### G25.1B4B2A operator receipt / G25.1B4B2B1 active speaker drain
+
+Operator WSL G25.1B4B2A OneiOS 5b699d37bf5a4ed369e92a3418d02a6e362955e4:
+58 IPC, 26 idle helper, 18 actual spawn, 20,460 full fake-HAL audio,
+489 bridge and 2,666 board checks, zero failures. Android ARM64
+XNUHost and oneios-audio links and seven requested symbols PASS.
+XNUHost SHA256 01520023f450f0b7f6c83f2c83bcafce9646d3a35c9acf0e5674783ec06c8017;
+helper SHA256 1112308beb1706f6bdadfe8b72dac83936e79a8a80653d369f696e57eac717ca.
+Evidence /tmp/oneios-g251b4b2a.vtHjUQ, DEVICE_ACCESS=NONE.
+Fake backend notify hop 1.2 us mean / 7.8 us max, not physical latency.
+
+G25.1B4B2B1 adds a separate authenticated AU_QUIESCE_PLAYBACK
+marker for logically STARTed output with capture stopped. Guest
+vCPUs must already be fenced and the capture thread joined.
+No guest STOP/START, RX returns or automatic resume. The sound
+gate preserves logical playback, rejects active capture and
+unqualified backend, and verifies the saved state. Null output
+has no independent stream or retained data. Ordinary idle-only
+barrier and linger remain unchanged; a mismatched legacy helper
+cannot ACK the new request.
+
+The actual helper processes the FIFO marker after prior PCM
+messages, seals the normal writer's next ring selection under
+ring_lock and lets its previously selected write finish. After
+worker acknowledgement and join, control thread exclusively drains
+the retained ring, consuming exactly the frames accepted by each
+nonblocking AAudio write. No additional drift resampling, overflow
+eviction or silence cutting after cutover. Earlier normal PCM loss
+and drift policy are unchanged, so this is NOT a lossless claim
+about all historical guest submissions. Snapshot the final
+FramesWritten position and require a real, fresh nonregressing
+AAudio CLOCK_MONOTONIC presentation timestamp covering it; never
+extrapolate FramesRead. Bounded zero-only padding may help mixer/
+DSP pulls finish. The fence does not move with padding. Stop/close
+is requested only after that proof, then ACK only with no stream
+or worker and no I/O/join/close ambiguity. Physical DAC and vendor
+HAL behavior remain unverified; this is an AAudio API receipt.
+
+Local active-drain bound is 3 seconds CLOCK_BOOTTIME including
+rendezvous, with at most 48,000 padding frames and timestamp age
+at most one second. These conservative offline implementation
+choices are not thermal settings and do not replace the owner
+deadline or guarantee cancellation of a blocked HAL call.
+Missing/invalid timestamp, ambiguous count, peer loss/late command,
+deadline or close failure faults without automatic reopen.
+Explicit resume recreates the saved 48 kHz stereo output stream
+and worker before replying (start request success, not presentation
+proof); logical START remains unchanged. Startup latency and any
+audible discontinuity at reopen are not measured. No live caller.
+
+Exact playback_drain.h and test_playback_drain.c passed GCC and
+Clang ASan/UBSan, 99,669 checks each, zero failures. This count
+includes per-sample assertions on retained PCM and bounded silence;
+not 99,669 separate scenarios. Both blobs matched tested files.
+Added actual fake-HAL mixer/MMAP short-tail, missing timestamp,
+active-capture rejection, stale resume, repeated cycles; actual
+spawn backend-to-helper and null transport checks. WSL integration
+and Android builds pending. Active microphone remains a blocker
+requiring a separate FIFO/read-worker/guest-RX and permission
+lifecycle, not silent capture discard or synthetic STOP.
+
+Remaining G25.1B4B2B2 capture, camera/encoder, net and other
+producers, independent membership, repeated-cycle release,
+owner launcher and G25.2 remain pending. Frequency provider
+BLOCKED_NO_OWNED_READBACK. No thermal policy, OneOS, kernel,
+frequency write, recovery, live staging/admission or device access.

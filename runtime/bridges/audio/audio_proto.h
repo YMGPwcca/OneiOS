@@ -8,10 +8,11 @@
 // AU_LATENCY (helper -> xnuhost): its answer, value = frames at 48 kHz (0: not measured); AU_TOLD (xnuhost ->
 // helper): the output latency the guest publishes to iOS, value = frames (for the helper's end-to-end line).
 enum { AU_START = 1, AU_STOP = 2, AU_PCM = 3, AU_STATE = 4, AU_PROBE = 5, AU_LATENCY = 6, AU_TOLD = 7,
-       AU_QUIESCE = 8, AU_QUIESCED = 9, AU_RESUME = 10, AU_RESUMED = 11 };
-// Quiescence is a separate, strictly idle-only barrier. All four control
-// packets have zero output/channels/reserved and a nonzero monotonic ticket
-// in value. ACK means no stream or worker remains; never just STOP queued.
+       AU_QUIESCE = 8, AU_QUIESCED = 9, AU_RESUME = 10, AU_RESUMED = 11, AU_QUIESCE_PLAYBACK = 12 };
+// Idle and active-playback barriers are distinct requests. All control
+// packets have zero output/channels/reserved and a nonzero monotonic ticket.
+// QUIESCED means no stream or worker remains. PLAYBACK preserves logical
+// START across drain/close and explicitly authorized reopen. No capture.
 struct au_header {
   uint8_t  kind;          // AU_*
   uint8_t  output;        // 1 = the speaker stream, 0 = the microphone stream

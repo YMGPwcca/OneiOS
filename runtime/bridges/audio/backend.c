@@ -191,7 +191,8 @@ const br_audio_backend *br_audio_helper(const char *path, void **ctx)
 }
 
 // These calls are serialized under the exact virtio-snd lock, with both
-// logical streams stopped and the host capture thread joined. The helper
+// capture stopped and the host capture thread joined. Output is either
+// stopped or explicitly selected for active drain. The helper
 // socket has one reader here. Null has no independent worker or stream.
 static int audio_gate(const br_audio_backend *backend, void *ctx, uint64_t ticket, unsigned op)
 {
@@ -201,9 +202,16 @@ static int audio_gate(const br_audio_backend *backend, void *ctx, uint64_t ticke
   helper *h = ctx;
   if (__atomic_load_n(&h->report_fault, __ATOMIC_ACQUIRE)) return -ESTALE;
   if (op == AU_QUIESCE) return auq_close(&h->barrier, ticket);
+  if (op == AU_QUIESCE_PLAYBACK) return auq_close_kind(&h->barrier, ticket, op);
   if (op == AU_QUIESCED) return auq_poll(&h->barrier, ticket);
   return auq_resume(&h->barrier, ticket);
 }
 int br_audio_quiesce_close(const br_audio_backend *b, void *ctx, uint64_t t) { return audio_gate(b, ctx, t, AU_QUIESCE); }
+int br_audio_quiesce_close_playback(const br_audio_backend *b, void *ctx, uint64_t t)
+{
+  // An unknown backend has no active-stream drain contract.
+  if (b != &helper_backend && b != &null_backend) return -EBUSY;
+  return audio_gate(b, ctx, t, AU_QUIESCE_PLAYBACK);
+}
 int br_audio_quiesce_poll(const br_audio_backend *b, void *ctx, uint64_t t) { return audio_gate(b, ctx, t, AU_QUIESCED); }
 int br_audio_quiesce_resume(const br_audio_backend *b, void *ctx, uint64_t t) { return audio_gate(b, ctx, t, AU_RESUME); }

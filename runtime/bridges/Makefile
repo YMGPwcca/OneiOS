@@ -34,7 +34,7 @@ $(A)/libonebridges.a: $(CORE:%=$(A)/%.o) $(DEVICES:%=$(A)/%.o)
 	@rm -f $@
 	$(ANDROID_AR) rcs $@ $^
 # The AAudio helper: dynamic (libaaudio.so is a system library), everything else of it static.
-$(A)/oneios-audio: audio/aaudio_helper.c audio/audio_proto.h
+$(A)/oneios-audio: audio/aaudio_helper.c audio/audio_proto.h audio/playback_drain.h
 	@mkdir -p $(A)
 	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) -Iaudio audio/aaudio_helper.c -laaudio -o $@
 $(A)/bridgectl: tools/bridgectl.c $(CORE:%=$(A)/%.o)
@@ -84,9 +84,13 @@ $(H)/test_audio_quiesce_spawn: tests/test_audio_quiesce_spawn.c audio/backend.c 
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_audio_quiesce_spawn.c audio/backend.c -o $@
 
+$(H)/test_playback_drain: tests/test_playback_drain.c audio/playback_drain.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) -Iaudio -fsanitize=address,undefined tests/test_playback_drain.c -o $@
+
 # The AAudio helper against a fake AAudio (tests/fake/aaudio): its ring, drift steering, stop, the latency per stage;
 # real time, about 45 s. -rdynamic: the helper finds the fake AAudio_setMMapPolicy with dlsym.
-$(H)/test_audio_helper: tests/test_audio_helper.c audio/aaudio_helper.c audio/audio_proto.h tests/fake/aaudio/AAudio.h
+$(H)/test_audio_helper: tests/test_audio_helper.c audio/aaudio_helper.c audio/audio_proto.h audio/playback_drain.h tests/fake/aaudio/AAudio.h
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) -Itests/fake -Iaudio -fsanitize=address,undefined -rdynamic tests/test_audio_helper.c -ldl -lpthread -lm -o $@
 
@@ -106,7 +110,8 @@ test-binder: $(H)/test_hidl_binder $(H)/test_aidl_binder $(H)/test_hal_binder
 	mkdir -p $(H)/binderfs; \
 	unshare -Urm sh -c 'mount -t binder binder "$$1" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_HWBINDER="$$1/hwbinder" "$$2" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_BINDER="$$1/binder" "$$3" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_BINDER="$$1/binder" "$$4"' sh $(H)/binderfs $(H)/test_hidl_binder $(H)/test_aidl_binder $(H)/test_hal_binder
 
-test: $(H)/test_audio_quiesce_spawn $(H)/test_audio_quiesce_link $(H)/test_quiesce_gate $(H)/test_bridges $(H)/test_wifi $(H)/test_audio_helper $(H)/test_hw_backend test-binder
+test: $(H)/test_playback_drain $(H)/test_audio_quiesce_spawn $(H)/test_audio_quiesce_link $(H)/test_quiesce_gate $(H)/test_bridges $(H)/test_wifi $(H)/test_audio_helper $(H)/test_hw_backend test-binder
+	ASAN_OPTIONS=detect_leaks=0 $(H)/test_playback_drain
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_audio_quiesce_link
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_audio_quiesce_spawn $(H)/test_audio_helper
 	$(H)/test_quiesce_gate
