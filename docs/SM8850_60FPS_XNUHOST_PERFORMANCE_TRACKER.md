@@ -1738,3 +1738,20 @@ A single idle OFF read cannot demonstrate active mitigation; no
 forced heating, new recovery experiment or automatic launch. Run
 the new script's self-test offline before considering the optional
 physical observation. No runtime rebuild or new peripheral work.
+
+### 2026-11-28 — observer transport correction
+
+Operator observer self-test passed at dee712f; live request was confirmed
+but the binary transfer timed out after 30 s in adb shell -T / su -c
+cat, before the ON probe or launch callback. No Framework-OFF observation
+was made; no launcher invocation followed from this failure. Temporary
+root path /data/adb/.oneios-natm.3ed036a16bc2432caa4eec68285721fc
+cleanup was unverified. Evidence /tmp/oneios-native-observer.o2vidE and
+/tmp/oneios-native-off.yzg7pbes. Exact cause of the stalled stdin transport
+is not established. Reuse the proven adb push sync transport instead:
+unique shell-owned scratch, verified root-owned private copy, SHA256
+readback before execution, explicit -n -T / DEVNULL for non-streaming
+commands, bounded per-step logs and exact-file cleanup. No runtime or
+OneOS changes; existing 20 s smoke lifecycle, consent and launch gates
+unchanged. New fake transport fixture and shell syntax checks pending
+operator local self-test. No physical run performed by this change.

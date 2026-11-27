@@ -160,6 +160,97 @@ def capture(phone, output, phase, command):
     return result
 
 
+def diagnostic_command(phone, step, args, *, timeout):
+    """Never send diagnostic bytes via adb shell/su stdin."""
+    print("NATIVE_TRANSFER_STEP=" + step, flush=True)
+    try:
+        p = phone.call(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        output = (error.stdout or b"").decode(errors="replace").strip()
+        raise RuntimeError(f"{step}: timeout after {timeout}s" +
+                           (f": {output}" if output else "")) from None
+    output = p.stdout.decode(errors="replace").strip()
+    require(p.returncode == 0, f"{step}: exit={p.returncode}: {output}")
+    if output:
+        print(output, flush=True)
+    return output
+
+
+def shell_args(script, *, root=False):
+    return ["shell", "-n", "-T", ("su -c " + shlex.quote(script)) if root else script]
+
+
+def cleanup_command(directory, owner):
+    # Only our unique directory and exact filename, never recursively delete.
+    return f"""set -eu
+if [ ! -e '{directory}' ] && [ ! -L '{directory}' ]; then exit 0; fi
+[ -d '{directory}' ] && [ ! -L '{directory}' ] &&
+[ "$(stat -c '%u:%a' '{directory}')" = '{owner}:700' ] || exit 3
+rm -f '{directory}/thermalctl'
+rmdir '{directory}'
+"""
+
+
+def transfer_diagnostic(phone, data, remote, digest):
+    """Use the already working ADB sync protocol, then an on-device copy.
+    The shell-owned input is never executed. Only the root-owned, rehashed
+    executable is passed to the ON/OFF observer. No stdin streaming to su.
+    """
+    match = re.fullmatch(r"/data/adb/\.oneios-natm\.([a-f0-9]{32})", remote)
+    require(match and re.fullmatch(r"[a-f0-9]{64}", digest), "invalid transfer identity")
+    scratch = "/data/local/tmp/oneios-natm." + match[1]
+    create = f"""set -eu
+[ "$(id -u)" = 2000 ] || exit 3
+umask 077
+mkdir '{scratch}'
+[ "$(stat -c '%u:%a' '{scratch}')" = 2000:700 ] || exit 3
+echo NATIVE_SCRATCH_CREATED
+"""
+    copy = f"""set -eu
+umask 077
+[ "$(id -u)" = 0 ] && [ "$(getenforce)" = Enforcing ] || exit 3
+[ -d /data/adb ] && [ ! -L /data/adb ] &&
+[ "$(stat -c '%u' /data/adb)" = 0 ] || exit 3
+case "$(stat -c '%A' /data/adb)" in ?????w*|????????w*) exit 3 ;; d?????????) ;; *) exit 3 ;; esac
+[ -d '{scratch}' ] && [ ! -L '{scratch}' ] &&
+[ "$(stat -c '%u:%a' '{scratch}')" = 2000:700 ] &&
+[ -f '{scratch}/thermalctl' ] && [ ! -L '{scratch}/thermalctl' ] &&
+[ "$(stat -c '%u' '{scratch}/thermalctl')" = 2000 ] || exit 3
+mkdir '{remote}'
+trap 'rm -f "{remote}/thermalctl"; rmdir "{remote}"' EXIT
+cp '{scratch}/thermalctl' '{remote}/thermalctl'
+chmod 700 '{remote}/thermalctl'
+[ "$(stat -c '%u:%a' '{remote}')" = 0:700 ] &&
+[ "$(stat -c '%u:%a' '{remote}/thermalctl')" = 0:700 ] &&
+[ "$(sha256sum '{remote}/thermalctl' | cut -d' ' -f1)" = '{digest}' ] || exit 4
+trap - EXIT
+echo NATIVE_ROOT_COPY_VERIFIED
+"""
+    scratch_created = False
+    try:
+        diagnostic_command(phone, "CREATE_SHELL_SCRATCH", shell_args(create), timeout=10)
+        scratch_created = True
+        # Snapshot the bytes already checked by the caller, not a path that
+        # might have changed since the digest was computed.
+        with tempfile.TemporaryDirectory(prefix="oneios-natm-push.") as local:
+            binary = Path(local) / "thermalctl"
+            binary.write_bytes(data)
+            diagnostic_command(phone, "ADB_PUSH", ["push", str(binary), scratch + "/thermalctl"],
+                               timeout=30)
+        diagnostic_command(phone, "ROOT_COPY_AND_HASH", shell_args(copy, root=True), timeout=10)
+    finally:
+        if scratch_created:
+            try:
+                diagnostic_command(phone, "REMOVE_SHELL_SCRATCH",
+                                   shell_args(cleanup_command(scratch, 2000)), timeout=10)
+            except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+                print(f"NATIVE_SCRATCH_CLEANUP=UNVERIFIED {scratch}: {error}", flush=True)
+        else:
+            print("NATIVE_SCRATCH_CREATE_OR_CLEANUP=UNVERIFIED " + scratch, flush=True)
+
+
+
 def run(args):
     data = args.thermalctl.read_bytes()
     require(0 < len(data) <= 16 * 1024 * 1024, "unexpected thermalctl size")
@@ -174,27 +265,9 @@ def run(args):
     remote = "/data/adb/.oneios-natm." + uuid.uuid4().hex
     on_command = probe_command(remote, args.sha256, boot, "ON")
     off_result = "NOT_OBSERVED"
-    # Root-private, unique temporary directory; receive only the checked
-    # diagnostic executable. The existing launcher separately owns its stage.
-    transfer = f"""set -eu
-umask 077
-[ "$(id -u)" = 0 ] && [ "$(getenforce)" = Enforcing ]
-[ -d /data/adb ] && [ ! -L /data/adb ] &&
-[ "$(stat -c '%u' /data/adb)" = 0 ]
-case "$(stat -c '%A' /data/adb)" in ?????w*|????????w*) exit 3 ;; d?????????) ;; *) exit 3 ;; esac
-mkdir '{remote}'
-trap 'rm -f "{remote}/thermalctl"; rmdir "{remote}"' EXIT
-cat > '{remote}/thermalctl'
-chmod 700 '{remote}/thermalctl'
-[ "$(sha256sum '{remote}/thermalctl' | cut -d' ' -f1)" = '{args.sha256}' ]
-trap - EXIT
-"""
     transferred = False
     try:
-        p = phone.root(transfer, input=data, stdout=subprocess.PIPE,
-                       stderr=subprocess.STDOUT, timeout=30)
-        require(p.returncode == 0, "diagnostic transfer failed: " +
-                p.stdout.decode(errors="replace"))
+        transfer_diagnostic(phone, data, remote, args.sha256)
         transferred = True
         require(capture(phone, output, "ON", on_command) == "READERS_OK",
                 "stock diagnostic incomplete; do not request Framework stop")
@@ -221,19 +294,59 @@ trap - EXIT
     finally:
         if transferred:
             try:
-                clean = phone.root(
-                    f"[ -d '{remote}' ] && [ ! -L '{remote}' ] && "
-                    f"""[ "$(stat -c '%u:%a' '{remote}')" = 0:700 ] && """
-                    f"rm -f '{remote}/thermalctl' && rmdir '{remote}'",
-                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, timeout=8)
-                if clean.returncode:
-                    print("NATIVE_TEMP_CLEANUP=UNVERIFIED " + remote, flush=True)
-            except (OSError, subprocess.SubprocessError):
+                diagnostic_command(phone, "REMOVE_ROOT_DIAGNOSTIC",
+                                   shell_args(cleanup_command(remote, 0), root=True), timeout=8)
+            except (RuntimeError, OSError, subprocess.SubprocessError):
                 print("NATIVE_TEMP_CLEANUP=UNVERIFIED " + remote, flush=True)
         else:
             print("NATIVE_TEMP_TRANSFER_OR_CLEANUP=UNVERIFIED " + remote, flush=True)
         print("EVIDENCE=" + str(output), flush=True)
+
+
+def test_transfer():
+    # Fake transport checks exact order, no stdin, no execution of the
+    # shell-owned file and no root copy after a failed push.
+    class FakePhone:
+        def __init__(self, fail_push=False):
+            self.calls = []
+            self.fail_push = fail_push
+
+        def call(self, args, **kwargs):
+            self.calls.append(args)
+            assert kwargs["stdin"] == subprocess.DEVNULL
+            assert "input" not in kwargs
+            if args[0] == "push":
+                assert Path(args[1]).read_bytes() == b"fixture"
+                if self.fail_push:
+                    raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+            else:
+                assert args[:3] == ["shell", "-n", "-T"]
+                script = args[3]
+                if script.startswith("su -c "):
+                    script = shlex.split(script)[2]
+                subprocess.run(["sh", "-n"], input=script, text=True, check=True)
+                assert "cat >" not in script
+            return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    remote = "/data/adb/.oneios-natm." + "a"*32
+    digest = hashlib.sha256(b"fixture").hexdigest()
+    p = FakePhone()
+    transfer_diagnostic(p, b"fixture", remote, digest)
+    assert len(p.calls) == 4
+    assert p.calls[1][0] == "push"
+    assert "su -c " in p.calls[2][3] and "sha256sum" in p.calls[2][3]
+    assert "rmdir" in p.calls[3][3]
+    failed = FakePhone(fail_push=True)
+    try:
+        transfer_diagnostic(failed, b"fixture", remote, digest)
+    except RuntimeError as error:
+        assert "ADB_PUSH: timeout" in str(error)
+    else:
+        raise AssertionError("failed push accepted")
+    assert len(failed.calls) == 3 and "rmdir" in failed.calls[2][3]
+    assert not any("ROOT_COPY" in " ".join(a) or "su -c " in " ".join(a)
+                   for a in failed.calls)
+    print("NATIVE_TRANSFER_FIXTURE=PASS DEVICE_ACCESS=NONE")
 
 
 def self_test():
@@ -258,6 +371,7 @@ def self_test():
     subprocess.run(["sh", "-n"], input=cmd, text=True, check=True)
     subprocess.run(["sh", "-n"], input=probe_command(remote, "b"*64, "c"*36, "ON"),
                    text=True, check=True)
+    test_transfer()
     print("NATIVE_OFF_OBSERVER_SELFTEST=PASS DEVICE_ACCESS=NONE")
 
 
