@@ -76,6 +76,14 @@ AIDL_TEST := tests/test_aidl_binder.c wifi/aidl_parcel.c wifi/aidl_binder.c wifi
 $(H)/test_aidl_binder: $(AIDL_TEST) $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined $(AIDL_TEST) -lpthread -o $@
+$(H)/test_audio_quiesce_link: tests/test_audio_quiesce_link.c audio/quiesce_link.h audio/audio_proto.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) -I. -fsanitize=address,undefined tests/test_audio_quiesce_link.c -o $@
+
+$(H)/test_audio_quiesce_spawn: tests/test_audio_quiesce_spawn.c audio/backend.c $(HDR) $(H)/test_audio_helper
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_audio_quiesce_spawn.c audio/backend.c -o $@
+
 # The AAudio helper against a fake AAudio (tests/fake/aaudio): its ring, drift steering, stop, the latency per stage;
 # real time, about 45 s. -rdynamic: the helper finds the fake AAudio_setMMapPolicy with dlsym.
 $(H)/test_audio_helper: tests/test_audio_helper.c audio/aaudio_helper.c audio/audio_proto.h tests/fake/aaudio/AAudio.h
@@ -98,7 +106,9 @@ test-binder: $(H)/test_hidl_binder $(H)/test_aidl_binder $(H)/test_hal_binder
 	mkdir -p $(H)/binderfs; \
 	unshare -Urm sh -c 'mount -t binder binder "$$1" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_HWBINDER="$$1/hwbinder" "$$2" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_BINDER="$$1/binder" "$$3" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_BINDER="$$1/binder" "$$4"' sh $(H)/binderfs $(H)/test_hidl_binder $(H)/test_aidl_binder $(H)/test_hal_binder
 
-test: $(H)/test_quiesce_gate $(H)/test_bridges $(H)/test_wifi $(H)/test_audio_helper $(H)/test_hw_backend test-binder
+test: $(H)/test_audio_quiesce_spawn $(H)/test_audio_quiesce_link $(H)/test_quiesce_gate $(H)/test_bridges $(H)/test_wifi $(H)/test_audio_helper $(H)/test_hw_backend test-binder
+	ASAN_OPTIONS=detect_leaks=0 $(H)/test_audio_quiesce_link
+	ASAN_OPTIONS=detect_leaks=0 $(H)/test_audio_quiesce_spawn $(H)/test_audio_helper
 	$(H)/test_quiesce_gate
 	$(H)/test_hw_backend
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_bridges   # the devices live as long as xnuhost: the transport has no destroy

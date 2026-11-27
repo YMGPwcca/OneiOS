@@ -192,12 +192,14 @@ typedef struct {
 } dir_state;
 static dir_state out_dir, in_dir;
 static uint64_t in_sent, in_lost, in_short;
+static atomic_bool quiesce_io_failed; // errors invalidate qualification even if a report is lost
 
 static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (double)t.tv_sec + t.tv_nsec / 1e9; }
 static double since(const struct timespec *t) { return now_s() - ((double)t->tv_sec + t->tv_nsec / 1e9); }
 
 static void report(bool output, int error)
 {
+  if (error) atomic_store(&quiesce_io_failed, true);
   struct au_header header = { .kind = AU_STATE, .output = output, .value = (uint32_t)error };
   // Never block: xnuhost reads its end only while the microphone runs (backend.c), and a full socket would
   // stop this process's receive loop.
@@ -436,7 +438,7 @@ static AAudioStream *open_speaker(unsigned rate, unsigned channels, aaudio_perfo
       else {
         snprintf(why, size, used == 1 ? "MMAP shared without system_server (its endpoint thread would wait for scheduling_policy "
                  "forever): closed before its start" : "MMAP use not known and not exclusive: closed");
-        AAudioStream_close(stream);
+        if (AAudioStream_close(stream) != AAUDIO_OK) atomic_store(&quiesce_io_failed, true);
         stream = NULL;
       }
     }
@@ -447,7 +449,7 @@ static AAudioStream *open_speaker(unsigned rate, unsigned channels, aaudio_perfo
   stream = open_with(true, rate, channels, *asked, AAUDIO_SHARING_MODE_SHARED);
   if (stream && *asked != AAUDIO_PERFORMANCE_MODE_NONE && mmap_used(stream) == 1) {
     fprintf(stderr, "oneios-audio: speaker: MMAP in use despite the policy: opened again with performance mode none\n");
-    AAudioStream_close(stream);
+    if (AAudioStream_close(stream) != AAUDIO_OK) atomic_store(&quiesce_io_failed, true);
     *asked = AAUDIO_PERFORMANCE_MODE_NONE;
     stream = open_with(true, rate, channels, *asked, AAUDIO_SHARING_MODE_SHARED);
   }
@@ -519,9 +521,9 @@ static AAudioStream *open_stream(bool output, unsigned rate, unsigned channels, 
   // Pre-fill only the AU_PROBE stream used to measure the guest's latency.
   // Other AU_START output tracks retain their proven legacy startup/drift
   // behaviour until the prefill change can be separately validated there.
-  if (output && prefill_for_probe && !prefill_speaker(stream)) { AAudioStream_close(stream); return NULL; }
+  if (output && prefill_for_probe && !prefill_speaker(stream)) { if (AAudioStream_close(stream) != AAUDIO_OK) atomic_store(&quiesce_io_failed, true); return NULL; }
   aaudio_result_t result = AAudioStream_requestStart(stream);
-  if (result != AAUDIO_OK) { fprintf(stderr, "oneios-audio: start %s: %s\n", output ? "speaker" : "microphone", AAudio_convertResultToText(result)); AAudioStream_close(stream); return NULL; }
+  if (result != AAUDIO_OK) { fprintf(stderr, "oneios-audio: start %s: %s\n", output ? "speaker" : "microphone", AAudio_convertResultToText(result)); if (AAudioStream_close(stream) != AAUDIO_OK) atomic_store(&quiesce_io_failed, true); return NULL; }
   return stream;
 }
 
@@ -898,12 +900,15 @@ static void stop_dir(bool output)
   if (!d->stream) return;
   if (output) { pthread_mutex_lock(&ring_lock); guest_on = false; pthread_mutex_unlock(&ring_lock); }
   atomic_store(&d->run, false);
-  if (d->thread_on) { pthread_join(d->thread, NULL); d->thread_on = false; }
+  if (d->thread_on) {
+    if (pthread_join(d->thread, NULL)) { atomic_store(&quiesce_io_failed, true); return; }
+    d->thread_on = false;
+  }
   if (output) { out_report("stopped"); audio_trace_dump("stream close"); }
   else fprintf(stderr, "oneios-audio: microphone stopped: %.1f s, %llu frames, %llu periods sent, %llu lost, %llu short\n", since(&d->started),
                (unsigned long long)d->frames, (unsigned long long)in_sent, (unsigned long long)in_lost, (unsigned long long)in_short);
-  AAudioStream_requestStop(d->stream);
-  AAudioStream_close(d->stream);
+  if (AAudioStream_requestStop(d->stream) != AAUDIO_OK) atomic_store(&quiesce_io_failed, true);
+  if (AAudioStream_close(d->stream) != AAUDIO_OK) atomic_store(&quiesce_io_failed, true);
   d->stream = NULL;
 }
 
@@ -937,6 +942,7 @@ static int start_dir(bool output, unsigned rate, unsigned channels, bool prefill
     return 0;
   }
   stop_dir(output);
+  if (d->stream || d->thread_on) return EIO;
   if (output) {
     pthread_mutex_lock(&ring_lock);
     consuming = false;
@@ -1084,10 +1090,43 @@ static unsigned probe(void)
   return frames;
 }
 
+// A STOP is not a barrier: the speaker may still linger or hold PCM.
+// Do not shorten linger, cut a tail, stop an active direction, or reopen
+// a stream here. The owner must enforce a deadline independently.
+enum audio_hold { HOLD_OPEN, HOLD_WAIT, HOLD_PARKED, HOLD_RESUME, HOLD_FAULT };
+static bool idle_for_hold(void)
+{
+  pthread_mutex_lock(&ring_lock);
+  bool idle = !guest_on && !ring_count;
+  pthread_mutex_unlock(&ring_lock);
+  return idle && !out_dir.stream && !in_dir.stream && !out_dir.thread_on && !in_dir.thread_on &&
+         !atomic_load(&out_dir.run) && !atomic_load(&in_dir.run) && !atomic_load(&quiesce_io_failed);
+}
+static int hold_ack(unsigned kind, uint32_t ticket)
+{
+  struct au_header h = { .kind = kind, .value = ticket };
+  ssize_t n = send(sock, &h, sizeof h, MSG_DONTWAIT | MSG_NOSIGNAL);
+  if (n == sizeof h) return 0;
+  if (n < 0 && (errno == EAGAIN || errno == EINTR)) return -EAGAIN;
+  return -EIO;
+}
+static void hold_fault(enum audio_hold *hold)
+{
+  *hold = HOLD_FAULT;
+  // Explicitly invalidate peer liveness/receipt, without starting or
+  // stopping hardware on this fault path. Ordinary EOF cleanup remains.
+  (void)shutdown(sock, SHUT_WR);
+}
 int main(int argc, char **argv)
 {
   if (argc != 2) { fprintf(stderr, "usage: oneios-audio SOCKET_FD (started by xnuhost)\n"); return 2; }
   sock = atoi(argv[1]);
+  atomic_store(&quiesce_io_failed, false);
+  // Fresh process, also used by the in-process fake HAL fixture.
+  ring_head = ring_count = 0;
+  guest_on = false;
+  enum audio_hold hold = HOLD_OPEN;
+  uint32_t ticket = 0;
   const char *trace_env = getenv("ONEIOS_AUDIO_TRACE_STARTUP");
   audio_start_trace_enabled = trace_env && !strcmp(trace_env, "1");
   setvbuf(stderr, NULL, _IOLBF, 0);
@@ -1111,19 +1150,53 @@ int main(int argc, char **argv)
           uclamp_min, buffer, FRAMES_MS(RING_FRAMES), target_text, target_decay_s, linger_s);
   static struct { struct au_header header; int16_t pcm[AU_MAX_FRAMES * 2]; } packet;
   for (;;) {
+    if (hold == HOLD_WAIT) {
+      if (atomic_load(&quiesce_io_failed) || guest_on || in_dir.stream) hold_fault(&hold);
+      else if (idle_for_hold()) {
+        int r = hold_ack(AU_QUIESCED, ticket);
+        if (!r) hold = HOLD_PARKED;
+        else if (r != -EAGAIN) hold_fault(&hold);
+      } else if (!out_dir.stream && !out_dir.thread_on) hold_fault(&hold);
+    } else if (hold == HOLD_RESUME) {
+      if (!idle_for_hold()) hold_fault(&hold);
+      else {
+        int r = hold_ack(AU_RESUMED, ticket);
+        if (!r) hold = HOLD_OPEN;
+        else if (r != -EAGAIN) hold_fault(&hold);
+      }
+    }
     struct pollfd wait = { .fd = sock, .events = POLLIN };
-    if (poll(&wait, 1, 1000) == 0) {                       // a quiet second: close a stream that lingered long enough
+    if (poll(&wait, 1, hold == HOLD_WAIT || hold == HOLD_RESUME ? 50 : 1000) == 0) {
+      // Preserve the existing idle linger deadline; the barrier does
+      // not shorten it. Poll more often only during control exchange.
       if (out_dir.stream && !guest_on && since(&idle_since) >= linger_s) {
         stop_dir(true);
         fprintf(stderr, "oneios-audio: speaker closed after %u s of silence\n", linger_s);
       }
       continue;
     }
-    ssize_t got = recv(sock, &packet, sizeof packet, MSG_DONTWAIT);
+    ssize_t got = recv(sock, &packet, sizeof packet, MSG_DONTWAIT | MSG_TRUNC);
     if (got < 0 && errno == EAGAIN) continue;
     if (got == 0) break;                                   // xnuhost closed its end (or exited)
     if (got < 0) { if (errno == EINTR) continue; break; }
-    if ((size_t)got < sizeof packet.header) continue;
+    if (hold == HOLD_FAULT) continue;
+    if ((size_t)got < sizeof packet.header || (size_t)got > sizeof packet) {
+      if (hold != HOLD_OPEN) hold_fault(&hold);
+      continue;
+    }
+    struct au_header h = packet.header;
+    bool control = got == sizeof h && !h.output && !h.channels && !h.reserved && h.value;
+    if (hold != HOLD_OPEN) {
+      if (hold == HOLD_PARKED && control && h.kind == AU_RESUME && h.value == ticket) hold = HOLD_RESUME;
+      else hold_fault(&hold);
+      continue;
+    }
+    if (h.kind == AU_QUIESCE) {
+      if (!control || h.value <= ticket || guest_on || in_dir.stream || atomic_load(&quiesce_io_failed)) hold_fault(&hold);
+      else { ticket = h.value; hold = HOLD_WAIT; }
+      continue;
+    }
+    if (h.kind >= AU_QUIESCED) { hold_fault(&hold); continue; }
     bool output = packet.header.output;
     switch (packet.header.kind) {
     case AU_START: {

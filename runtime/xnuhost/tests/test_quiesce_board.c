@@ -16,7 +16,9 @@ static unsigned checks;
 struct xh_virtio { unsigned member; };
 static struct xh_virtio devices[32];
 static unsigned maps, closes, polls, resumes, order[8];
-static int helper_error, guest_error, bridge_error;
+static int helper_error, guest_error, bridge_error, sound_error;
+int br_snd_quiesce_poll(xh_virtio *d, uint64_t t)
+{ return d == &devices[9] && t == 37 ? sound_error : -ESTALE; }
 int br_bridge_quiesce_poll(xh_virtio *d, uint64_t t, unsigned *mask)
 { (void)mask; return d == &devices[9] && t == 31 ? bridge_error : -ESTALE; }
 int xh_tasks_quiesce_check(uint64_t t) { return t == 23 ? guest_error : -ESTALE; }
@@ -89,33 +91,45 @@ static void make_board(unsigned bridge_type)
 }
 static void lifecycle(int late)
 {
-  make_board(late >= 4 ? OB_VIRTIO_DEVICE_ID : 0);
-  uint64_t bt = late >= 4 ? 31 : 0;
+  make_board(late >= 6 ? 25 : late >= 4 ? OB_VIRTIO_DEVICE_ID : 0);
+  uint64_t bt = late == 4 || late == 5 ? 31 : 0, at = late >= 6 ? 37 : 0;
   struct xhq q; struct xhqb_binding b;
   uint64_t t = 0, it = 0, cycle = 0;
   CHECK(xhqi_seal() == 0 && xhqi_close(&it) == 0);
-  CHECK(xhqb_runtime_init(&q, &b, 17, 1, 23, it, bt, guard, &maps) == -ESTALE);
+  CHECK(xhqb_runtime_init(&q, &b, 17, 1, 23, it, bt, at, guard, &maps) == -ESTALE);
   CHECK(xhqb_console_close(&t) == 0 && t != 0);
-  CHECK(xhqb_runtime_init(&q, &b, 17, t+1, 23, it, bt, guard, &maps) == -ESTALE);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t+1, 23, it, bt, at, guard, &maps) == -ESTALE);
   helper_error = -EPERM;
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt, guard, &maps) == -EPERM && !closes);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt, at, guard, &maps) == -EPERM && !closes);
   helper_error = 0;
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, 24, it, bt, guard, &maps) == -ESTALE && !closes);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 24, it, bt, at, guard, &maps) == -ESTALE && !closes);
   guest_error = -EBUSY;
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt, guard, &maps) == -EBUSY && !closes);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt, at, guard, &maps) == -EBUSY && !closes);
   guest_error = 0;
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it+1, bt, guard, &maps) == -ESTALE && !closes);
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt ? 0 : 31, guard, &maps) == -EINVAL && !closes);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it+1, bt, at, guard, &maps) == -ESTALE && !closes);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt ? 0 : 31, at, guard, &maps) == -EINVAL && !closes);
   if (bt) {
-    CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt+1, guard, &maps) == -ESTALE && !closes);
+    CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt+1, at, guard, &maps) == -ESTALE && !closes);
     bridge_error = -EAGAIN;
-    CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt, guard, &maps) == -EAGAIN && !closes);
+    CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt, at, guard, &maps) == -EAGAIN && !closes);
     bridge_error = 0;
   }
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt, guard, &maps) == 0 && q.nblocks == 6);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt, at ? 0 : 37, guard, &maps) == -EINVAL && !closes);
+  if (at) {
+    CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt, at+1, guard, &maps) == -ESTALE && !closes);
+    sound_error = -EAGAIN;
+    CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt, at, guard, &maps) == -EAGAIN && !closes);
+    sound_error = 0;
+  }
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, bt, at, guard, &maps) == 0 && q.nblocks == 6);
   CHECK(xhq_begin(&q, 17, UINT64_MAX, &cycle) == 0);
   CHECK(drive(&q, cycle) == 0 && q.phase == XHQ_PARKED && q.verified == 255 && closes == 255);
-  if (late == 4) {
+  if (late == 6) {
+    unsigned old = polls;
+    sound_error = -ESTALE;
+    CHECK(xhq_request_resume(&q, 17, cycle) == -ESTALE && q.phase == XHQ_FAULT);
+    CHECK(xhq_step(&q, 17, cycle) == -ESTALE && polls == old && !resumes);
+  } else if (late == 4) {
     unsigned old = polls;
     bridge_error = -ESTALE;
     CHECK(xhq_request_resume(&q, 17, cycle) == -ESTALE && q.phase == XHQ_FAULT);
@@ -153,7 +167,7 @@ static void unsupported(unsigned type)
   struct xhq q; struct xhqb_binding b;
   uint64_t t = 0, it = 0;
   CHECK(xhqb_console_close(&t) == 0 && xhqi_seal() == 0 && xhqi_close(&it) == 0);
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, 0, guard, &maps) == -ENOTSUP && !closes);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, 0, 0, guard, &maps) == -ENOTSUP && !closes);
 }
 static int entered[2], release_writer[2];
 static void *writer(void *unused)
@@ -207,7 +221,7 @@ int main(void)
 {
   alarm(30);
   /* Global process-lifetime registry: fork a fresh fixture for each case. */
-  for (int i = 0; i < 21; i++) {
+  for (int i = 0; i < 22; i++) {
     int p[2]; CHECK(pipe(p) == 0);
     pid_t pid = fork(); CHECK(pid >= 0);
     if (!pid) {
@@ -217,8 +231,8 @@ int main(void)
       else if (i == 2 || i == 3) lifecycle(i == 3);
       else if (i == 12) lifecycle(2);
       else if (i == 13) lifecycle(3);
-      else if (i == 14 || i == 15) lifecycle(i-10);
-      else if (i >= 16) unsupported((const unsigned[]){1,25,0x4f43,48,0xffff}[i-16]);
+      else if (i >= 14 && i <= 17) lifecycle(i-10);
+      else if (i >= 18) unsupported((const unsigned[]){1,0x4f43,48,0xffff}[i-18]);
       else invalid(i-4);
       if (write(p[1], &checks, sizeof checks) != sizeof checks) _exit(2);
       close(p[1]); _exit(0);

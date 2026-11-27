@@ -42,20 +42,21 @@ int xhqb_console_resume(uint64_t ticket);
 /* Binding uses the sealed actual board, already parked console, vCPU
  * and input-source tickets, tracked task audit, and bound helper pidfd.
  * A mapped oneios control/report bridge requires its own exact ticket.
- * Audio, camera, encoder, net and unknown transports remain refused.
+ * The single sound transport requires its idle-only helper receipt.
+ * Camera, encoder, net and unknown transports remain refused.
  * Caller must still verify helper/factory provenance, complete process
  * membership, all non-VirtIO producers, lifetime and authorization.
- * Release bridge/CPU/console/input only after authorized full resume.
+ * Release sound/bridge/CPU/console/input only after authorized full resume.
  * No production caller or thaw mechanism is installed. */
 struct xhqb_binding {
   struct xhq_runtime runtime;
   struct xhqb_snapshot board;
-  uint64_t console_ticket, vcpu_ticket, input_ticket, bridge_ticket;
-  struct xh_virtio *bridge;
+  uint64_t console_ticket, vcpu_ticket, input_ticket, bridge_ticket, sound_ticket;
+  struct xh_virtio *bridge, *sound;
   int (*guard)(void *, uint64_t, uint64_t, enum xhq_phase);
   void *ctx;
 };
 int xhqb_runtime_init(struct xhq *, struct xhqb_binding *, uint64_t owner,
-                      uint64_t console_ticket, uint64_t vcpu_ticket, uint64_t input_ticket, uint64_t bridge_ticket,
+                      uint64_t console_ticket, uint64_t vcpu_ticket, uint64_t input_ticket, uint64_t bridge_ticket, uint64_t sound_ticket,
                       int (*guard)(void *, uint64_t, uint64_t, enum xhq_phase), void *);
 #endif

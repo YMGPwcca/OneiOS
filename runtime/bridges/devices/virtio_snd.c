@@ -5,6 +5,7 @@
 // 3 receive. Output periods go to the back end as they arrive (the guest's audio engine paces them);
 // a capture thread fills the receive buffers the guest has posted with what the back end recorded.
 #include "bridges/devices.h"
+#include "bridges/quiesce.h"
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,7 +27,8 @@ typedef struct {
   bool running[2];
   uint8_t channels[2];
   pthread_t capture;
-  bool capture_thread;
+  bool capture_thread, stopping;
+  brq_gate quiesce;
   uint64_t tx_periods, rx_periods, rx_dropped;
 } snd_state;
 
@@ -93,21 +95,27 @@ static uint32_t pcm_command(snd_state *s, uint32_t code, uint32_t stream)
   case R_PCM_PREPARE: case R_PCM_RELEASE: return S_OK;
   case R_PCM_START:
     if (s->running[d]) return S_OK;
-    if (s->backend->start(s->ctx, output, 48000, s->channels[d] ? s->channels[d] : (output ? 2 : 1))) return S_IO_ERR;
+    if (s->backend->start(s->ctx, output, 48000, s->channels[d] ? s->channels[d] : (output ? 2 : 1))) { s->quiesce.fault = true; return S_IO_ERR; }
     __atomic_store_n(&s->running[d], true, __ATOMIC_RELEASE);
-    if (!output && !s->capture_thread) s->capture_thread = pthread_create(&s->capture, NULL, capture, s) == 0;
+    if (!output && !s->capture_thread) {
+      s->capture_thread = pthread_create(&s->capture, NULL, capture, s) == 0;
+      if (!s->capture_thread) s->quiesce.fault = true;
+    }
     return S_OK;
   case R_PCM_STOP:
     if (!s->running[d]) return S_OK;
     __atomic_store_n(&s->running[d], false, __ATOMIC_RELEASE);
-    (void)s->backend->stop(s->ctx, output);
+    if (s->backend->stop(s->ctx, output)) s->quiesce.fault = true;
     if (!output) {
       if (s->capture_thread) {
         // The capture thread takes the device's lock; let go of it while it ends.
+        s->stopping = true;
         xh_virtio_unlock(s->dev);
-        pthread_join(s->capture, NULL);
+        int joined = pthread_join(s->capture, NULL);
         xh_virtio_lock(s->dev);
-        s->capture_thread = false;
+        s->stopping = false;
+        if (joined) s->quiesce.fault = true;
+        else s->capture_thread = false;
       }
       return_rx(s);
     }
@@ -119,6 +127,7 @@ static uint32_t pcm_command(snd_state *s, uint32_t code, uint32_t stream)
 static int64_t snd_handle(xh_virtio *dev, unsigned queue, uint16_t head, xh_viov *iov, unsigned n)
 {
   snd_state *s = xh_virtio_opaque(dev);
+  if (brq_late(&s->quiesce)) return -1;
   (void)head;
   if (queue == Q_CONTROL) {
     uint8_t request[64] = { 0 };
@@ -185,11 +194,13 @@ static int64_t snd_handle(xh_virtio *dev, unsigned queue, uint16_t head, xh_viov
   return 0;
 }
 
-static void snd_kick(xh_virtio *dev, unsigned queue) { (void)dev; (void)queue; }
+static void snd_kick(xh_virtio *dev, unsigned queue)
+{ (void)queue; snd_state *s = xh_virtio_opaque(dev); (void)brq_late(&s->quiesce); }
 
 static void snd_reset(xh_virtio *dev)
 {
   snd_state *s = xh_virtio_opaque(dev);
+  (void)brq_late(&s->quiesce);
   (void)pcm_command(s, R_PCM_STOP, 0);
   (void)pcm_command(s, R_PCM_STOP, 1);
 }
@@ -197,6 +208,8 @@ static void snd_reset(xh_virtio *dev)
 static const xh_virtio_ops snd_ops = { .device_id = 25, .nqueues = 4, .handle = snd_handle, .config_read = snd_config_read, .reset = snd_reset,
                                        .manual = 1u << Q_EVENT | 1u << Q_RX, .kick = snd_kick };
 
+// The transport lifetime is the session lifetime, with one sound device.
+static snd_state *active_sound;
 xh_virtio *br_virtio_snd_create(uint64_t base, unsigned spi, const br_audio_backend *backend, void *backend_ctx)
 {
   snd_state *s = calloc(1, sizeof *s);
@@ -205,5 +218,60 @@ xh_virtio *br_virtio_snd_create(uint64_t base, unsigned spi, const br_audio_back
   s->ctx = backend_ctx;
   s->dev = xh_virtio_create(base, spi, &snd_ops, s, "virtio-snd");
   if (!s->dev) { free(s); return NULL; }
+  active_sound = s;
   return s->dev;
+}
+
+// Upstream vCPU/guest ingress is parked first. Do not invent a PCM
+// stop/start, return RX buffers, or claim a queued STOP is completion.
+static int snd_gate_lock(xh_virtio *dev, snd_state **out)
+{
+  snd_state *s = active_sound;
+  if (!dev || !s || s->dev != dev) return -ESTALE;
+  if (!xh_virtio_trylock(dev)) return -EAGAIN;
+  *out = s;
+  return 0;
+}
+static bool snd_busy(const snd_state *s)
+{
+  return s->running[0] || s->running[1] || s->capture_thread || s->stopping;
+}
+int br_snd_quiesce_close(xh_virtio *dev, uint64_t *ticket)
+{
+  if (!ticket) return -EINVAL;
+  snd_state *s;
+  int r = snd_gate_lock(dev, &s);
+  if (r) return r;
+  if (s->quiesce.fault) r = -ESTALE;
+  else if (s->quiesce.closed || snd_busy(s)) r = -EBUSY;
+  else if (s->quiesce.generation == UINT32_MAX) r = -EOVERFLOW;
+  else {
+    uint64_t next = s->quiesce.generation + 1;
+    r = br_audio_quiesce_close(s->backend, s->ctx, next);
+    if (!r) r = brq_close(&s->quiesce, false, ticket);
+  }
+  xh_virtio_unlock(dev);
+  return r;
+}
+int br_snd_quiesce_poll(xh_virtio *dev, uint64_t ticket)
+{
+  snd_state *s;
+  int r = snd_gate_lock(dev, &s);
+  if (r) return r;
+  r = brq_check(&s->quiesce, ticket, snd_busy(s));
+  if (!r) r = br_audio_quiesce_poll(s->backend, s->ctx, ticket);
+  if (!r) r = brq_poll(&s->quiesce, ticket, false);
+  xh_virtio_unlock(dev);
+  return r;
+}
+int br_snd_quiesce_resume(xh_virtio *dev, uint64_t ticket)
+{
+  snd_state *s;
+  int r = snd_gate_lock(dev, &s);
+  if (r) return r;
+  r = brq_can_resume(&s->quiesce, ticket, snd_busy(s));
+  if (!r) r = br_audio_quiesce_resume(s->backend, s->ctx, ticket);
+  if (!r) r = brq_resume(&s->quiesce, ticket, false);
+  xh_virtio_unlock(dev);
+  return r;
 }

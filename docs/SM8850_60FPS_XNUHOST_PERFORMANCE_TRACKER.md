@@ -1182,3 +1182,71 @@ monitor must not be inadvertently frozen with guest workload.
 Frequency provider remains BLOCKED_NO_OWNED_READBACK.
 No OneOS, thermal policy, frequency, kernel, recovery or live
 admission/staging/rearm change. No device access.
+
+### G25.1B4B1 operator receipt / G25.1B4B2A idle audio provider
+
+Operator WSL G25.1B4B1 OneiOS 4aa937a2054f786c2f82af485b9c4270a8848323:
+3,650 gate/telemetry, 127 brightness, 468 bridge and 2,106 board
+checks, zero failures; native camera/encoder compile/link, Android
+encctl and XNUHost link and seven requested symbols PASS.
+SHA256 1fcf3dd641e9b1cb4be17f79c71a6e43b0afe1d166aa14b298257f116e6bb2bd.
+Evidence /tmp/oneios-g251b4b1.Y6JboS, DEVICE_ACCESS=NONE.
+Camera/encoder runtime tests were not run in this receipt.
+
+G25.1B4B2A adds an explicitly idle-only sound provider. The real
+virtio-snd lock checks both logical directions stopped and capture
+thread joined, with no ambiguous STOP/join or backend error. Unknown
+backends are refused. The exact null backend is locally idle; for
+AAudio, close sends a monotonic FIFO control packet to the actual
+spawned helper, poll requires its exact ACK, and explicit authorized
+resume requires its exact ACK. No synchronous wait while holding
+the transport lock. The already stopped capture thread's pre-barrier
+PCM and successful status records can be retired, not delivered to
+guest memory. No new normal PCM buffering or pacing change. Late
+guest handle/kick/reset invalidates the sound ticket (upstream guest
+fencing still required; not a generic transport gate).
+
+The helper's ordinary STOP is not a drain receipt: output can linger
+and play silence for the configured duration (default 60 seconds).
+The new barrier does not shorten linger or stop an active stream.
+It waits until both AAudio streams and workers are absent, local
+output ring empty, no live logical playback, and no reported I/O
+or stream close/join ambiguity. The control loop forbids further
+START/PCM/STOP while held, and explicit resume only opens the gate;
+it does not start a stream. Bad tickets/late packets fault the link
+without automatically starting/stopping hardware. Existing EOF
+cleanup remains. No physical DAC drain or HAL idle readback claim.
+
+Parent qualification pins its own unreaped posix_spawn child with
+pidfd, checks child status before/after acquisition (requires no
+competing child reaper), enables SO_PASSCRED before spawn, verifies
+each control reply's PID/UID/GID and exact length/ticket, rejects
+ancillary FD injection and truncation. No PID-only fallback;
+unsupported pidfd/credentials block the receipt, not legacy audio.
+This is a trusted local launch protocol, not isolation from root.
+SO_PASSCRED adds kernel credential work to ordinary received PCM;
+performance/latency impact is not yet measured. The existing
+internal helper ring is not a cross-process shared PCM ring.
+The board adapter requires the single exact sound ticket whenever
+a sound transport is present; unknown/other media remain refused.
+
+Exact standalone audio/quiesce_link.h and test_audio_quiesce_link.c:
+58 checks on GCC and Clang ASan/UBSan, zero failures, real forked
+processes and sockets; stale/wrong ACK, pre-barrier PCM/state,
+inherited-socket wrong sender, ancillary FD, helper exit, repeated
+close/resume. Both blobs matched tested files. Added fake-HAL
+actual helper idle/linger/capture/fault scenarios, actual posix_spawn
+backend-to-helper integration, null sound transport/active and
+unknown backend refusal, and board receipt fixtures. Integrated
+tests and Android oneios-audio/XNUHost build pending operator WSL.
+
+Active playback or capture remains a BLOCKER, as does linger beyond
+the independent deadline; a persistent guest audio engine cannot
+be qualified by this idle-only provider. G25.1B4B2B must implement
+a separately qualified active-stream drain/release/restart design,
+without silently dropping accepted playback or inventing guest STOP.
+Camera, encoder, net, optional HCI/haptics and other producers,
+independent complete membership, owner launcher and G25.2 remain
+pending. Frequency provider remains BLOCKED_NO_OWNED_READBACK.
+No OneOS change, thermal policy change, live admission/staging/rearm,
+kernel, frequency write, recovery or device access.

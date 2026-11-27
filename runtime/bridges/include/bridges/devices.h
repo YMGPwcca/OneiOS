@@ -64,6 +64,13 @@ int  br_wifi_sim_send(br_net *n, const uint8_t *frame, size_t length);
 // "droidvm,virtio-snd": virtio-snd with one output stream (48 kHz S16 stereo) and one input stream
 // (48 kHz S16 mono), 240-frame periods, as DroidVMVirtioSnd.c asks.
 xh_virtio *br_virtio_snd_create(uint64_t base, unsigned spi, const br_audio_backend *backend, void *backend_ctx);
+// Idle-only: reject active guest directions, joined STOP ambiguity and
+// unknown backend. The exact helper must ACK no streams/workers remain.
+// No forced STOP, PCM replay or physical hardware idle claim. Caller
+// pins lifetime, fences vCPUs, enforces deadline, authorizes release.
+int br_snd_quiesce_close(xh_virtio *, uint64_t *ticket);
+int br_snd_quiesce_poll(xh_virtio *, uint64_t ticket);
+int br_snd_quiesce_resume(xh_virtio *, uint64_t ticket);
 
 // "droidvm,virtio-media": the video encoder (runtime/bridges/encoder/encoder.h; docs/hardware.md, "Video encoder").
 // The create and backend live in encoder.h so this header keeps no MediaCodec dependency.

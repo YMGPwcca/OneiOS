@@ -474,11 +474,65 @@ static stages latency_case(const char *name, int pull, int burst)
   return all;
 }
 
-int main(void)
+static int hold_reply(unsigned kind, unsigned ticket, unsigned timeout_ms)
+{
+  for (unsigned i = 0; i < timeout_ms; i += 20) {
+    struct pollfd p = { .fd = guest_fd, .events = POLLIN };
+    int r = poll(&p, 1, 20);
+    if (r == 0) continue;
+    if (r < 0) return -1;
+    struct { struct au_header h; int16_t pcm[AU_MAX_FRAMES]; } packet;
+    ssize_t n = recv(guest_fd, &packet, sizeof packet, MSG_DONTWAIT | MSG_TRUNC);
+    if (n <= 0) return -1;
+    if (n == sizeof packet.h && packet.h.kind == kind && packet.h.value == ticket &&
+        !packet.h.output && !packet.h.channels && !packet.h.reserved) return 1;
+    if (n < (ssize_t)sizeof packet.h || (packet.h.kind != AU_PCM && packet.h.kind != AU_STATE)) return -1;
+  }
+  return 0;
+}
+static void test_idle_hold(void)
+{
+  // The fake helper is a thread; the separate link test verifies PID
+  // authentication across processes. Here actual AAudio calls and
+  // worker lifetimes run against the fake HAL.
+  helper_up("1");
+  send_header(AU_START, true, 2, 48000);
+  send_header(AU_STOP, true, 0, 0);
+  send_header(AU_QUIESCE, false, 0, 1);
+  CHECK(hold_reply(AU_QUIESCED, 1, 100) == 0); // not just a STOP receipt
+  CHECK(hold_reply(AU_QUIESCED, 1, 5000) == 1);
+  send_header(AU_RESUME, false, 0, 1);
+  CHECK(hold_reply(AU_RESUMED, 1, 2000) == 1);
+  send_header(AU_START, false, 1, 48000);
+  nap_s(0.05);
+  send_header(AU_STOP, false, 0, 0);
+  send_header(AU_QUIESCE, false, 0, 2);
+  CHECK(hold_reply(AU_QUIESCED, 2, 2000) == 1);
+  struct pollfd p = { .fd = guest_fd, .events = POLLIN };
+  CHECK(poll(&p, 1, 100) == 0); // no late microphone PCM
+  send_header(AU_RESUME, false, 0, 1); // stale resume must not reopen
+  CHECK(hold_reply(AU_RESUMED, 1, 2000) == -1);
+  helper_down();
+  CHECK(last_out && last_out->closed && last_in && last_in->closed);
+  helper_up("0");
+  send_header(AU_START, true, 2, 48000);
+  send_header(AU_QUIESCE, false, 0, 1); // active logical direction: no ACK
+  CHECK(hold_reply(AU_QUIESCED, 1, 2000) == -1);
+  helper_down();
+}
+int main(int argc, char **argv)
 {
   setvbuf(stderr, NULL, _IOLBF, 0);
   setvbuf(stdout, NULL, _IOLBF, 0);
   setenv("ONEIOS_AUDIO_SYSTEM_SERVER", "0", 1);          // as in a session (the host's /proc is not looked at)
+  // The production backend can spawn this fake-HAL executable on fd 3.
+  if (argc == 2 && !strcmp(argv[1], "3")) return helper_main(argc, argv);
+  if (argc == 2 && !strcmp(argv[1], "--quiescence-only")) {
+    test_idle_hold();
+    printf("audio idle barrier: %d checks, %d failed\n", checks, failures);
+    return failures != 0;
+  }
+  if (argc != 1) return 2;
   // 1. Drift, one stream per case (no linger). The fake HAL has no MMAP: LOW_LATENCY (the default) asked with MMAP
   // allowed gets AAudio's own fallback, a mixer track, which is kept (one open).
   helper_up("0");
@@ -866,6 +920,7 @@ int main(void)
   audio_target_raise_last_s = saved_last;
   pthread_mutex_unlock(&ring_lock);
 
+  test_idle_hold();
   printf("test_audio_helper: %d checks, %d failed\n", checks, failures);
   return failures != 0;
 }

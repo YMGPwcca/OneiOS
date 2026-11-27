@@ -1198,6 +1198,8 @@ static void test_snd_device(void)
   CHECK(snd_control(&g, command, sizeof command, reply, 4) == 0x8000);
   command[0] = 0x0104;
   CHECK(snd_control(&g, command, sizeof command, reply, 4) == 0x8000 && sound.starts[1] == 1);
+  uint64_t blocked = 0;
+  CHECK(br_snd_quiesce_close(dev, &blocked) == -EBUSY && !blocked);
   command[1] = 7;
   CHECK(snd_control(&g, command, sizeof command, reply, 4) == 0x8001);
 
@@ -1245,6 +1247,7 @@ static void test_snd_device(void)
   CHECK(snd_control(&g, command, sizeof command, reply, 4) == 0x8000 && sound.stops[0] == 1);
   command[1] = 0;
   CHECK(snd_control(&g, command, sizeof command, reply, 4) == 0x8000 && sound.stops[1] == 1);
+  CHECK(br_snd_quiesce_close(dev, &blocked) == -ENOTSUP && !blocked); // arbitrary backend
   // A period for a stopped stream is acknowledged and not played.
   post(&g, 2, bufs, lens, writable, 3);
   CHECK(reap(&g, 2) == 8 && sound.frames == 65 * 240);
@@ -1255,6 +1258,43 @@ static void test_snd_device(void)
   // The latency probe is the helper's only (xnuhost then leaves the kernel's default); telling the null back end is a no-op.
   CHECK(br_audio_probe_latency(null, ctx, 10) == -ENOTSUP && br_audio_probe_latency(&fake_sound_backend, &sound, 10) == -ENOTSUP);
   br_audio_told(null, ctx, 480);
+}
+
+// A real null backend has no independent HAL/worker once its guest
+// capture thread is joined. Only that exact backend can use this gate.
+static void test_snd_idle_quiesce(void)
+{
+  void *ctx;
+  const br_audio_backend *backend = br_audio_null(&ctx);
+  xh_virtio *dev = br_virtio_snd_create(0, 43, backend, ctx);
+  CHECK(dev != NULL);
+  guest g;
+  guest_up(&g, dev, 4, 0);
+  uint32_t command[2] = {0x0104, 0}, reply = 0;
+  uint64_t t = 0, old = 0;
+  CHECK(snd_control(&g, command, sizeof command, &reply, 4) == 0x8000);
+  CHECK(br_snd_quiesce_close(dev, &t) == -EBUSY && !t);
+  command[0] = 0x0105;
+  CHECK(snd_control(&g, command, sizeof command, &reply, 4) == 0x8000);
+  command[0] = 0x0104; command[1] = 1;
+  CHECK(snd_control(&g, command, sizeof command, &reply, 4) == 0x8000);
+  int r = -EAGAIN;
+  for (unsigned i = 0; i < 2000 && r == -EAGAIN; i++) {
+    r = br_snd_quiesce_close(dev, &t);
+    if (r == -EAGAIN) usleep(1000);
+  }
+  CHECK(r == -EBUSY && !t);
+  command[0] = 0x0105;
+  CHECK(snd_control(&g, command, sizeof command, &reply, 4) == 0x8000);
+  CHECK(br_snd_quiesce_close(dev, &t) == 0 && t);
+  CHECK(br_snd_quiesce_resume(dev, t) == -EBUSY);
+  CHECK(br_snd_quiesce_poll(dev, t+1) == -ESTALE);
+  CHECK(br_snd_quiesce_poll(dev, t) == 0 && br_snd_quiesce_resume(dev, t) == 0);
+  old = t;
+  CHECK(br_snd_quiesce_close(dev, &t) == 0 && t > old);
+  CHECK(br_snd_quiesce_poll(dev, t) == 0);
+  w32(&g, 0x50, 3); // unexpected guest kick violates upstream fence
+  CHECK(br_snd_quiesce_poll(dev, t) == -ESTALE && br_snd_quiesce_resume(dev, t) == -ESTALE);
 }
 
 // The stand-in controller (bt/hci_sim.c): what bluetoothd's first commands get back.
@@ -1313,6 +1353,7 @@ int main(void)
   test_bridge_quiesce_control();
   test_net_device();
   test_snd_device();
+  test_snd_idle_quiesce();
   char cmd[300];
   snprintf(cmd, sizeof cmd, "rm -rf '%s'", tmp);
   (void)!system(cmd);
