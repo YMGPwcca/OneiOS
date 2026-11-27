@@ -905,3 +905,52 @@ suspend is not magically interrupted; no real-time guarantee or
 automatic physical quiescence proof. Frequency provider remains
 BLOCKED_NO_OWNED_READBACK. No OneOS change, live admission, staging,
 rearm, thermal policy, kernel, recovery or frequency write change.
+
+### G25.1A operator receipt / G25.1B1 board membership and boot-console producer
+
+Operator WSL G25.1A OneiOS 955f1ff560f11640b78643942568536f4bcb53d8:
+141 independent IPC parent checks, zero failures, Android ARM64 XNUHost
+link and all eleven supervisor symbols PASS. Runtime SHA256
+9026aa7e822c2005d8213207d70fdc19bde9f1038773e911f940f69ac8f412a0.
+Evidence /tmp/oneios-g251a.mQ43GO, DEVICE_ACCESS=NONE.
+
+G25.1B1 records actual mapped VirtIO membership from xh_virtio_create
+under a boot-time registry: configured disk count, contiguous MMIO
+addresses and SPIs, unique transport pointers, device types and the
+board's published device count. Failed registrations do not count.
+Seal before publishing the guest board; refuse attempted late VirtIO
+mapping and latch stale membership. Nonqualified board receipts do
+not stop existing boot profiles. Snapshot all transports, including
+unquiesced input and bridge devices; never infer their drain from
+membership alone. No extra lock on ordinary MMIO, GPU submissions or
+input delivery. A 2D GPU is not thereby a qualified drain provider.
+
+Wrap the real boot-console BGRX8 and RGBA16F compare/copy/flush path
+with a ticketed producer gate. Close is try-lock only and cannot
+succeed while the console writer holds it; defer console updates
+while parked, without stopping the main event loop or dropping
+guest input. Explicit release after verification is the external
+lifecycle owner's responsibility. The board-bound adapter obtains
+GPU and all block transports from the sealed registry instead of an
+arbitrary pointer list, and rechecks membership and the parked console
+ticket before and after the independent guard. It does not supply the
+remaining guard proofs. A binding is tied to its console ticket;
+future multi-cycle control must explicitly manage release and reticket
+without resetting a faulted coordinator.
+
+Standalone GCC and Clang ASan/UBSan: 717 checks, zero failed. Exact
+G25.0 quiesce.c and quiesce_runtime.c sources, equivalent minimal
+ABI headers and mock device/map providers, real pthread writer
+contention, 12 fork-isolated fixture cases, six-block coordinator
+dispatch, normal resume and refusal on late mapped-device attempt.
+Native full-repository regression, actual main/VirtIO integration
+compile and Android ARM64 link pending operator local CI. No production
+quiesce caller enabled, no physical drain or panel idle proven.
+
+Remaining G25.1B work: helper process identity/liveness and credentialed
+barrier, vCPU/task/reset and input/bridge producer lifecycle, and
+control-path ownership including repeated console cycles. G25.2
+whole-session freeze/thaw and independent actuator qualification remain
+separate. Frequency provider remains BLOCKED_NO_OWNED_READBACK. No
+OneOS change, live admission, staging, rearm, thermal policy, kernel,
+recovery or frequency write change.

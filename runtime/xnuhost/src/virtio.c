@@ -4,6 +4,7 @@
 // UniXNU-droidvm's virtio drivers (package/DroidVMVirtio*.c) program. crosvm is that device side in
 // a DroidVM; here it is this file, in the same process as the kernel.
 #include "xnuhost.h"
+#include "quiesce_board.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -404,6 +405,8 @@ void xh_virtio_mmio_write(xh_virtio *d, uint64_t off, unsigned size, uint64_t va
 static uint64_t region_read(void *opaque, uint64_t off, unsigned size) { return xh_virtio_mmio_read(opaque, off, size); }
 static void region_write(void *opaque, uint64_t off, unsigned size, uint64_t value) { xh_virtio_mmio_write(opaque, off, size, value); }
 
+static int register_region(void *region) { return xh_mmio_add(region); }
+
 xh_virtio *xh_virtio_create(uint64_t base, unsigned spi, const xh_virtio_ops *ops, void *opaque, const char *name)
 {
   xh_virtio *d = calloc(1, sizeof *d);
@@ -416,7 +419,8 @@ xh_virtio *xh_virtio_create(uint64_t base, unsigned spi, const xh_virtio_ops *op
   d->opaque = opaque;
   d->name = name;
   d->spi = spi;
-  if (base && xh_mmio_add(&(xh_mmio_region){ .base = base, .size = 0x1000, .name = name, .opaque = d, .read = region_read, .write = region_write })) {
+  xh_mmio_region region = { .base = base, .size = 0x1000, .name = name, .opaque = d, .read = region_read, .write = region_write };
+  if (base && xhqb_map(d, base, spi, ops->device_id, register_region, &region)) {
     free(d);
     return NULL;
   }

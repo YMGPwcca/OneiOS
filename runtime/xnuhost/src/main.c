@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include "xnuhost.h"
 #include "gpu3d.h"
+#include "quiesce_board.h"
 #include "sm8850_stage_admission.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -834,6 +835,8 @@ static int boot(void)
   xh_gic_notify = gic_line;
   xh_gic_map();
   xh_uart_init(XL_BOARD_UART);
+  int board_rc = xhqb_begin(XL_BOARD_VIRTIO, XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI, config.ndisk);
+  if (board_rc) LOGI("quiescence: board capture unavailable (%s)", strerror(-board_rc));
   if (image_set_open()) return -1;
   for (unsigned i = 0; i < config.ndisk; i++) {
     xh_blk *disk = xh_blk_open(&config.disk[i], &error);
@@ -1152,6 +1155,8 @@ static int boot(void)
   for (unsigned i = 0; i < config.ncpu && config.clusters[i]; i++) machine.cpu_cluster[i] = config.clusters[i];
 
   // The device tree.
+  board_rc = xhqb_seal(ndev);
+  if (board_rc) LOGI("quiescence: board receipt unavailable (%s)", strerror(-board_rc));
   xl_machine_board(&machine, config.ncpu, kinds, ndev);
   machine.timebase_hz = (uint32_t)g_info.timebase_hz;
   machine.dram_base = phys;
@@ -1642,23 +1647,26 @@ int main(int argc, char **argv)
     // Until the guest's display driver presents a frame of its own, show what its kernel console draws (not until
     // ready: between its first frame and ready the frames are the guest's, and the console must not be copied over them).
     bool console = !guest_ready && !__atomic_load_n(&guest_drawing, __ATOMIC_ACQUIRE);
-    xh_display *d = xh_display_get();
-    uint8_t *fb = xh_ram(boot_fb_pa, (uint64_t)fb_width * fb_height * 4);
-    if (console && d && fb && d->format == XH_PIXELS_BGRX8 && memcmp(d->pixels, fb, (size_t)d->stride * d->height)) {
-      memcpy(d->pixels, fb, (size_t)d->stride * d->height);
-      xh_display_flush(0, 0, d->width, d->height);
-    } else if (console && d && fb && d->format == XH_PIXELS_RGBA16F && d->width == fb_width && d->height == fb_height) {
-      // A half-float frame (display-format=rgba16f): the console's B,G,R,X bytes are compared with the last ones seen
-      // and decoded to linear light when they changed.
-      static uint8_t *seen;
-      size_t bytes = (size_t)fb_width * fb_height * 4;
-      if (!seen) seen = calloc(1, bytes);
-      if (seen && memcmp(seen, fb, bytes)) {
-        memcpy(seen, fb, bytes);
-        for (unsigned y = 0; y < d->height; y++)
-          xh_pixels_bgrx8_to_rgba16f(d->pixels + (size_t)y * d->stride, seen + (size_t)y * fb_width * 4, d->width);
+    if (console && xhqb_console_enter()) {
+      xh_display *d = xh_display_get();
+      uint8_t *fb = xh_ram(boot_fb_pa, (uint64_t)fb_width * fb_height * 4);
+      if (d && fb && d->format == XH_PIXELS_BGRX8 && memcmp(d->pixels, fb, (size_t)d->stride * d->height)) {
+        memcpy(d->pixels, fb, (size_t)d->stride * d->height);
         xh_display_flush(0, 0, d->width, d->height);
+      } else if (d && fb && d->format == XH_PIXELS_RGBA16F && d->width == fb_width && d->height == fb_height) {
+        // A half-float frame (display-format=rgba16f): the console's B,G,R,X bytes are compared with the last ones seen
+        // and decoded to linear light when they changed.
+        static uint8_t *seen;
+        size_t bytes = (size_t)fb_width * fb_height * 4;
+        if (!seen) seen = calloc(1, bytes);
+        if (seen && memcmp(seen, fb, bytes)) {
+          memcpy(seen, fb, bytes);
+          for (unsigned y = 0; y < d->height; y++)
+            xh_pixels_bgrx8_to_rgba16f(d->pixels + (size_t)y * d->stride, seen + (size_t)y * fb_width * 4, d->width);
+          xh_display_flush(0, 0, d->width, d->height);
+        }
       }
+      xhqb_console_leave();
     }
   }
   // A return was asked: a guest-initiated restart in the window is iOS finishing its shutdown, not a reboot to re-run
