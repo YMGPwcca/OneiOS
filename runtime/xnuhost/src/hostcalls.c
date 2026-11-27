@@ -3,6 +3,7 @@
 // switches from the kernel's context to the host's and calls the xh_impl_ function here.
 #define _GNU_SOURCE
 #include "xnuhost.h"
+#include "quiesce_vcpu.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -101,7 +102,15 @@ int64_t xh_impl_task_read(struct xh_cpu *cpu, uint64_t task, uint64_t va, void *
 int64_t xh_impl_task_write(struct xh_cpu *cpu, uint64_t task, uint64_t va, const void *buffer, uint64_t size) { (void)cpu; return xh_task_write(task, va, buffer, size); }
 int64_t xh_impl_thread_create(struct xh_cpu *cpu, uint64_t task, uint64_t *thread) { (void)cpu; return xh_thread_create(task, thread); }
 int64_t xh_impl_thread_destroy(struct xh_cpu *cpu, uint64_t thread) { (void)cpu; return xh_thread_destroy(thread); }
-int64_t xh_impl_thread_run(struct xh_cpu *cpu, uint64_t thread, struct xh_user_state *state, struct xh_trap *trap) { return xh_thread_run(V(cpu), thread, state, trap); }
+int64_t xh_impl_thread_run(struct xh_cpu *cpu, uint64_t thread, struct xh_user_state *state, struct xh_trap *trap)
+{
+  // Neither boundary has an outstanding user release or a task/device
+  // lock held by xnuhost. Keep the original trap/result across park.
+  xhqv_checkpoint(cpu->index);
+  int64_t r = xh_thread_run(V(cpu), thread, state, trap);
+  xhqv_checkpoint(cpu->index);
+  return r;
+}
 int64_t xh_impl_thread_set_pac(struct xh_cpu *cpu, uint64_t thread, uint32_t enabled) { (void)cpu; return xh_thread_set_pac(thread, enabled); }
 
 int64_t xh_impl_kernel_map(struct xh_cpu *cpu, uint64_t va, uint64_t size, uint32_t prot, uint64_t phys) { (void)cpu; return xh_mem_kernel_map(va, size, prot, phys); }

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "quiesce_board.h"
+#include "quiesce_vcpu.h"
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -12,7 +13,8 @@ static unsigned checks;
 struct xh_virtio { unsigned member; };
 static struct xh_virtio devices[32];
 static unsigned maps, closes, polls, resumes, order[8];
-static int helper_error;
+static int helper_error, guest_error;
+int xh_tasks_quiesce_check(uint64_t t) { return t == 23 ? guest_error : -ESTALE; }
 int xh_display_quiesce_verify_helper(void) { return helper_error; }
 static int map_ok(void *ctx) { CHECK(ctx == &maps); maps++; return 0; }
 static int map_fail(void *ctx) { CHECK(ctx == &maps); return -EIO; }
@@ -82,16 +84,25 @@ static void lifecycle(int late)
   make_board();
   struct xhq q; struct xhqb_binding b;
   uint64_t t = 0, cycle = 0;
-  CHECK(xhqb_runtime_init(&q, &b, 17, 1, guard, &maps) == -ESTALE);
+  CHECK(xhqb_runtime_init(&q, &b, 17, 1, 23, guard, &maps) == -ESTALE);
   CHECK(xhqb_console_close(&t) == 0 && t != 0);
-  CHECK(xhqb_runtime_init(&q, &b, 17, t+1, guard, &maps) == -ESTALE);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t+1, 23, guard, &maps) == -ESTALE);
   helper_error = -EPERM;
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, guard, &maps) == -EPERM && !closes);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, guard, &maps) == -EPERM && !closes);
   helper_error = 0;
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, guard, &maps) == 0 && q.nblocks == 6);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 24, guard, &maps) == -ESTALE && !closes);
+  guest_error = -EBUSY;
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, guard, &maps) == -EBUSY && !closes);
+  guest_error = 0;
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, guard, &maps) == 0 && q.nblocks == 6);
   CHECK(xhq_begin(&q, 17, UINT64_MAX, &cycle) == 0);
   CHECK(drive(&q, cycle) == 0 && q.phase == XHQ_PARKED && q.verified == 255 && closes == 255);
-  if (late) {
+  if (late == 2) {
+    unsigned old = polls;
+    guest_error = -ESTALE;
+    CHECK(xhq_request_resume(&q, 17, cycle) == -ESTALE && q.phase == XHQ_FAULT);
+    CHECK(xhq_step(&q, 17, cycle) == -ESTALE && polls == old && !resumes && !xhqb_console_enter());
+  } else if (late) {
     unsigned old = polls;
     CHECK(add(10, 18) == -EPERM && maps == 10);
     CHECK(xhqb_match(&b.board) == -ESTALE);
@@ -158,7 +169,7 @@ int main(void)
 {
   alarm(30);
   /* Global process-lifetime registry: fork a fresh fixture for each case. */
-  for (int i = 0; i < 12; i++) {
+  for (int i = 0; i < 13; i++) {
     int p[2]; CHECK(pipe(p) == 0);
     pid_t pid = fork(); CHECK(pid >= 0);
     if (!pid) {
@@ -166,6 +177,7 @@ int main(void)
       if (i == 0) { CHECK(add(0, 2) == 0 && maps == 1); struct xhqb_snapshot s; CHECK(xhqb_snapshot(&s) == -EBUSY); }
       else if (i == 1) console();
       else if (i == 2 || i == 3) lifecycle(i == 3);
+      else if (i == 12) lifecycle(2);
       else invalid(i-4);
       if (write(p[1], &checks, sizeof checks) != sizeof checks) _exit(2);
       close(p[1]); _exit(0);

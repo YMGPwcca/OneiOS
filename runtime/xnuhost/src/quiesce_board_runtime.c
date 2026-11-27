@@ -1,4 +1,5 @@
 #include "quiesce_board.h"
+#include "quiesce_vcpu.h"
 #include "xnuhost.h"
 #include <errno.h>
 
@@ -6,6 +7,7 @@ static int membership(const struct xhqb_binding *b)
 {
   int r = xhqb_match(&b->board);
   if (!r) r = xhqb_console_poll(b->console_ticket);
+  if (!r) r = xh_tasks_quiesce_check(b->vcpu_ticket);
   return r ? r : xh_display_quiesce_verify_helper();
 }
 static int guard_board(void *ctx, uint64_t owner, uint64_t cycle, enum xhq_phase phase)
@@ -16,11 +18,11 @@ static int guard_board(void *ctx, uint64_t owner, uint64_t cycle, enum xhq_phase
   return r ? r : membership(b);
 }
 int xhqb_runtime_init(struct xhq *q, struct xhqb_binding *b, uint64_t owner,
-                      uint64_t console_ticket,
+                      uint64_t console_ticket, uint64_t vcpu_ticket,
                       int (*guard)(void *, uint64_t, uint64_t, enum xhq_phase), void *ctx)
 {
-  if (!q || !b || !owner || !console_ticket || !guard) return -EINVAL;
-  struct xhqb_binding tmp = { .console_ticket = console_ticket, .guard = guard, .ctx = ctx };
+  if (!q || !b || !owner || !console_ticket || !vcpu_ticket || !guard) return -EINVAL;
+  struct xhqb_binding tmp = { .console_ticket = console_ticket, .vcpu_ticket = vcpu_ticket, .guard = guard, .ctx = ctx };
   int r = xhqb_snapshot(&tmp.board);
   if (!r) r = membership(&tmp);
   if (r) return r;

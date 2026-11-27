@@ -4,6 +4,7 @@
 #include "xnuhost.h"
 #include "gpu3d.h"
 #include "quiesce_board.h"
+#include "quiesce_vcpu.h"
 #include "sm8850_stage_admission.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -192,6 +193,7 @@ uint64_t xh_mono_ms(void)
 
 void xh_stop(uint32_t reason, uint32_t code, const char *why)
 {
+  xhqv_invalidate(); // invalidate any park receipt; existing halt/reset path is unchanged
   pthread_mutex_lock(&stop_lock);
   if (!stop_state.requested) {
     stop_state.reason = reason;

@@ -1005,3 +1005,60 @@ production independent owner loop and freeze/thaw integration.
 Frequency provider remains BLOCKED_NO_OWNED_READBACK.
 No OneOS change, live admission, staging, rearm, thermal policy,
 kernel, recovery or frequency write change.
+
+### G25.1B2 operator receipt / G25.1B3 cooperative vCPU and tracked-task lifecycle
+
+Operator WSL G25.1B2 OneiOS aa90c7289bed54a2f32887193439fc9d9ab762a0:
+199 peer checks, seven display socket scenarios, 719 board/console checks,
+zero failures; Android ARM64 link and nine identity symbols PASS.
+SHA256 cb4d34ada1a9f34b198bad72cc0826f054218d738b7c9333938bd0aaa2a77984.
+Evidence /tmp/oneios-g251b2.VYEtXu, DEVICE_ACCESS=NONE.
+
+G25.1B3 implements a process-lifetime cooperative vCPU rendezvous.
+Every configured vCPU (up to eight) registers before kernel entry;
+close requires all configured vCPUs to have registered. Actual
+checkpoints are at initial entry, cpu_idle (including WFI emulation),
+and before/after the thread_run hostcall with no outstanding prior
+user release or host task/device lock at those boundaries. Park
+publishes a per-vCPU bit on a lock-free atomic word, then waits on
+a private futex. No synthetic IRQ, signal-driven arbitrary suspension,
+SIGSTOP, forced guest trap, scheduler/frequency change or guest ABI
+change. A busy vCPU may never reach a checkpoint: poll remains EAGAIN
+and the independent owner must enforce the deadline. Open path is an
+atomic load per checkpoint, no extra mutex or syscall; performance
+impact not measured. No claim that guest lock dependencies permit
+every vCPU to arrive, or that ARM64 signal context is qualified.
+
+Task audit checks the actual tracked task table and stub service/trap
+slots while all configured vCPUs are parked; no outstanding user
+release, in-flight unmap, service request, clone/exit ambiguity or
+unreturned thread command allowed. Deferred unsent maps are allowed,
+not flushed. Try-lock the table and task order locks; fail on
+contention/inconsistency. Factory lifecycle events during a closed
+cycle and ambiguous service/spawn/setup/exit paths invalidate the
+receipt; halt/reset and shutdown invalidate without changing existing
+stop behavior. No new task signals, forced cancellation, restart or
+return. Board adapter requires the vCPU ticket and task audit in
+addition to console, board and bound helper. Explicit resume only
+after verified park and external authorization; no automatic thaw
+on fault. The adapter remains tied to cycle tickets, no live caller.
+
+Standalone exact quiesce_vcpu.{c,h} and test_quiesce_vcpu.c:
+GCC and Clang ASan/UBSan, three runs per compiler, 651 checks per run,
+zero failures. Real eight pthreads, missing registration, withheld
+checkpoint, unverified resume refusal, stale tickets, repeated cycles,
+no progress during park, explicit wake, duplicate registration and
+fault refusal. LSan disabled for fork-isolated fixtures that exit
+with intentionally parked threads. Three blobs matched tested files.
+Full tracked-task code, board adapter fixture changes, host regression
+and Android ARM64 compile/link pending operator local CI. This is a
+cooperative checkpoint fixture, not execution of a real hosted guest.
+
+Remaining: independently verified factory/descendant and thread
+membership (including orphan/untracked processes and lifecycle races),
+input and all remaining bridge producers, release authorization and
+repeated-cycle ownership, production independent owner/launcher and
+owned-group freeze/thaw. No proof of complete guest quiescence or
+physical GPU/IO/thermal behavior. Frequency provider remains
+BLOCKED_NO_OWNED_READBACK. No OneOS change, live admission, staging,
+rearm, thermal policy, kernel, recovery or frequency write change.

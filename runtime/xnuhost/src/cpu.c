@@ -6,6 +6,7 @@
 // signal or a futex wake). Interrupt delivery is in docs/booter.md, "Interrupts".
 #define _GNU_SOURCE
 #include "xnuhost.h"
+#include "quiesce_vcpu.h"
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -35,6 +36,7 @@ unsigned xh_gpu_vcpu_boost;
 #define SIGSTACK_BLOCK 0x100000ul     // per vCPU, aligned: [cpu pointer page][signal stack]
 #define BOOT_STACK 0x40000ul
 #define HOST_STACK 0x80000ul
+_Static_assert(XHQV_MAX_CPUS == XH_MAX_CPUS, "update rendezvous mask");
 
 uint64_t xh_sig_arena[2];             // [lo, hi) of the vCPU signal stacks, read by xh_sig_entry
 static __thread xh_vcpu *self_vcpu;
@@ -155,6 +157,7 @@ void xh_cpu_idle(xh_vcpu *v)
   uint64_t began = xh_counter();
   __atomic_store_n(&v->idle, 1, __ATOMIC_RELEASE);
   while (!__atomic_load_n(&v->cpu.irq_pending, __ATOMIC_ACQUIRE)) {
+    xhqv_checkpoint(v->cpu.index);
     if (xh_stopping()) { pause(); continue; }
     // Sleep until woken, but no longer than to the timer's deadline: inside an emulated WFI the
     // timer's signal is blocked, so the deadline is watched here.
@@ -172,6 +175,7 @@ void xh_cpu_idle(xh_vcpu *v)
     long wait_rc = futex(&v->cpu.irq_pending, FUTEX_WAIT_PRIVATE, 0, &step);
     if (xh_perf_detail_enabled) xh_detail_futex(&v->detail, true, wait_rc, errno);
   }
+  xhqv_checkpoint(v->cpu.index);
   __atomic_store_n(&v->idle, 0, __ATOMIC_RELEASE);
   v->perf.ticks_idle += xh_counter() - began;
 }
@@ -422,6 +426,8 @@ static void *vcpu_main(void *arg)
   if (!entry) { entry = (uint64_t)(uintptr_t)g_upcalls.cpu_entry; a1 = a0; a0 = (uint64_t)(uintptr_t)&v->cpu; }
   LOGI("cpu%u: entering the kernel at 0x%llx", v->cpu.index, (unsigned long long)entry);
   v->started = true;
+  xhqv_register(v->cpu.index);
+  xhqv_checkpoint(v->cpu.index);
   xh_arch_enter(&v->cpu, entry, a0, a1, a2, (uint64_t)(uintptr_t)(v->boot_stack + BOOT_STACK));
 }
 
@@ -444,6 +450,7 @@ int xh_cpu_init(unsigned ncpu)
     g_vcpu[i].host_stack = g_vcpu[i].boot_stack + BOOT_STACK;
   }
   g_ncpu = ncpu;
+  if (xhqv_configure(ncpu)) xhqv_invalidate();
 
   // vCPU threads take the two interrupt signals and the synchronous traps; everything else
   // (SIGTERM, SIGINT, ...) is the main thread's.

@@ -12,6 +12,7 @@
 // page and two futex words.
 #define _GNU_SOURCE
 #include "xnuhost.h"
+#include "quiesce_vcpu.h"
 #include "../stub/stub_abi.h"
 #include "task_order_diag.h"
 #include "task_profile.h"
@@ -264,6 +265,9 @@ static void *reader_main(void *arg)
   struct message m;
   while (recv(T.sock, &m, sizeof m, 0) == (ssize_t)sizeof m) {
     pthread_mutex_lock(&T.lock);
+    // Any factory lifecycle change during a closed cycle invalidates
+    // the receipt before mutating the tracked task table.
+    xhqv_invalidate_if_closed();
     if (m.kind == M_SPAWNED) {
       T.reply_pid = m.pid;
       T.reply_ready = true;
@@ -365,6 +369,7 @@ int xh_tasks_init(const xh_config *c)
 
 void xh_tasks_shutdown(void)
 {
+  xhqv_invalidate();
   if (T.sock < 0) return;
   for (unsigned i = 0; i < MAX_TASKS; i++)
     if (T.tasks[i].used && !T.tasks[i].dead) { struct message m = { .kind = M_KILL, .pid = T.tasks[i].pid }; send(T.sock, &m, sizeof m, MSG_NOSIGNAL); }
@@ -471,6 +476,7 @@ static int64_t order(task *t, const struct xs_op *ops, unsigned count)
   struct timespec began, ended;
   clock_gettime(CLOCK_MONOTONIC, &began);
   int rc = wait_word(t, &sp->done, 10);
+  if (rc) xhqv_invalidate(); // service batch completion may be ambiguous
   clock_gettime(CLOCK_MONOTONIC, &ended);
   uint64_t order_ack = T.profile_tasks ? xh_counter() : 0;
   // An order the task's service thread takes long over, or never answers, stalls the vCPU that gave it: say which.
@@ -540,19 +546,20 @@ static int64_t task_create_one(uint64_t *handle)
   t->service_slot = (uint32_t)slot;
   struct message m = { .kind = M_SPAWN, .slot = (uint32_t)slot };
   T.reply_ready = false;
-  if (send(T.sock, &m, sizeof m, MSG_NOSIGNAL) != (ssize_t)sizeof m) { slot_free((uint32_t)slot); pthread_mutex_unlock(&T.lock); return -EIO; }
+  if (send(T.sock, &m, sizeof m, MSG_NOSIGNAL) != (ssize_t)sizeof m) { xhqv_invalidate(); slot_free((uint32_t)slot); pthread_mutex_unlock(&T.lock); return -EIO; }
   struct timespec until;
   clock_gettime(CLOCK_REALTIME, &until);
   until.tv_sec += 10;
   while (!T.reply_ready)
     if (pthread_cond_timedwait(&T.reply, &T.lock, &until)) break;
-  if (!T.reply_ready || T.reply_pid <= 0) { slot_free((uint32_t)slot); pthread_mutex_unlock(&T.lock); return T.reply_ready ? T.reply_pid : -ETIMEDOUT; }
+  if (!T.reply_ready || T.reply_pid <= 0) { if (!T.reply_ready) xhqv_invalidate(); slot_free((uint32_t)slot); pthread_mutex_unlock(&T.lock); return T.reply_ready ? T.reply_pid : -ETIMEDOUT; }
   t->pid = T.reply_pid;
   t->used = true;
   pthread_mutex_unlock(&T.lock);
   struct xs_service_page *sp = slot_page((uint32_t)slot);
   int rc = wait_word(t, &sp->ready, 10);
   if (rc || sp->setup_error) {
+    xhqv_invalidate();
     LOGE("tasks: task process %d did not set up (%d, stub error %d)", t->pid, rc, sp->setup_error);
     xh_task_destroy((uint64_t)(t - T.tasks) + 1);
     return rc ? rc : sp->setup_error;
@@ -624,6 +631,7 @@ int64_t xh_task_destroy(uint64_t handle)
   else {
     // Never seen so far. The slots stay taken until the factory reports the exit (reader_main).
     LOGE("tasks: pid %d did not die in 20 s: its slots are kept until it does", t->pid);
+    xhqv_invalidate();
     t->zombie = true;
   }
   pthread_mutex_unlock(&T.lock);
@@ -933,6 +941,7 @@ int64_t xh_thread_create(uint64_t handle, uint64_t *out)
                  kill(t->pid, 0) == 0 ? "there" : "gone");
   }
   if (rc) {
+    xhqv_invalidate(); // clone/setup may have left an untracked thread
     pthread_mutex_lock(&T.lock);
     t->areas[area / 8] &= (uint8_t)~(1 << (area % 8));
     T.threads[slot].used = false;
@@ -969,6 +978,7 @@ int64_t xh_thread_destroy(uint64_t handle)
     while ((tid = __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE)) != 0 && !t->dead && !seconds_passed(&began, 10))
       futex(&tp->tid, FUTEX_WAIT, tid, &step);
     if (tid != 0 && !t->dead) {
+      xhqv_invalidate();
       // Never seen so far. The slot and the area stay with the task; xh_task_destroy takes them back.
       LOGE("tasks: thread %u of pid %d did not exit in 10 s: its slot is kept until the task goes", tid, t->pid);
       log_task_threads(t->pid);
@@ -993,6 +1003,49 @@ int64_t xh_thread_set_pac(uint64_t handle, uint32_t enabled)
   tp->pac_enabled = enabled & XH_PAC_ALL;
   tp->pac_set = 1;
   return 0;
+}
+
+// Control worker only, after all configured vCPUs have acknowledged a
+// cooperative boundary. A tracked-slot check is not an independent
+// proof of process-tree completeness or factory identity. Reader
+// lifecycle events and ambiguous spawn/order/exit paths invalidate the
+// ticket. Deferred, unsent maps are allowed; do not execute them here.
+int xh_tasks_quiesce_check(uint64_t ticket)
+{
+  int r = xhqv_poll(ticket);
+  if (r) return r;
+  if (!T.available || !T.trap || T.factory <= 0) return -ENOTSUP;
+  r = pthread_mutex_trylock(&T.lock);
+  if (r) return r == EBUSY ? -EAGAIN : -r;
+  r = xhqv_poll(ticket);
+  for (unsigned i = 0; !r && i < MAX_TASKS; i++) {
+    task *t = &T.tasks[i];
+    if (!t->used) continue;
+    if (__atomic_load_n(&t->running, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&t->unmaps_out, __ATOMIC_ACQUIRE) || t->zombie) { r = -EBUSY; break; }
+    if (t->dead) continue;
+    if (!t->service_slot || t->service_slot >= MAX_SLOTS || t->pid <= 0) { r = -EPROTO; break; }
+    int lock = pthread_mutex_trylock(&t->lock);
+    if (lock) { r = lock == EBUSY ? -EAGAIN : -lock; break; }
+    struct xs_service_page *sp = slot_page(t->service_slot);
+    if (__atomic_load_n(&sp->ready, __ATOMIC_ACQUIRE) != 1 ||
+        __atomic_load_n(&sp->request, __ATOMIC_ACQUIRE) ||
+        sp->setup_error || sp->pid != t->pid) r = -EBUSY;
+    pthread_mutex_unlock(&t->lock);
+  }
+  for (unsigned s = 0; !r && s < MAX_SLOTS; s++) {
+    thread *th = &T.threads[s];
+    if (!th->used) continue;
+    if (th->task >= MAX_TASKS || !T.tasks[th->task].used) { r = -EPROTO; break; }
+    if (T.tasks[th->task].dead) continue;
+    struct xs_trap_page *tp = slot_page(s);
+    if (xs_host_event_read(&tp->to_host) != XS_HOST_TRAPPED ||
+        __atomic_load_n(&tp->to_task, __ATOMIC_ACQUIRE) ||
+        !__atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE) || !tp->booted || tp->nops) r = -EBUSY;
+  }
+  if (!r) r = xhqv_poll(ticket);
+  pthread_mutex_unlock(&T.lock);
+  return r;
 }
 
 // Debugging (SIGQUIT to xnuhost): every iOS thread, where it last trapped or was released, and whether it is
@@ -1240,6 +1293,7 @@ bool xh_tasks_seccomp(void) { return false; }
 void xh_tasks_dump(void) {}
 uint64_t xh_tasks_va_limit(void) { return 0; }
 void xh_tasks_shutdown(void) {}
+int xh_tasks_quiesce_check(uint64_t ticket) { (void)ticket; return -ENOTSUP; }
 void xh_task_perf_log(void) {}
 
 #endif
