@@ -615,6 +615,9 @@ typedef struct {
   // itself with xh_virtio_pop when it has data (device-to-driver queues). kick() says buffers came.
   uint32_t manual;
   void (*kick)(xh_virtio *dev, unsigned queue);
+  // Optional, synchronous block device only. Called with ingress parked,
+  // outside the transport lock. Return 0 on host backing-store flush.
+  int (*quiesce_flush)(xh_virtio *dev);
 } xh_virtio_ops;
 xh_virtio *xh_virtio_create(uint64_t base, unsigned spi, const xh_virtio_ops *ops, void *opaque, const char *name);
 void      *xh_virtio_opaque(xh_virtio *dev);
@@ -641,6 +644,19 @@ uint64_t   xh_virtio_mmio_read(xh_virtio *dev, uint64_t offset, unsigned size);
 void       xh_virtio_mmio_write(xh_virtio *dev, uint64_t offset, unsigned size, uint64_t value);
 
 xh_virtio *xh_virtio_blk_create(uint64_t base, unsigned spi, xh_blk *disk);
+// Ticketed block ingress and host flush. Dedicated control caller only;
+// never call from a device handler or while owning the transport lock.
+// Close parks at a synchronous chain boundary (try-lock, -EAGAIN on
+// contention); it starts a lazy, process-lifetime deferred-kick worker.
+// Poll may block in fdatasync: an independent supervisor must own the
+// deadline. Successful poll proves accepted host writes were flushed,
+// not guest filesystem unmount or complete bridge/display quiescence.
+// Resume only with verified ticket; wakes deferred work asynchronously.
+// Reset, queue reconfiguration or flush failure invalidates the ticket;
+// no automatic reopen. No live supervisor is enabled by these APIs.
+int xh_virtio_blk_quiesce_close(xh_virtio *dev, uint64_t *ticket);
+int xh_virtio_blk_quiesce_poll(xh_virtio *dev, uint64_t ticket);
+int xh_virtio_blk_quiesce_resume(xh_virtio *dev, uint64_t ticket);
 xh_virtio *xh_virtio_input_create(uint64_t base, unsigned spi);
 xh_virtio *xh_virtio_gpu_create(uint64_t base, unsigned spi, unsigned width, unsigned height);
 

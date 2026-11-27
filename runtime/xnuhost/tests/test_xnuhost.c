@@ -386,6 +386,25 @@ static int64_t driver_send(driver *d, unsigned q, const uint64_t parts[][3], uns
   return length;
 }
 
+static int retry_blk_close(xh_virtio *dev, uint64_t *ticket)
+{
+  for (unsigned i = 0; i < 2000; i++) {
+    int r = xh_virtio_blk_quiesce_close(dev, ticket);
+    if (r != -EAGAIN) return r;
+    usleep(1000);
+  }
+  return -ETIMEDOUT;
+}
+static int retry_blk_op(int (*op)(xh_virtio *, uint64_t), xh_virtio *dev, uint64_t ticket)
+{
+  for (unsigned i = 0; i < 2000; i++) {
+    int r = op(dev, ticket);
+    if (r != -EAGAIN) return r;
+    usleep(1000);
+  }
+  return -ETIMEDOUT;
+}
+
 static void test_virtio_blk(const char *dir)
 {
   char path[256];
@@ -450,6 +469,56 @@ static void test_virtio_blk(const char *dir)
   *req = (__typeof__(*req)){ 4, 0, 0 };                                        // flush
   CHECK(driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x22000, 1, 1 } }, 2, true) == 1 && *status == 0);
   CHECK(xh_blk_read(store, 9 * 512, sector, 512) == 0 && sector[5] == 0x77);
+  // Actual block transport and backing file, not a mock flush. Close
+  // prevents pop or used publication even after multiple guest kicks.
+  uint64_t ticket = 0, second = 0;
+  int qr = retry_blk_close(w.dev, &ticket);
+  CHECK(!qr && ticket);
+  if (qr) return;
+  CHECK(retry_blk_close(w.dev, &second) == -EBUSY && !second);
+  CHECK(retry_blk_op(xh_virtio_blk_quiesce_resume, w.dev, ticket) == -EBUSY);
+  *req = (__typeof__(*req)){ 1, 0, 10 };
+  memset(data, 0x99, 512);
+  *status = 0xff;
+  uint16_t *used = xh_ram(w.queue_pa[0] + 0x2000, 0x1000);
+  uint16_t before = used[1];
+  CHECK(driver_send(&w, 0, (const uint64_t[][3]){
+    { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x21000, 512, 0 },
+    { GUEST_PA + 0x22000, 1, 1 } }, 3, true) == -1);
+  W(&w, 0x50, 0);
+  CHECK(used[1] == before && *status == 0xff);
+  CHECK(xh_blk_read(store, 10 * 512, sector, 512) == 0 && sector[0] == 11);
+  CHECK(retry_blk_op(xh_virtio_blk_quiesce_poll, w.dev, ticket + 1) == -ESTALE);
+  CHECK(!retry_blk_op(xh_virtio_blk_quiesce_poll, w.dev, ticket));
+  CHECK(!retry_blk_op(xh_virtio_blk_quiesce_poll, w.dev, ticket));
+  CHECK(used[1] == before && *status == 0xff);
+  CHECK(retry_blk_op(xh_virtio_blk_quiesce_resume, w.dev, ticket + 1) == -ESTALE);
+  qr = retry_blk_op(xh_virtio_blk_quiesce_resume, w.dev, ticket);
+  CHECK(!qr);
+  if (qr) return;
+  // No additional guest kick: the lazy worker must replay exactly once.
+  bool completed = false;
+  for (unsigned i = 0; i < 2000 && !completed; i++) {
+    if (xh_virtio_trylock(w.dev)) {
+      completed = (uint16_t)(used[1] - before) == 1 && *status == 0;
+      xh_virtio_unlock(w.dev);
+    }
+    if (!completed) usleep(1000);
+  }
+  CHECK(completed);
+  if (!completed) return; // do not close a file a delayed worker may still use
+  CHECK(xh_blk_read(store, 10 * 512, sector, 512) == 0 && sector[0] == 0x99);
+  W(&w, 0x50, 0);
+  CHECK((uint16_t)(used[1] - before) == 1);
+  CHECK(retry_blk_op(xh_virtio_blk_quiesce_poll, w.dev, ticket) == -ESTALE);
+  qr = retry_blk_close(w.dev, &second);
+  CHECK(!qr && second > ticket);
+  if (qr) return;
+  CHECK(!retry_blk_op(xh_virtio_blk_quiesce_poll, w.dev, second));
+  W(&w, 0x70, 0);
+  CHECK(retry_blk_op(xh_virtio_blk_quiesce_poll, w.dev, second) == -ESTALE);
+  CHECK(retry_blk_op(xh_virtio_blk_quiesce_resume, w.dev, second) == -ESTALE);
+  // The faulted fixture is permanently parked. No replay uses this disk.
   xh_blk_close(store);
   snprintf(path, sizeof path, "%s/seed.tar", dir);
   f = fopen(path, "wb");
@@ -464,6 +533,60 @@ static void test_virtio_blk(const char *dir)
   store = xh_blk_open(&fresh, &error);
   CHECK(store && xh_blk_read(store, 4096, sector, 512) == 0 && sector[0] == 0);           // a tar seed is not a disk image
   xh_blk_close(store);
+}
+
+// Inject a flush error and a reset during the flush callback. The
+// callback runs outside the transport lock, but cannot obtain a new ticket
+// or resume while the existing flush is in progress.
+struct blk_flush_fixture {
+  uint64_t ticket;
+  unsigned calls;
+  int mode, during_resume, during_poll, during_close;
+};
+static int64_t blk_fixture_handle(xh_virtio *d, unsigned q, uint16_t h, xh_viov *v, unsigned n)
+{
+  (void)d; (void)q; (void)h; (void)v; (void)n;
+  return 0;
+}
+static int blk_fixture_flush(xh_virtio *d)
+{
+  struct blk_flush_fixture *f = xh_virtio_opaque(d);
+  uint64_t second = 0;
+  f->calls++;
+  f->during_resume = retry_blk_op(xh_virtio_blk_quiesce_resume, d, f->ticket);
+  // A nested poll must return EAGAIN immediately, not call flush again.
+  f->during_poll = xh_virtio_blk_quiesce_poll(d, f->ticket);
+  f->during_close = retry_blk_close(d, &second);
+  if (f->mode == 1) {
+    xh_virtio_mmio_write(d, 0x70, 4, 0);
+    return 0;
+  }
+  return -1;
+}
+static void test_virtio_blk_quiesce_faults(void)
+{
+  static const xh_virtio_ops ops = {
+    .device_id = 2, .nqueues = 1, .handle = blk_fixture_handle,
+    .quiesce_flush = blk_fixture_flush
+  };
+  static struct blk_flush_fixture fixtures[2];
+  for (unsigned i = 0; i < 2; i++) {
+    struct blk_flush_fixture *f = &fixtures[i];
+    f->mode = (int)i;
+    xh_virtio *d = xh_virtio_create(0, 41, &ops, f, "blk-quiesce-test");
+    CHECK(d != NULL);
+    if (!d) return;
+    int r = retry_blk_close(d, &f->ticket);
+    CHECK(!r && f->ticket);
+    if (r) return;
+    int expected = i ? -ESTALE : -EIO;
+    CHECK(retry_blk_op(xh_virtio_blk_quiesce_poll, d, f->ticket) == expected);
+    CHECK(f->calls == 1 && f->during_resume == -EBUSY &&
+          f->during_poll == -EAGAIN && f->during_close == -EBUSY);
+    CHECK(retry_blk_op(xh_virtio_blk_quiesce_poll, d, f->ticket) == expected);
+    CHECK(retry_blk_op(xh_virtio_blk_quiesce_resume, d, f->ticket) == expected);
+    CHECK(f->calls == 1);
+  }
 }
 
 static void test_virtio_gpu(void)
@@ -3364,6 +3487,7 @@ int main(void)
   test_gic();
   test_sysreg();
   test_virtio_blk(dir);
+  test_virtio_blk_quiesce_faults();
   test_virtio_gpu();
   test_virtio_gpu3d();
   test_virtio_gpu3d_reset_overlap();

@@ -60,8 +60,13 @@ static uint32_t blk_config(xh_virtio *dev, uint32_t offset, unsigned size)
   return v;
 }
 
-static const xh_virtio_ops blk_ro = { .device_id = 2, .features = F_RO | F_BLK_SIZE | F_FLUSH, .nqueues = 1, .handle = blk_handle, .config_read = blk_config };
-static const xh_virtio_ops blk_rw = { .device_id = 2, .features = F_BLK_SIZE | F_FLUSH, .nqueues = 1, .handle = blk_handle, .config_read = blk_config };
+static int blk_quiesce_flush(xh_virtio *dev)
+{
+  return xh_blk_flush(xh_virtio_opaque(dev));
+}
+
+static const xh_virtio_ops blk_ro = { .device_id = 2, .features = F_RO | F_BLK_SIZE | F_FLUSH, .nqueues = 1, .handle = blk_handle, .config_read = blk_config, .quiesce_flush = blk_quiesce_flush };
+static const xh_virtio_ops blk_rw = { .device_id = 2, .features = F_BLK_SIZE | F_FLUSH, .nqueues = 1, .handle = blk_handle, .config_read = blk_config, .quiesce_flush = blk_quiesce_flush };
 
 xh_virtio *xh_virtio_blk_create(uint64_t base, unsigned spi, xh_blk *disk)
 {

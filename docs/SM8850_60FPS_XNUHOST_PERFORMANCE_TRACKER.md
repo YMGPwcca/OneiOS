@@ -734,3 +734,39 @@ qualification at that blocker; continue independent supervisor/IO
 development offline without silently replacing the user's adaptive
 frequency-ceiling requirement with duty or utilization. No live
 admission, benchmark, stage/rearm or thermal-triggered reboot.
+
+
+### G24.7 diagnostic result / G24.8 block I/O ingress gate (2026-11-27)
+
+Operator: ro.debuggable=0, vendor.debug.trace.perf.level empty,
+ro.build.type=user. Stock diagnostic readback is not available under the
+statically identified PerfLock gate. PERFLOCK_QUALIFICATION=
+BLOCKED_NO_OWNED_READBACK. No property change or vendor call. OneOS
+`fc7754d1e095d775c082d2c2261583380abc5e27` records the disposition. The frequency provider remains
+unqualified; no substitution with duty/utilization, no live admission.
+
+G24.8 implements the actual synchronous VirtIO block transport gate.
+Close uses the transport lock to park at a chain boundary (handler and
+used publication are synchronous under that lock). While closed, kicks
+are retained without popping avail chains, and the real block callback
+flushes accepted writes with xh_blk_flush/fdatasync. Poll releases the
+transport lock across the potentially blocking flush and rechecks the
+ticket; a flush error or queue/reset mutation latches failure. Resume
+requires a verified ticket and signals a lazy, process-lifetime worker
+which replays saved kicks without making the control caller do I/O.
+A regular kick may consume pending chains first; queue mutation cancels
+saved old-generation notifications. No worker is started on normal
+never-closed sessions. Only synchronous single-queue block devices with
+the explicit flush callback are supported. No automatic thaw/reopen.
+
+Regression covers real file-backed Data writes, retained kicks,
+no premature or stale resume, exact-once replay without a new kick,
+reset invalidation, injected flush failure and reset during flush.
+Local native regression and Android ARM64 link pending. No phone access.
+This receipt is host block I/O only, not APFS unmount/guest-cache
+durability or all device/bridge/display quiescence. fdatasync and thread
+creation have no guaranteed wall-clock bound. The future independent
+supervisor must own deadline, membership, lifecycle, and whole-session
+coordination; it must not call these APIs from a device handler.
+No new live caller, no thermal-triggered return or reboot, no kernel
+change. Display/bridge IO and actual supervisor integration remain.
