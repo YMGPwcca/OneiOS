@@ -1782,3 +1782,56 @@ retry, no runtime rebuild, no change to OneOS. Added local real-child
 and fake transport fixtures, including failed readback. Exact committed
 observer self-test remains pending operator WSL execution. No device
 access in this change.
+
+### 2026-11-28 — native reader Framework-OFF physical observation PASS
+
+Operator receipt at OneiOS 20eb35a218deda56a4c1de2d78a34d534308a638 /
+OneOS d1ff94975c355a219de4a13d667465eef91b3a65. Evidence
+/tmp/oneios-native-observer.LRoHZE and /tmp/oneios-native-off.68qg01ry.
+NATIVE_FILE_BACKED_TRANSPORT=PASS, NATIVE_TRANSFER_FIXTURE=PASS,
+NATIVE_OFF_OBSERVER_SELFTEST=PASS. Timeout cases printed during
+self-test are fixtures, not failures of this live transfer. Actual
+ADB push 2,521,920 bytes in 0.007 s; NATIVE_ROOT_COPY_VERIFIED.
+No live transfer timeout. Boot-pinned manifest: 28 zones (CPU 16,
+GPU 11, DDR 1). Operator explicitly accepted the existing 20 s
+Framework-only reboot smoke; no guest boot, APFS rearm or observer
+thermal-control writes. Existing recovery scripts refreshed with
+rollback preserved (.rollback/oneos-compat.ousMDf6F).
+
+ON/OFF snapshots bound to boot 99e016d0-42e9-451f-bfc1-973ac7fb32d7,
+root ksu:s0. OFF launch a6e025952b1d4256bed0fdf362235224,
+generation 99e016d0-42e9-451f-bfc1-973ac7fb32d7.5913.2940951,
+deadline BOOTTIME 29478 s. Both NATIVE_RAW_RC=0 and NATIVE_HAL_RC=0.
+ON raw 29358068..29358071 ms, HAL 29358192..29358193 ms;
+OFF raw 29460734..29460737 ms, HAL 29460893..29460894 ms.
+OFF read completed before the armed deadline with phase verification
+on both sides. NATIVE_OFF_OBSERVATION=READERS_OK.
+
+Native service PID/birth pairs unchanged across snapshots: thermal-engine
+9927/93576, Samsung thermal-default 2411/1119, Samsung power-default
+2385/1117, poweropt-service 2387/1117, perf2-hal-1-0 2399/1119;
+all running. CPU hotspot 32.7 -> 37.0 C, GPU and DDR 30.8 -> 33.6 C,
+battery 26.1 -> 26.4 C, LRP 28.3 -> 28.7 C, board AP 27.2 -> 29.5 C.
+HAL AIDL v3 six named entries, AP 27.0 -> 28.3 C, SKIN 28.3 -> 28.7 C,
+native max severity 0 both; SUBBAT=0 invalid, XO and GPU busy unavailable.
+Effective policy0 3187200 kHz, policy6 3398400 kHz, Samsung max
+3398400 kHz/min -1, KGSL max 902000000 Hz and thermal pwrlevel 5
+unchanged. Current CPU clocks differ; these are successive low-load
+diagnostic snapshots, not matched stress workloads.
+
+EXISTING_SMOKE_EXIT=4 / OBSERVER_EXIT=4 are separate from successful
+native observation: new Android boot observed by unprivileged ADB,
+root status unavailable (possibly ephemeral DirtyFrag lost), no
+independent unassisted return/deadline attribution qualification.
+Root temporary cleanup unverified at
+/data/adb/.oneios-natm.c2735fa7b20743fa813dead384073804.
+Do not claim that stock mitigation under sustained iOS load is proven:
+NATIVE_MITIGATION_AFTER_FRAMEWORK_OFF=NOT_QUALIFIED remains accurate.
+No more Framework-only smoke or PerfLock inventory is needed for this
+reader/lifecycle question. The next development objective is actual
+stock-managed session integration: a root-owned runner consuming the
+raw/native samples, independently verified guest demand ownership and
+bounded quiesce/resume with real runtime providers; not new diagnostic
+or peripheral milestones. Existing legacy full-run block remains;
+this receipt is not live admission. No runtime/OneOS changes and no
+new device action or GitHub Actions in this docs-only commit.
