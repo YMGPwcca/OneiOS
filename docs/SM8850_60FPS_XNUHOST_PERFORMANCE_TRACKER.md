@@ -807,3 +807,45 @@ freeze/thaw and independent supervisor still missing. No live caller
 or admission change. Frequency provider remains blocked at stock
 owned-readback requirement. No device access, thermal-triggered
 return/reboot, Android kernel change or shared frequency write.
+
+### G24.9 operator receipt / G25.0 offline unified coordinator (2026-11-27 ICT)
+
+Operator G24.9 OneiOS 2a6386731030c1f2dcd469b4eb08c614c6fb337e:
+display helper 276/276, frame_perf 55/55, six socket scenarios PASS,
+Android XNUHost and display JNI builds and four barrier symbols PASS.
+Evidence /tmp/oneios-g249.thFpQ4, DEVICE_ACCESS=NONE.
+XNUHost SHA256 1fe50a76f97fba84c10e37d4fd572909e0ccf9f942d0e381b42fad5d87343155;
+display JNI SHA256 707f8d91b220bd0834acc5f8b454f0edb849f9b84cda42d933c5b64003f2caba.
+
+G25.0 implements the offline worker-side coordinator and actual runtime
+dispatch for combined GPU, every configured block transport (up to six),
+and SHM display. Membership rejects null, duplicate and count-mismatched
+block pointers; an external owner must still prove exact membership and
+lifetime. One owner/cycle and absolute CLOCK_BOOTTIME deadline cover
+close, drain, hold and explicit resume. First close GPU and block ingress,
+drain them, then park the display helper and refresh all receipts.
+A parked receipt is sequential, not atomic global idle. Resume requires
+fresh validation and external authorization; reopen display first, blocks
+next and GPU last. Record attempted and successful reopen separately;
+latch faults without automatic reopen, rollback or thaw. Stale caller
+tickets cannot mutate the current cycle.
+
+Standalone Clang ASan/UBSan test with minimal ABI header shims and
+stand-in providers: 701 checks, 0 failed. Includes six-block dispatch,
+retry, invalid membership, stale cycle, expired deadline before/during
+provider, helper disconnect, denied resume, reset/stale receipt and
+partial resume. Full repository native regression and Android ARM64
+cross-link pending operator local CI; no device access. New test is
+part of make test and the actual adapter is linked into the Android
+target, but there is NO live caller.
+
+Important: this is the coordinator core, NOT the independent watchdog
+or a whole-session freeze/thaw implementation. Guard callback is an
+explicit prerequisite, not a claimed identity/producer proof. Still
+need independent lifecycle and deadline enforcement (including a
+worker stuck in fdatasync/ioctl), actual complete device membership,
+helper identity/liveness, boot-console and other producer park, bridge
+and input lifecycle, vCPU/reset fencing, and external authorization
+before considering live admission. No physical present/panel idle or
+APFS unmount claim. Frequency provider remains BLOCKED_NO_OWNED_READBACK.
+No recovery, thermal policy, kernel, staging or frequency write change.
