@@ -5,6 +5,7 @@
 #include "gpu3d.h"
 #include "quiesce_board.h"
 #include "quiesce_vcpu.h"
+#include "quiesce_input.h"
 #include "sm8850_stage_admission.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -923,6 +924,8 @@ static int boot(void)
     LOGE("input: could not start; continuing without");
   }
   if (xh_input_script_start(input, pen.dev && pen.device.fd < 0 ? pen.dev : NULL)) return -1;
+  int input_rc = xhqi_seal();
+  if (input_rc) LOGI("quiescence: input receipt unavailable (%s)", strerror(-input_rc));
 
   static xl_machine machine;
   machine.chip_id = 0x8150;

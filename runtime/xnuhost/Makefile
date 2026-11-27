@@ -17,8 +17,8 @@ ARM64_RUN := $(if $(ARM64_NATIVE),,$(QEMU))
 WARN := -Wall -Wextra -Werror
 INC := -Iinclude -Isrc -Istub -I../loader/include -I../bridges/include -I../bridges/encoder -I../../drivers/bridge -I../../drivers/camera
 CFLAGS ?= -O2 -g
-SRC := main return ready log perf config insn mem discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input virtio_gpu gpu3d display quiesce quiesce_runtime quiesce_supervisor quiesce_board quiesce_board_runtime quiesce_peer quiesce_vcpu input input_script pen cpu hostcalls task
-PORTABLE := return ready log perf config insn discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input input input_script pen virtio_gpu gpu3d quiesce_board cpu task
+SRC := main return ready log perf config insn mem discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input virtio_gpu gpu3d display quiesce quiesce_runtime quiesce_supervisor quiesce_board quiesce_board_runtime quiesce_peer quiesce_vcpu quiesce_input input input_script pen cpu hostcalls task
+PORTABLE := return ready log perf config insn discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input input input_script pen virtio_gpu gpu3d quiesce_board quiesce_input cpu task
 LOADER_SRC := $(wildcard ../loader/src/*.c)
 HDR := $(wildcard include/xnuhost/*.h src/*.h stub/*.h ../loader/include/xnuloader/*.h)
 A := build/android
@@ -133,6 +133,11 @@ $(A)/xnuhost: $(SRC:%=$(A)/%.o) $(A)/kctx.o $(A)/arch.o $(patsubst ../loader/src
 	$(ANDROID_CC) -static -o $@ $^ -lm
 
 # ---- host unit tests ----
+# Real input-source thread lifecycle and explicit park/stop.
+$(H)/test_quiesce_input: tests/test_quiesce_input.c src/quiesce_input.c src/quiesce_input.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_quiesce_input.c src/quiesce_input.c -lpthread -o $@
+
 # Cooperative eight-vCPU rendezvous, real pthreads and futexes.
 $(H)/test_quiesce_vcpu: tests/test_quiesce_vcpu.c src/quiesce_vcpu.c src/quiesce_vcpu.h
 	@mkdir -p $(H)
@@ -144,9 +149,9 @@ $(H)/test_quiesce_peer: tests/test_quiesce_peer.c src/quiesce_peer.c src/quiesce
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_quiesce_peer.c src/quiesce_peer.c -o $@
 
 # Real board registry and console gate plus coordinator with stand-in providers.
-$(H)/test_quiesce_board: tests/test_quiesce_board.c src/quiesce_board.c src/quiesce_board_runtime.c src/quiesce.c src/quiesce_runtime.c $(HDR)
+$(H)/test_quiesce_board: tests/test_quiesce_board.c src/quiesce_board.c src/quiesce_board_runtime.c src/quiesce_input.c src/quiesce.c src/quiesce_runtime.c $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_quiesce_board.c src/quiesce_board.c src/quiesce_board_runtime.c src/quiesce.c src/quiesce_runtime.c -lpthread -o $@
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_quiesce_board.c src/quiesce_board.c src/quiesce_board_runtime.c src/quiesce_input.c src/quiesce.c src/quiesce_runtime.c -lpthread -o $@
 
 # Independent owner/worker processes, real socket credentials/pidfds/timerfd.
 $(H)/test_quiesce_supervisor: tests/test_quiesce_supervisor.c src/quiesce_supervisor.c src/quiesce.c $(HDR)
@@ -302,7 +307,8 @@ parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
 
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_quiesce_vcpu $(H)/test_quiesce_peer $(H)/test_quiesce_board $(H)/test_quiesce_supervisor $(H)/test_quiesce $(H)/test_kgsl_drain $(H)/test_stub_event $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_task_timing_totals $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
+test: $(H)/test_quiesce_input $(H)/test_quiesce_vcpu $(H)/test_quiesce_peer $(H)/test_quiesce_board $(H)/test_quiesce_supervisor $(H)/test_quiesce $(H)/test_kgsl_drain $(H)/test_stub_event $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_task_timing_totals $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
+	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_input
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_vcpu
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_peer
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_board

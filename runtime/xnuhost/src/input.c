@@ -28,6 +28,7 @@
 // its next frame (xh_input_frame_shown, called from the display).
 #define _GNU_SOURCE
 #include "xnuhost.h"
+#include "quiesce_input.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -263,7 +264,7 @@ static unsigned nfds;
 static xh_pen_source pen_source;        // the pen (pen.c): read on this thread too, its own filter and guest device
 static int pen_index = -1;             // its place in fds, -1 = none
 static pthread_t thread;
-static volatile bool running;
+static bool running;
 static int exclusive_touch_fd = -1;
 
 // Release the exclusive touchscreen before closing other evdev descriptors.
@@ -332,10 +333,13 @@ static int read_state(xh_input_source *s, xh_input_state *st)
 static void *input_main(void *arg)
 {
   (void)arg;
-  while (running) {
+  while (__atomic_load_n(&running, __ATOMIC_ACQUIRE) && xhqi_reader_checkpoint()) {
     if (poll(fds, nfds, 500) <= 0) continue;
     for (unsigned i = 0; i < nfds; i++) {
       if (!(fds[i].revents & POLLIN)) continue;
+      // Complete the prior read/feed (including power-key callback) before
+      // parking. Do not consume the next evdev batch while fenced.
+      if (!xhqi_reader_checkpoint() || !__atomic_load_n(&running, __ATOMIC_ACQUIRE)) goto finished;
       struct input_event ev[64];
       ssize_t n = read(fds[i].fd, ev, sizeof ev);
       if (n <= 0) continue;
@@ -354,11 +358,14 @@ static void *input_main(void *arg)
       else xh_input_feed(&sources[i], batch, count, now_ns, now_counter, g_info.timebase_hz);
     }
   }
+finished:
+  xhqi_finish(XHQI_READER, false);
   return NULL;
 }
 
 int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive)
 {
+  if (xhqi_start(XHQI_READER)) return -1;
   (void)width; (void)height;
   bool have_touch = false, have_power = false;
   const bool native_touch = native_touch_present();
@@ -408,6 +415,7 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
                path, name, strerror(errno));
           close(fd);
           close_input_sources();
+          xhqi_finish(XHQI_READER, true);
           return -1;
         }
         exclusive_touch_fd = fd;
@@ -445,6 +453,7 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
   if (touch_exclusive && !have_touch) {
     LOGE("input: touch-exclusive: native sec_touchscreen not available; guest will not boot");
     close_input_sources();
+    xhqi_finish(XHQI_READER, true);
     return -1;
   }
   // The pen (pen.c): found and opened before (main.c, xh_pen_lookup), read here beside the others, its own filter.
@@ -454,11 +463,16 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
     pen_index = (int)nfds;
     fds[nfds++] = (struct pollfd){ .fd = pen->device.fd, .events = POLLIN };
   }
-  if (!nfds) { LOGI("input: no touchscreen or key device under /dev/input"); return 0; }
-  running = true;
+  if (!nfds) {
+    LOGI("input: no touchscreen or key device under /dev/input");
+    xhqi_finish(XHQI_READER, false);
+    return 0;
+  }
+  __atomic_store_n(&running, true, __ATOMIC_RELEASE);
   if (pthread_create(&thread, NULL, input_main, NULL)) {
-    running = false;
+    __atomic_store_n(&running, false, __ATOMIC_RELEASE);
     close_input_sources();
+    xhqi_finish(XHQI_READER, true);
     return -1;
   }
   return 0;
@@ -466,8 +480,9 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
 
 void xh_input_stop(void)
 {
-  if (!running) return;
-  running = false;
+  if (!__atomic_load_n(&running, __ATOMIC_ACQUIRE)) return;
+  xhqi_reader_stop(); // terminal exit, never normal resume
+  __atomic_store_n(&running, false, __ATOMIC_RELEASE);
   pthread_join(thread, NULL);
   close_input_sources();
 }

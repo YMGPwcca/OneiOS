@@ -1062,3 +1062,63 @@ owned-group freeze/thaw. No proof of complete guest quiescence or
 physical GPU/IO/thermal behavior. Frequency provider remains
 BLOCKED_NO_OWNED_READBACK. No OneOS change, live admission, staging,
 rearm, thermal policy, kernel, recovery or frequency write change.
+
+### G25.1B3 operator receipt / G25.1B4A input source lifecycle
+
+Operator WSL G25.1B3 OneiOS 3174df6fe3fd35060ee2e4da2e8868270175d503:
+651 vCPU, 967 board/console and 19,858 XNUHost native checks,
+zero failures; Android ARM64 link and ten requested symbols PASS.
+SHA256 8dfdd410821e8327d84b2b4dd70a9770e6890a88236044c5db49791494f1798c.
+Evidence /tmp/oneios-g251b3.NBQWfF, DEVICE_ACCESS=NONE.
+Real udmabuf import remains untested.
+
+G25.1B4A captures the known native evdev reader (touch, pen and
+side keys) and the script source before they start, seals membership
+after setup, refuses late/duplicate starts and ambiguous setup failures.
+The native reader cooperates at the outer poll loop and before
+each read; park cannot be acknowledged in a read/feed/power-key
+callback. Normal open checkpoints use one atomic load. No change
+to filter/guest report format, EVIOCGRAB policy, side-key recovery
+reader, input timing settings or bench deadline. A running script
+prevents close (EBUSY) until it exits; do not pause and retime the
+workload or synthesize gesture cancellation. In a valid native
+reader park, no further read/feed is started; kernel evdev data may
+accumulate or overflow, so this is not a lossless physical-event
+buffer or proof of neutral contacts. Existing SYN_DROPPED handling
+is unchanged. A terminal input stop invalidates the ticket and
+wakes a parked reader for the existing join/descriptor cleanup,
+not normal resume. A blocked operation still needs the independent
+owner deadline. Exact input ticket required by board-bound guard
+before/after external checks; no automatic reopen.
+
+The board adapter now refuses any mapped transport other than
+block (2), GPU (16) and input (18) with ENOTSUP, even if an
+external guard would be permissive. Hardware bridge, camera,
+audio, encoder, network and unknown VirtIO devices require their
+own actual provider qualification. This deliberately blocks the
+current full-bridges profile until those providers are implemented;
+the ordinary boot/render path and existing admission are unchanged.
+Non-VirtIO workers, external process membership and asynchronous
+hardware/DMA boundaries are not proven by this transport allowlist.
+
+Standalone exact quiesce_input.{c,h} and test_quiesce_input.c:
+GCC and Clang ASan/UBSan, three runs each, 155 checks/run, zero
+failures. Seven fork-isolated scenarios; real pthread plus pipe
+handshakes for in-flight work and queued input, no post-park feed,
+repeat park/resume, stale/unverified tickets, active script refusal,
+missing/failed/duplicate source, late registration, terminal stop
+after valid or faulted park. Leak sanitizer disabled for process
+fixtures. Three new blobs matched tested files. Updated board
+fixture uses the real input gate and tests unsupported transport
+types; actual input/board integration, native regression and
+Android ARM64 build pending operator local CI.
+
+Remaining G25.1B4B: per-bridge actual ingress/drain/stop/receipt
+and resume, including callbacks, helper processes, DMA/shared
+media pool and non-VirtIO producers; no substitution of a transport
+lock for an actuator receipt. Independently verified complete process
+membership, repeated-cycle ownership and G25.2 freeze/thaw/owner
+launcher remain pending. Frequency provider remains
+BLOCKED_NO_OWNED_READBACK. No OneOS change, phone access, live
+admission, staging, rearm, thermal policy, kernel, recovery or
+frequency write change.

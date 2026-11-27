@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "quiesce_board.h"
 #include "quiesce_vcpu.h"
+#include "quiesce_input.h"
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -59,7 +60,7 @@ static int drive(struct xhq *q, uint64_t cycle)
   for (unsigned i = 0; i < 20 && r == -EAGAIN; i++) r = xhq_step(q, 17, cycle);
   return r;
 }
-static void make_board(void)
+static void make_board(unsigned bridge_type)
 {
   struct xhqb_snapshot s;
   CHECK(xhqb_snapshot(&s) == -EBUSY);
@@ -68,43 +69,54 @@ static void make_board(void)
   CHECK(xhqb_map(&devices[0], BASE, SPI, 2, map_fail, &maps) == -EIO && !maps);
   for (unsigned i = 0; i < 6; i++) { devices[i].member = i+1; CHECK(add(i, 2) == 0); }
   devices[7].member = 0;
-  CHECK(add(6, 18) == 0 && add(7, 16) == 0 && add(8, 25) == 0 && add(9, 1) == 0);
-  CHECK(xhqb_seal(10) == 0 && maps == 10);
-  CHECK(xhqb_seal(10) == -EINVAL);
-  CHECK(xhqb_snapshot(&s) == 0 && s.count == 10 && s.nblocks == 6 && s.gpu == &devices[7]);
+  CHECK(add(6, 18) == 0 && add(7, 16) == 0 && add(8, 18) == 0);
+  unsigned count = bridge_type ? 10 : 9;
+  if (bridge_type) CHECK(add(9, bridge_type) == 0);
+  CHECK(xhqb_seal(count) == 0 && maps == count);
+  CHECK(xhqb_seal(count) == -EINVAL);
+  CHECK(xhqb_snapshot(&s) == 0 && s.count == count && s.nblocks == 6 && s.gpu == &devices[7]);
   for (unsigned i = 0; i < 6; i++) CHECK(s.blocks[i] == &devices[i]);
-  for (unsigned i = 0; i < 10; i++) CHECK(s.members[i].dev == &devices[i] && s.members[i].base == BASE+i*STRIDE && s.members[i].spi == SPI+i);
-  CHECK(s.members[6].type == 18 && s.members[8].type == 25 && s.members[9].type == 1);
+  for (unsigned i = 0; i < count; i++) CHECK(s.members[i].dev == &devices[i] && s.members[i].base == BASE+i*STRIDE && s.members[i].spi == SPI+i);
+  CHECK(s.members[6].type == 18 && s.members[8].type == 18);
+  if (bridge_type) CHECK(s.members[9].type == bridge_type);
   CHECK(xhqb_match(&s) == 0); s.members[6].type = 16; CHECK(xhqb_match(&s) == -ESTALE);
   CHECK(xhqb_snapshot(&s) == 0); s.blocks[0] = &devices[1]; CHECK(xhqb_match(&s) == -ESTALE);
-  CHECK(xhqb_snapshot(&s) == 0); s.count = 9; CHECK(xhqb_match(&s) == -ESTALE);
+  CHECK(xhqb_snapshot(&s) == 0); s.count = count-1; CHECK(xhqb_match(&s) == -ESTALE);
 }
 static void lifecycle(int late)
 {
-  make_board();
+  make_board(0);
   struct xhq q; struct xhqb_binding b;
-  uint64_t t = 0, cycle = 0;
-  CHECK(xhqb_runtime_init(&q, &b, 17, 1, 23, guard, &maps) == -ESTALE);
+  uint64_t t = 0, it = 0, cycle = 0;
+  CHECK(xhqi_seal() == 0 && xhqi_close(&it) == 0);
+  CHECK(xhqb_runtime_init(&q, &b, 17, 1, 23, it, guard, &maps) == -ESTALE);
   CHECK(xhqb_console_close(&t) == 0 && t != 0);
-  CHECK(xhqb_runtime_init(&q, &b, 17, t+1, 23, guard, &maps) == -ESTALE);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t+1, 23, it, guard, &maps) == -ESTALE);
   helper_error = -EPERM;
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, guard, &maps) == -EPERM && !closes);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, guard, &maps) == -EPERM && !closes);
   helper_error = 0;
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, 24, guard, &maps) == -ESTALE && !closes);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 24, it, guard, &maps) == -ESTALE && !closes);
   guest_error = -EBUSY;
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, guard, &maps) == -EBUSY && !closes);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, guard, &maps) == -EBUSY && !closes);
   guest_error = 0;
-  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, guard, &maps) == 0 && q.nblocks == 6);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it+1, guard, &maps) == -ESTALE && !closes);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, guard, &maps) == 0 && q.nblocks == 6);
   CHECK(xhq_begin(&q, 17, UINT64_MAX, &cycle) == 0);
   CHECK(drive(&q, cycle) == 0 && q.phase == XHQ_PARKED && q.verified == 255 && closes == 255);
-  if (late == 2) {
+  if (late == 3) {
+    unsigned old = polls;
+    CHECK(xhqi_start(XHQI_SCRIPT) == -EPERM);
+    CHECK(xhq_request_resume(&q, 17, cycle) == -ESTALE && q.phase == XHQ_FAULT);
+    CHECK(xhq_step(&q, 17, cycle) == -ESTALE && polls == old && !resumes);
+    CHECK(xhqi_resume(it) == -ESTALE);
+  } else if (late == 2) {
     unsigned old = polls;
     guest_error = -ESTALE;
     CHECK(xhq_request_resume(&q, 17, cycle) == -ESTALE && q.phase == XHQ_FAULT);
     CHECK(xhq_step(&q, 17, cycle) == -ESTALE && polls == old && !resumes && !xhqb_console_enter());
   } else if (late) {
     unsigned old = polls;
-    CHECK(add(10, 18) == -EPERM && maps == 10);
+    CHECK(add(9, 18) == -EPERM && maps == 9);
     CHECK(xhqb_match(&b.board) == -ESTALE);
     CHECK(xhq_request_resume(&q, 17, cycle) == -ESTALE && q.phase == XHQ_FAULT);
     CHECK(xhq_step(&q, 17, cycle) == -ESTALE && polls == old && !resumes && !xhqb_console_enter());
@@ -115,7 +127,16 @@ static void lifecycle(int late)
     for (unsigned i = 1; i <= 6; i++) CHECK(order[i] == i);
     CHECK(!xhqb_console_enter() && xhqb_console_poll(t) == 0);
     CHECK(xhqb_console_resume(t) == 0 && xhqb_console_enter()); xhqb_console_leave();
+    CHECK(xhqi_resume(it) == 0);
   }
+}
+static void unsupported(unsigned type)
+{
+  make_board(type);
+  struct xhq q; struct xhqb_binding b;
+  uint64_t t = 0, it = 0;
+  CHECK(xhqb_console_close(&t) == 0 && xhqi_seal() == 0 && xhqi_close(&it) == 0);
+  CHECK(xhqb_runtime_init(&q, &b, 17, t, 23, it, guard, &maps) == -ENOTSUP && !closes);
 }
 static int entered[2], release_writer[2];
 static void *writer(void *unused)
@@ -169,7 +190,7 @@ int main(void)
 {
   alarm(30);
   /* Global process-lifetime registry: fork a fresh fixture for each case. */
-  for (int i = 0; i < 13; i++) {
+  for (int i = 0; i < 20; i++) {
     int p[2]; CHECK(pipe(p) == 0);
     pid_t pid = fork(); CHECK(pid >= 0);
     if (!pid) {
@@ -178,6 +199,8 @@ int main(void)
       else if (i == 1) console();
       else if (i == 2 || i == 3) lifecycle(i == 3);
       else if (i == 12) lifecycle(2);
+      else if (i == 13) lifecycle(3);
+      else if (i >= 14) unsupported((const unsigned[]){1,25,0x4f42,0x4f43,48,0xffff}[i-14]);
       else invalid(i-4);
       if (write(p[1], &checks, sizeof checks) != sizeof checks) _exit(2);
       close(p[1]); _exit(0);

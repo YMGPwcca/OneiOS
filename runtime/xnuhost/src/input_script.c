@@ -33,6 +33,7 @@
 // input.c's filter (xh_input_feed) as a touch screen's do: only the codes the panel's would pass, each frame's end
 // preceded by EV_MSC / MSC_TIMESTAMP with the time it is sent, and one `input: touch:` line per gesture.
 #include "xnuhost.h"
+#include "quiesce_input.h"
 #include <ctype.h>
 #include <errno.h>
 #include <pthread.h>
@@ -370,7 +371,7 @@ static void run_bench(void)
        completed, (unsigned long long)mono_ms(), xh_virtio_input_backlog(target));
 }
 
-static void *script_main(void *arg)
+static void *script_run(void *arg)
 {
   (void)arg;
   if (bench) { run_bench(); return NULL; }
@@ -402,6 +403,13 @@ static void *script_main(void *arg)
   }
   if (script_running()) LOGI("input script: done");
   return NULL;
+}
+
+static void *script_main(void *arg)
+{
+  void *result = script_run(arg);
+  xhqi_finish(XHQI_SCRIPT, false);
+  return result;
 }
 
 int xh_input_script_load(const char *path, bool *has_pen)
@@ -447,6 +455,7 @@ int xh_input_script_start(xh_virtio *dev, xh_virtio *pen)
     LOGI("SM8850_INTERACTION_V1 status=prepared x=%d..%d y=%d..%d", xmin, xmax, ymin, ymax);
   }
   if (!nsteps) return 0;
+  if (xhqi_start(XHQI_SCRIPT)) return -1;
   unsigned events = 0, pen_events = 0;
   xh_pen_device scripted = { .fd = -1 };
   snprintf(scripted.name, sizeof scripted.name, "the script's pen");
@@ -471,7 +480,9 @@ int xh_input_script_start(xh_virtio *dev, xh_virtio *pen)
   } else if (pen_events) LOGI("input script: %u pen events, no pen device (pen=off): left out", pen_events);
   __atomic_store_n(&running, true, __ATOMIC_RELEASE);
   if (pthread_create(&thread, NULL, script_main, NULL)) {
-    __atomic_store_n(&running, false, __ATOMIC_RELEASE); return -1;
+    __atomic_store_n(&running, false, __ATOMIC_RELEASE);
+    xhqi_finish(XHQI_SCRIPT, true);
+    return -1;
   }
   LOGI("input script: %s, %u steps (%u events, %u of them the pen's)", script_path, nsteps, events, pen_events);
   return 0;
