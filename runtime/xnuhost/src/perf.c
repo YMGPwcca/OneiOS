@@ -204,7 +204,7 @@ void xh_perf_log(bool since_start)
     for (unsigned k = 0; k < XP_COUNT; k++) hist_delta(&sum.h[k], &p->h[k], then ? &then->h[k] : NULL);
     for (unsigned k = 0; k < 16; k++) sum.traps[k] += p->traps[k] - (then ? then->traps[k] : 0);
 #define D(f) sum.f += p->f - (then ? then->f : 0)
-    D(host_sleeps); D(task_sleeps); D(host_wakes); D(task_wakes); D(maps_deferred); D(maps_ordered); D(unmaps_deferred); D(unmaps_ordered); D(timer_sets); D(timer_calls); D(ops_joined); D(uclamp_sets); D(kicks); D(kicks_skipped);
+    D(host_sleeps); D(task_sleeps); D(host_wakes); D(task_wakes); D(maps_deferred); D(maps_ordered); D(unmaps_deferred); D(unmaps_ordered); D(timer_sets); D(timer_calls); D(empty_flush_skipped); D(ops_joined); D(uclamp_sets); D(kicks); D(kicks_skipped);
 #undef D
   }
   uint64_t traps = 0;
@@ -222,6 +222,8 @@ void xh_perf_log(bool since_start)
   LOGI("perf:   queue: %llu maps and unmaps joined to the one before (one host call less each); uclamp: %llu given to iOS threads; "
        "interrupt lines raised on other vCPUs: %llu signalled or woken, %llu already up (no signal)", (unsigned long long)sum.ops_joined,
        (unsigned long long)sum.uclamp_sets, (unsigned long long)sum.kicks, (unsigned long long)sum.kicks_skipped);
+  LOGI("perf-order-skip: empty_flushes=%llu (vcpu totals for this report)",
+       (unsigned long long)sum.empty_flush_skipped);
   for (unsigned k = 0; k < XP_COUNT; k++) hist_line(names[k], &sum.h[k]);
   for (unsigned i = 0; i < g_ncpu; i++) {
     xh_vcpu *v = &g_vcpu[i];

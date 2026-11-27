@@ -465,6 +465,7 @@ typedef struct {
   uint64_t unmaps_deferred, unmaps_ordered;   // task_unmap calls queued (no thread of the task ran) / sent as an order
   uint64_t timer_sets, timer_calls;       // the kernel's timer_set calls; those that reached timer_settime
   uint64_t ticks_user, ticks_idle;        // counter ticks spent inside thread_run (the iOS thread's turn) and cpu_idle
+  uint64_t empty_flush_skipped;           // proven empty service flushes, no IPC
   uint64_t ops_joined;                    // task_map/task_unmap calls joined to the queue's last entry (stub_abi.h xs_queue_join)
   uint64_t uclamp_sets;                   // sched_setattr calls that gave an iOS thread its vCPU's uclamp.min (task.c)
   uint64_t kicks, kicks_skipped;          // raises of another vCPU's line that signalled or woke it; those it had up already

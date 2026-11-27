@@ -15,6 +15,7 @@
 #include "quiesce_vcpu.h"
 #include "../stub/stub_abi.h"
 #include "task_order_diag.h"
+#include "task_order_fast.h"
 #include "task_profile.h"
 #include "task_timing_totals.h"
 #include <errno.h>
@@ -408,12 +409,15 @@ static task *task_of(uint64_t handle)
 }
 
 // Waits until *word is not 0, the task is dead, or the time is up. Returns 0, -ESRCH, -ETIMEDOUT.
-static int wait_word(task *t, uint32_t *word, int seconds)
+static int wait_word(task *t, uint32_t *word, int seconds, const struct timespec *started)
 {
   // By the clock, not by the number of waits: a futex wait that a signal interrupts (the vCPU threads get
   // them all the time: kicks, timers) returns at once, and a hundred of those are not ten seconds.
   struct timespec now, until;
-  clock_gettime(CLOCK_MONOTONIC, &until);
+  // order() already sampled this clock after publishing its request.
+  // Reuse that sample, rather than taking a second deadline-start sample.
+  if (started) until = *started;
+  else clock_gettime(CLOCK_MONOTONIC, &until);
   until.tv_sec += seconds;
   for (;;) {
     if (__atomic_load_n(word, __ATOMIC_ACQUIRE)) return 0;
@@ -453,6 +457,16 @@ static int64_t order(task *t, const struct xs_op *ops, unsigned count)
   if (t->dead) { t->npending = t->nunmaps = 0; pthread_mutex_unlock(&t->qlock); pthread_mutex_unlock(&t->lock); return -ESRCH; }
   // The deferred maps and unmaps first, in their order: an unmap or protect after them must find them done.
   unsigned first = t->npending;
+  // flush_pending may have observed an old nonempty queue before another
+  // vCPU drained it. Both locks now serialize that earlier ACK and the
+  // current queue. Skip only a proven empty flush of an idle service.
+  if (!count && !first && xh_task_flush_can_skip(count, first, t->nunmaps,
+        __atomic_load_n(&t->unmaps_out, __ATOMIC_ACQUIRE), &sp->request, &sp->done)) {
+    xh_perf_self()->empty_flush_skipped++;
+    pthread_mutex_unlock(&t->qlock);
+    pthread_mutex_unlock(&t->lock);
+    return 0;
+  }
   if (T.profile_tasks) xh_tq_record_batch(&t->profile.queue, true, first, t->nunmaps);
   memcpy(sp->ops, t->pending, first * sizeof *ops);
   if (t->nunmaps) { __atomic_store_n(&t->unmaps_out, true, __ATOMIC_SEQ_CST); t->nunmaps = 0; }   // before npending: as in thread_run
@@ -475,7 +489,7 @@ static int64_t order(task *t, const struct xs_op *ops, unsigned count)
   futex(&sp->request, FUTEX_WAKE, 1, NULL);
   struct timespec began, ended;
   clock_gettime(CLOCK_MONOTONIC, &began);
-  int rc = wait_word(t, &sp->done, 10);
+  int rc = wait_word(t, &sp->done, 10, &began);
   if (rc) xhqv_invalidate(); // service batch completion may be ambiguous
   clock_gettime(CLOCK_MONOTONIC, &ended);
   uint64_t order_ack = T.profile_tasks ? xh_counter() : 0;
@@ -557,7 +571,7 @@ static int64_t task_create_one(uint64_t *handle)
   t->used = true;
   pthread_mutex_unlock(&T.lock);
   struct xs_service_page *sp = slot_page((uint32_t)slot);
-  int rc = wait_word(t, &sp->ready, 10);
+  int rc = wait_word(t, &sp->ready, 10, NULL);
   if (rc || sp->setup_error) {
     xhqv_invalidate();
     LOGE("tasks: task process %d did not set up (%d, stub error %d)", t->pid, rc, sp->setup_error);
@@ -934,7 +948,7 @@ int64_t xh_thread_create(uint64_t handle, uint64_t *out)
   struct xs_op op = { .op = XS_OP_CLONE, .va = (uint64_t)area, .offset = (uint64_t)slot * XS_SLOT_SIZE };
   int64_t rc = order(t, &op, 1);
   if (!rc) {
-    rc = wait_word(t, &tp->to_host, 10);             // its first stop (XH_TRAP_BOOT)
+    rc = wait_word(t, &tp->to_host, 10, NULL);             // its first stop (XH_TRAP_BOOT)
     // The clone was answered and the new thread never reported: say what the host knows about it.
     if (rc) LOGE("tasks: pid %d: the thread made in area %d did not reach its first stop (%s): tid %u, the process is %s",
                  t->pid, area, rc == -ESRCH ? "the task died" : "10 s", __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE),

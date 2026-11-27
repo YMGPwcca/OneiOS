@@ -193,6 +193,10 @@ $(H)/test_task_timing_totals: tests/test_task_timing_totals.c src/task_timing_to
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O2 -g $(WARN) $(INC) -fsanitize=undefined -pthread tests/test_task_timing_totals.c -o $@
 
+$(H)/test_task_order_fast: tests/test_task_order_fast.c src/task_order_fast.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) -Isrc -pthread -fsanitize=address,undefined tests/test_task_order_fast.c -o $@
+
 $(H)/test_task_profile: tests/test_task_profile.c src/task_profile.h src/xnuhost.h src/perf_detail.h
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined -pthread tests/test_task_profile.c -o $@
@@ -312,7 +316,7 @@ parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
 
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_timer_program $(H)/test_quiesce_input $(H)/test_quiesce_vcpu $(H)/test_quiesce_peer $(H)/test_quiesce_board $(H)/test_quiesce_supervisor $(H)/test_quiesce $(H)/test_kgsl_drain $(H)/test_stub_event $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_profile $(H)/test_task_timing_totals $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
+test: $(H)/test_timer_program $(H)/test_quiesce_input $(H)/test_quiesce_vcpu $(H)/test_quiesce_peer $(H)/test_quiesce_board $(H)/test_quiesce_supervisor $(H)/test_quiesce $(H)/test_kgsl_drain $(H)/test_stub_event $(H)/test_stub_copy $(H)/test_sm8850_stage_admission $(H)/test_task_order_diag $(H)/test_task_order_fast $(H)/test_task_profile $(H)/test_task_timing_totals $(H)/test_gpu_fence_perf $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64 check-task-profiler-arm64 check-profiler-benchmark-parser
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_timer_program
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_input
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_quiesce_vcpu
@@ -325,6 +329,7 @@ test: $(H)/test_timer_program $(H)/test_quiesce_input $(H)/test_quiesce_vcpu $(H
 	$(H)/test_stub_event
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_stub_copy
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_task_order_diag
+	ASAN_OPTIONS=detect_leaks=0 $(H)/test_task_order_fast
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_task_profile
 	$(H)/test_task_timing_totals
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_gpu_fence_perf

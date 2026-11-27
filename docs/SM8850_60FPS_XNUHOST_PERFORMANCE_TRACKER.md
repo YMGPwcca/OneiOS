@@ -1360,3 +1360,55 @@ staging/rearm or phone access. Frequency still BLOCKED_NO_OWNED_READBACK.
 Next performance decisions: use existing G2.2/Phase F frame and
 task evidence, prioritize measured CPU/VM and GPU/display hot paths;
 no re-opening the deferred hardware lifecycle without operator scope.
+
+### 2026-11-27 — PERF-P1-01/02 service-order hot path
+
+Operator WSL PERF_TIMER_OFFLINE=PASS at
+257f7ee7fd5737855bf4ccb9459acb6139aa7261: 14,028 timer, 67 task
+profile, 19,858 native checks, zero failures; QEMU test kernel all
+passed (timer interrupt/preemption and 200-round unmap race),
+RAM_AUTO_LOG PASS, Android build PASS. The initial native test
+had run from the repo root and could not open two relative fixtures;
+re-running from runtime/xnuhost resolved both, no source fix needed.
+Evidence /tmp/oneios-perf-timer.d2vCgH, DEVICE_ACCESS=NONE.
+Android XNUHost SHA256
+b8fcf5c8bf580175b1d38754ab5cf4b2615f1b835d9060f91c2108a4a6ed0900.
+QEMU skips process_vm_{readv,writev}, no KGSL/udmabuf physical test.
+
+Do not proliferate IPC protocols for unproven performance benefit.
+Historical G2.2 baseline: 340,790 direct and 19,315 deferred service
+order ACK samples. Standalone conditional-wake two-flag candidate
+passed 20,000 process-shared orders each on GCC/Clang, but used
+39,079/39,274 of 40,000 unconditional wake calls. A second candidate
+used a single IDLE/WAITING/POSTED atomic futex word; 160,000 alternating
+legacy/new orders per compiler passed. New wake calls ranged
+39,180–39,634 per 40,000; elapsed time did not demonstrate a gain.
+These are x86_64 process-shared synthetic receipts, not SM8850
+latency measurements. Reject both candidates; no shared ABI,
+stub, futex protocol, spin policy, guest scheduling or new gate.
+
+Instead skip an actually empty deferred-only service flush when
+the pending observation in flush_pending raced an already completed
+drain. Under both existing task order and queue locks, with live
+task, no requested or pending operation, no outstanding unmaps,
+and service request=0/done=1, no service IPC is necessary. Never
+skip a nonempty batch, initial/unacknowledged or busy service, or
+an ambiguous unmap state. All actual map/unmap/protect operations
+and their ACKs retain the existing ordering and protocol. Preserve
+the opt-in real-order ACK histograms; do not fabricate a sample for
+an IPC that was never performed. Separate vCPU report counter
+perf-order-skip: empty_flushes records the skipped exchanges.
+Reuse order()'s existing monotonic start sample for its 10-second
+wait deadline, eliminating one clock_gettime read per real order;
+boot/thread readiness still use their own start sample. No
+change to wait polling, interrupt handling or timeout policy.
+The empty-flush frequency in the real workload is unknown.
+
+Exact task_order_fast.h and test_task_order_fast.c passed GCC and
+Clang ASan/UBSan, 1,086 checks per compiler (486 predicate cases
+plus deterministic stale observation/worker drain interleavings).
+Portable model test only, integrated WSL/ARM64 CI pending.
+Do not claim a measured latency or FPS improvement. Continue to
+GPU/display hot paths rather than further speculative futex
+protocol changes. No OneOS, thermal policy, kernel, recovery,
+live admission, phone operation or GitHub Actions.
