@@ -1521,3 +1521,79 @@ WSL native display, mode and Android helper builds pending.
 No change to XNUHost code, OneOS, thermal/frequency, recovery,
 kernel, display pacing policy or live admission. Next use the
 existing P2 evidence and benchmark criteria; no new lifecycle.
+
+### 2026-11-27 — P2 display receipt and Phase H direct-Metal feasibility decision
+
+Operator WSL PERF_DISPLAY_OFFLINE=PASS at
+9abed4b5670ad92c37528e4a13e87a36b9f15ea3: 340 display native,
+57 frame-profiler, 10 Java mode checks, seven XNUHost display/socket
+integration cases, zero failures; Android display builds PASS.
+Evidence /tmp/oneios-perf-display.Ygd9bO, DEVICE_ACCESS=NONE.
+Artifact SHA256:
+- oneios-display: 93a1dee53e6f00b31a368377a7ff44f1b82a1baa63777853ff2722d79bd575e6
+- liboneios-display.so: 3c18caf23b4c294f5b2c0b6e12db1ddeba9b1d5e07b4636f0d998dd10984361c
+- oneios-display.dex: 44cc35c41dfeeea389301cd01f54bbdc8813a1515565650af9887ea3f3e98ced
+- displayctl: c50cc555961b0c8b590cfae1998961d9bb99158405a1508c91266ed095e6dafd
+
+Scope: close the offline HakiOS architecture review, not initiate a
+second GPU driver project. Inspected exact upstream snapshots:
+- https://github.com/oosexgang/hakios-metal/tree/d36f329e2684a1968b7c1a0ceee1661472cb707a (2026-11-05)
+- https://github.com/oosexgang/hakios-xnu-kernel/tree/63fc2b4633bac3af8e57dadab9f5a8d4cb940438 (2026-11-06)
+- https://hackios-web.vercel.app/en/guide/metal
+- https://hackios-web.vercel.app/en/docs/reference/metal-measurements
+
+Use these as dated evidence, not a statement about every subsequent
+upstream revision. HakiOS's published Nov 3–4 benchmarks are POCO X5
+Pro, SM7325/Adreno 642L, Darwin 16.5 userland, GPU 550 MHz, 120 Hz
+panel, synthetic gestures and specified wallpaper/deferred settings.
+At 1125x2436 its direct Metal path reports 100–104 swipe FPS,
+approximately 90 scroll; Metal-on-Vulkan 50–57 and 41 respectively.
+At 750x1624 its direct path reports swipes 107–118, scroll 118–120,
+roughly 110 across gestures. Not a sustained 120 claim or a game
+compatibility result. HakiOS measurements are not equivalent to our
+host post cadence or a matched workload; do not extrapolate the
+ratio to SM8850, iOS 27 or full-resolution HDR.
+
+Source comparison: hakios-metal src/iokit_transport.cpp opens
+HakiosGPU and uses IOConnectCallStructMethod plus handle-based
+IOConnectMapMemory64. Its include/hakios-metal/a6xx.hpp targets
+0x06030500, with Mesa-derived A6xx device/register assumptions; the
+pinned kernel docs/porting/index.md explicitly describe the chip
+restriction. That is not OneiOS's guest AGXDeviceUserClient /
+DroidVMVirtioGpu3D / VirtIO DRM capset 6 / drm2kgsl / stock KGSL
+contract. OneiOS userland/metal/build.sh builds NativeAdrenoMetal
+with pinned NativeMetal/metal2vulkan/Turnip for iOS 27 arm64e and
+specific cache hooks; docs/gpu.md documents the current host path.
+Do not transplant A6xx register state, fake the chip ID, or assume
+a native HakiosGPU IOKit driver works with the hosted XNU ABI.
+Replacing the renderer would require a separately scoped A830
+render/compute/ISA, compiler, IOKit/IOSurface and synchronization
+port, with independently verified transport and license provenance.
+No such source imported, no dependency pin or guest kernel changed.
+
+Useful concepts to reconsider only against matched traces:
+eliminate tiled-image to IOSurface merge passes where actual
+attachment/layout/coherence conditions allow; defer command
+encoding or batch submits only when latency and ordering improve;
+reuse buffers under existing generation/lifetime/coherence rules.
+The published HakiOS Vulkan measurements identify a merge pass
+and limitations on linear attachments, not proof that our iOS 27
+workload has the same cost. Its scanline write method is specific to
+direct panel control, not the Android Surface/BufferQueue path.
+Do not silently apply wallpaper freezing, reduced UI effects,
+lower render resolution or different GPU power settings.
+
+Decision for the original PERF-P0–P4 roadmap: keep current backend;
+do one consolidated offline local CI/package for the cumulative
+timer/order/GPU/display optimizations, not another sequence of
+speculative micro-patches or hardware lifecycle gates. Preserve
+the existing instrumentation and matched-workload P3/P4 criteria.
+Next performance decisions require evidence of GPU submit/retire,
+queue/lock, scanout/copy, post and presentation behavior; no
+physical FPS gain is yet established. The original P2/P3/P4
+physical acceptance remains open. A passing package does not
+authorize staging or launch. Live benchmark still blocked by
+BLOCKED_NO_OWNED_READBACK and incomplete qualified quiescence/
+admission. Keep operator thermal/recovery constraints unchanged.
+No runtime or OneOS changes, device access or GitHub Actions in
+this documentation receipt.
