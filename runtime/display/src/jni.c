@@ -144,7 +144,8 @@ static void log_frame_perf(const struct xhd_frame_perf *p, uint64_t now_ns)
           "post_p95_us=%llu post_max_us=%llu full_copies=%llu copied_pixels=%llu "
           "post_attempts=%llu post_errors=%llu copy_errors=%llu "
           "post_lock_drain_attempts=%llu post_lock_damage_packets=%llu post_lock_drain_n=%llu "
-          "post_lock_drain_p95_us=%llu post_lock_drain_max_us=%llu post_lock_drain_invalid_clock=%llu\n",
+          "post_lock_drain_p95_us=%llu post_lock_drain_max_us=%llu post_lock_drain_invalid_clock=%llu "
+          "post_lock_partial_attempts=%llu post_lock_partial_damage_packets=%llu\n",
           (unsigned long long)(now_ns / 1000000u),
           (unsigned long long)window_ms,
           (unsigned long long)p->posts,
@@ -174,7 +175,9 @@ static void log_frame_perf(const struct xhd_frame_perf *p, uint64_t now_ns)
           (unsigned long long)p->post_lock_drain.count,
           (unsigned long long)xhd_perf_quantile_bound_us(&p->post_lock_drain, 95),
           (unsigned long long)p->post_lock_drain.max_us,
-          (unsigned long long)p->post_lock_drain_invalid_clock);
+          (unsigned long long)p->post_lock_drain_invalid_clock,
+          (unsigned long long)p->post_lock_partial_attempts,
+          (unsigned long long)p->post_lock_partial_damage_packets);
 }
 
 // Optional transport->buffer-post report; actual panel presentation is NOT sampled.
@@ -344,18 +347,16 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
           (uint64_t)r.x + r.w >= (uint64_t)pending.x + pending.w &&
           (uint64_t)r.y + r.h >= (uint64_t)pending.y + pending.h &&
           (frames >= 4 || (r.w == f->width && r.h == f->height))) {
-        // If Android granted the whole frame, all clipped late damage is
-        // already covered. Avoid a redundant subsequent post of notifications
-        // that arrived while waiting for this buffer. Never drain here for a
-        // partial lock, and never wait for a new notification.
-        if (!r.x && !r.y && r.w == f->width && r.h == f->height) {
-          unsigned accepted = 0;
-          uint64_t began = xhd_perf_clock_ns();
-          socket_closed_after_lock = xhd_drain_after_lock(c->fd, f, r, &pending, &trace, &accepted) < 0;
-          uint64_t ended = xhd_perf_clock_ns();
-          xhd_perf_record_post_lock_drain(&perf, began, ended, accepted);
-          copy_start_ns = ended;  // separate drain time from shadow copy
-        }
+        // Absorb only late damage covered by the actual granted rectangle.
+        // Partial locks stop before the first outside record or control
+        // packet; never enlarge the Android lock or wait for notification.
+        unsigned accepted = 0;
+        bool partial = r.x || r.y || r.w != f->width || r.h != f->height;
+        uint64_t began = xhd_perf_clock_ns();
+        socket_closed_after_lock = xhd_drain_after_lock(c->fd, f, r, &pending, &trace, &accepted) < 0;
+        uint64_t ended = xhd_perf_clock_ns();
+        xhd_perf_record_post_lock_drain(&perf, began, ended, accepted, partial);
+        copy_start_ns = ended;  // separate drain time from shadow copy
         if (xhd_copy(buffer.bits, (size_t)buffer.stride * bytes, layout, f->pixels, f->stride, f->format, r) == 0) {
           copied_pixels = (uint64_t)r.w * r.h;
           full_copy = r.w == f->width && r.h == f->height;

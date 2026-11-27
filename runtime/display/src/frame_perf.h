@@ -30,6 +30,7 @@ struct xhd_frame_perf {
   struct xhd_perf_hist gap, active_gap, lock, copy, post;
   struct xhd_perf_hist post_lock_drain;
   uint64_t post_lock_drain_attempts, post_lock_damage_packets, post_lock_drain_invalid_clock;
+  uint64_t post_lock_partial_attempts, post_lock_partial_damage_packets; // subset of totals
   uint64_t traced_posts, traced_flushes, traced_coalesced, traced_gaps, traced_bad, traced_legacy;
   uint64_t scanout_packets, scanout_blob, scanout_2d, scanout_copy_sum_ns, scanout_copy_max_ns;
   struct xhd_perf_hist flush_to_post_oldest, flush_to_post_latest, flush_to_helper;
@@ -43,8 +44,9 @@ struct xhd_frame_perf {
 uint64_t xhd_perf_clock_ns(void);
 void xhd_perf_begin(struct xhd_frame_perf *p, uint64_t start_ns);
 // Actual late-drain attempts and accepted damage, independently of post success.
+// Total counters include both lock shapes; partial counters are a subset.
 void xhd_perf_record_post_lock_drain(struct xhd_frame_perf *p, uint64_t start_ns,
-                                     uint64_t end_ns, unsigned accepted);
+                                     uint64_t end_ns, unsigned accepted, bool partial);
 void xhd_perf_record(struct xhd_frame_perf *p, uint64_t post_time_ns,
                      uint64_t lock_ns, uint64_t copy_ns, uint64_t post_ns,
                      uint64_t copied_pixels, bool full_copy);

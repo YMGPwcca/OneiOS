@@ -33,10 +33,14 @@ void xhd_perf_begin(struct xhd_frame_perf *p, uint64_t start_ns)
 }
 
 void xhd_perf_record_post_lock_drain(struct xhd_frame_perf *p, uint64_t start_ns,
-                                     uint64_t end_ns, unsigned accepted)
+                                     uint64_t end_ns, unsigned accepted, bool partial)
 {
   p->post_lock_drain_attempts++;
   p->post_lock_damage_packets += accepted;
+  if (partial) {
+    p->post_lock_partial_attempts++;
+    p->post_lock_partial_damage_packets += accepted;
+  }
   if (!start_ns || end_ns < start_ns) {
     p->post_lock_drain_invalid_clock++;
     return;

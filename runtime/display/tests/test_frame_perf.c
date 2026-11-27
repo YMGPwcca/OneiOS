@@ -143,15 +143,17 @@ int main(void)
   xhd_perf_next_window(&p, t1 + XHD_PERF_WINDOW_NS);
   CHECK(!p.post_attempts && !p.post_errors && !p.copy_errors && p.last_post_ns == t1);
 
-  xhd_perf_record_post_lock_drain(&p, t1, t1 + 50000, 3);
-  xhd_perf_record_post_lock_drain(&p, t1, t1 + 10000, 0);
-  xhd_perf_record_post_lock_drain(&p, 0, t1, 1);
+  xhd_perf_record_post_lock_drain(&p, t1, t1 + 50000, 3, false);
+  xhd_perf_record_post_lock_drain(&p, t1, t1 + 10000, 0, true);
+  xhd_perf_record_post_lock_drain(&p, 0, t1, 1, true);
+  CHECK(p.post_lock_partial_attempts == 2 && p.post_lock_partial_damage_packets == 1);
   CHECK(p.post_lock_drain_attempts == 3 && p.post_lock_damage_packets == 4);
   CHECK(p.post_lock_drain.count == 2 && p.post_lock_drain.max_us == 50);
   CHECK(p.post_lock_drain.sum_us == 60 && p.post_lock_drain_invalid_clock == 1);
   CHECK(!p.posts && !p.copy.count); // no implied successful post
   xhd_perf_next_window(&p, t1 + 2 * XHD_PERF_WINDOW_NS);
   CHECK(!p.post_lock_drain_attempts && !p.post_lock_damage_packets && !p.post_lock_drain.count);
+  CHECK(!p.post_lock_partial_attempts && !p.post_lock_partial_damage_packets);
   printf("frame_perf tests: %d checks, %d failed\n",checks,failed);
   return failed?1:0;
 }

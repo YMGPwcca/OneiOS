@@ -93,9 +93,11 @@ int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *dama
 // Drop unposted damage at park; resume requests one full shadow redraw.
 int xhd_quiesce_boundary(int fd, const struct xhd_frame *frame,
                          struct xhd_rect *damage, struct xhd_trace_state *trace);
-// After a successful full-frame window lock, absorb a bounded number of
-// late notifications before copying the shadow. Partial locks do not
-// consume anything: their Android dirty rectangle cannot be enlarged.
+// After a successful window lock, absorb a bounded number of late damage
+// records already covered by the granted rectangle. Full-frame locks
+// retain the ordinary drain; partial locks peek and consume only a covered
+// FIFO prefix. The first uncovered/control/invalid-prefix record stays
+// queued for the next ordinary drain. Single socket reader required.
 // Counts accepted damage records (not unique frames or saved posts).
 #define XHD_POST_LOCK_DRAIN_LIMIT 32u
 int xhd_drain_after_lock(int fd, const struct xhd_frame *frame, struct xhd_rect locked,

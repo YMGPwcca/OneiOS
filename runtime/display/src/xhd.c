@@ -192,12 +192,42 @@ static void xhd_trace_note(struct xhd_trace_state *state, const struct xh_frame_
   p->provenance_packets++;
 }
 
+static bool rect_contains(struct xhd_rect outer, struct xhd_rect inner)
+{
+  return inner.x >= outer.x && inner.y >= outer.y &&
+         (uint64_t)inner.x + inner.w <= (uint64_t)outer.x + outer.w &&
+         (uint64_t)inner.y + inner.h <= (uint64_t)outer.y + outer.h;
+}
+
+// Single socket reader. Peek only at the legacy prefix; leave the first
+// uncovered/non-damage record queued, in order, for the normal drain.
+// The usual parser still consumes and validates the entire record.
+static int peek_covered_damage(int fd, const struct xhd_frame *frame, struct xhd_rect covered)
+{
+  struct xhd_message prefix;
+  ssize_t n = recv(fd, &prefix, sizeof prefix, MSG_DONTWAIT | MSG_TRUNC | MSG_PEEK);
+  if (n < 0) {
+    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+    fprintf(stderr, "oneios-display: peeking xnuhost's socket failed: %s\n", strerror(errno));
+    return -1;
+  }
+  if (n == 0) { fprintf(stderr, "oneios-display: xnuhost closed the socket\n"); return -1; }
+  if (n < (ssize_t)sizeof prefix || memcmp(prefix.magic, "XHDF", 4)) return 0;
+  struct xhd_rect r = { prefix.a, prefix.b, prefix.c, prefix.d };
+  return xhd_rect_clip(&r, frame->width, frame->height) && rect_contains(covered, r);
+}
+
 static int drain_trace_limit(int fd, const struct xhd_frame *frame, struct xhd_rect *damage,
-                             struct xhd_trace_state *trace, unsigned limit, unsigned *accepted)
+                             struct xhd_trace_state *trace, unsigned limit, unsigned *accepted,
+                             const struct xhd_rect *covered)
 {
   // Bounded, nonblocking drain: an overactive guest cannot starve posting.
   if (accepted) *accepted = 0;
   for (unsigned i = 0; i < limit; i++) {
+    if (covered) {
+      int ready = peek_covered_damage(fd, frame, *covered);
+      if (ready <= 0) return ready;
+    }
     struct xh_frame_trace_packet_v3 packet;
     // Linux SOCK_SEQPACKET + MSG_TRUNC returns the actual record length even
     // when only the prefix fits. Never accept an oversized record as valid v3.
@@ -278,16 +308,21 @@ int xhd_quiesce_boundary(int fd, const struct xhd_frame *frame,
 
 int xhd_drain_trace(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_trace_state *trace)
 {
-  return drain_trace_limit(fd, frame, damage, trace, 4096, NULL);
+  return drain_trace_limit(fd, frame, damage, trace, 4096, NULL, NULL);
 }
 
 int xhd_drain_after_lock(int fd, const struct xhd_frame *frame, struct xhd_rect locked,
                          struct xhd_rect *damage, struct xhd_trace_state *trace, unsigned *accepted)
 {
   if (accepted) *accepted = 0;
-  if (locked.x || locked.y || locked.w != frame->width || locked.h != frame->height ||
-      !locked.w || !locked.h) return 0;
-  return drain_trace_limit(fd, frame, damage, trace, XHD_POST_LOCK_DRAIN_LIMIT, accepted);
+  if (!locked.w || !locked.h || locked.x >= frame->width || locked.y >= frame->height ||
+      locked.w > frame->width - locked.x || locked.h > frame->height - locked.y) return 0;
+  bool full = !locked.x && !locked.y && locked.w == frame->width && locked.h == frame->height;
+  // The full-frame fast path still needs only one recv per record.
+  if (!full && ((trace && trace->barrier != XHD_OPEN) ||
+      (damage->w && damage->h && !rect_contains(locked, *damage)))) return 0;
+  return drain_trace_limit(fd, frame, damage, trace, XHD_POST_LOCK_DRAIN_LIMIT, accepted,
+                           full ? NULL : &locked);
 }
 
 int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage)

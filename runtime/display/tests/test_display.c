@@ -455,6 +455,80 @@ static void test_post_lock_drain(void)
   close(pair[1]);
 }
 
+static void test_partial_post_lock_drain(void)
+{
+  int fd[2];
+  int rc = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd);
+  CHECK(!rc);
+  if (rc) return;
+  const struct xhd_frame frame = { .width = 64, .height = 48 };
+  const struct xhd_rect locked = {8,8,16,16};
+  struct xhd_rect damage = {9,9,2,2};
+  struct xhd_trace_state trace = {0};
+  unsigned accepted = 99;
+  struct timespec ts;
+  CHECK(!clock_gettime(CLOCK_MONOTONIC, &ts));
+  struct xh_frame_trace_packet p = {
+    .magic={'X','H','D','F'}, .x=12,.y=12,.w=4,.h=4,
+    .version=XH_FRAME_TRACE_VERSION, .seq=1,
+    .flush_mono_ns=(uint64_t)ts.tv_sec*UINT64_C(1000000000)+(uint64_t)ts.tv_nsec
+  };
+  CHECK(!xhd_send_flush(fd[0], 8, 8, 1, 1));
+  CHECK(send(fd[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  p.seq=2; p.x=22; p.w=4; // crosses the right edge of the actual lock
+  CHECK(send(fd[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  p.seq=3; p.x=10; p.w=2;
+  CHECK(send(fd[0], &p, sizeof p, 0) == (ssize_t)sizeof p);
+  CHECK(!xhd_drain_after_lock(fd[1], &frame, locked, &damage, &trace, &accepted));
+  CHECK(accepted==2 && damage.x==8 && damage.y==8 && damage.w==8 && damage.h==8);
+  CHECK(trace.pending.legacy==1 && trace.pending.traced==1 && trace.last_seq==1);
+  CHECK(!xhd_drain_after_lock(fd[1], &frame, locked, &damage, &trace, &accepted) && !accepted);
+  // Simulate the successful post. The deferred outside record and the
+  // covered record behind it must remain in FIFO order, not be skipped.
+  damage=(struct xhd_rect){0}; trace.pending=(struct xhd_trace_pending){0};
+  CHECK(!xhd_drain_trace(fd[1], &frame, &damage, &trace));
+  CHECK(damage.x==10 && damage.y==12 && damage.w==16 && damage.h==4);
+  CHECK(trace.pending.first_seq==2 && trace.pending.last_seq==3 &&
+        trace.pending.traced==2 && !trace.pending.seq_gaps);
+  damage=(struct xhd_rect){9,9,1,1};
+  // Covered-only bursts need no subsequent damage-driven post.
+  for (unsigned i=0; i<XHD_POST_LOCK_DRAIN_LIMIT+2; i++)
+    CHECK(!xhd_send_flush(fd[0], 9, 9, 1, 1));
+  CHECK(!xhd_drain_after_lock(fd[1], &frame, locked, &damage, &trace, &accepted) &&
+        accepted==XHD_POST_LOCK_DRAIN_LIMIT);
+  CHECK(!xhd_drain_after_lock(fd[1], &frame, locked, &damage, &trace, &accepted) && accepted==2);
+  damage=(struct xhd_rect){0};
+  CHECK(!xhd_drain_trace(fd[1], &frame, &damage, &trace) && !damage.w);
+  // Clip against the frame before deciding coverage; no unsigned overflow.
+  const struct xhd_rect edge={60,45,4,3};
+  CHECK(!xhd_send_flush(fd[0], 62, 46, UINT32_MAX, UINT32_MAX));
+  CHECK(!xhd_drain_after_lock(fd[1], &frame, edge, &damage, &trace, &accepted) &&
+        accepted==1 && damage.x==62 && damage.y==46 && damage.w==2 && damage.h==2);
+  // A malformed prefix must stay queued so the ordinary parser can
+  // account for it. An unrelated control record likewise stays queued.
+  const char short_packet[4]={'X','H','D','F'};
+  CHECK(send(fd[0],short_packet,sizeof short_packet,0)==(ssize_t)sizeof short_packet);
+  CHECK(!xhd_send_flush(fd[0], 61, 45, 1, 1));
+  uint64_t bad=trace.pending.bad;
+  CHECK(!xhd_drain_after_lock(fd[1], &frame, edge, &damage, &trace, &accepted) && !accepted);
+  CHECK(trace.pending.bad==bad);
+  CHECK(!xhd_drain_trace(fd[1], &frame, &damage, &trace) && trace.pending.bad==bad+1);
+  struct xh_display_barrier park=xh_display_barrier_make('Q',17), ack;
+  CHECK(send(fd[0], &park, sizeof park, 0)==(ssize_t)sizeof park);
+  CHECK(!xhd_drain_after_lock(fd[1], &frame, edge, &damage, &trace, &accepted) &&
+        !accepted && trace.barrier==XHD_OPEN);
+  CHECK(!xhd_drain_trace(fd[1], &frame, &damage, &trace) && trace.barrier==XHD_PARK_ACK);
+  CHECK(recv(fd[0], &ack, sizeof ack, MSG_DONTWAIT)<0 && errno==EAGAIN);
+  CHECK(xhd_quiesce_boundary(fd[1], &frame, &damage, &trace)==1 && !damage.w);
+  CHECK(recv(fd[0], &ack, sizeof ack, MSG_DONTWAIT)==(ssize_t)sizeof ack &&
+        xh_display_barrier_valid(&ack,'A') && xh_display_barrier_ticket(&ack)==17);
+  // Fresh open trace for the EOF fixture, not a synthetic resume receipt.
+  trace=(struct xhd_trace_state){0}; damage=(struct xhd_rect){9,9,1,1};
+  close(fd[0]);
+  CHECK(xhd_drain_after_lock(fd[1], &frame, locked, &damage, &trace, &accepted)==-1 && !accepted);
+  close(fd[1]);
+}
+
 static void test_panel_report(void)
 {
   int pair[2];
@@ -721,6 +795,7 @@ int main(int argc, char **argv)
   test_copy_formats();
   test_frame_trace();
   test_post_lock_drain();
+  test_partial_post_lock_drain();
   test_barrier();
   test_panel_report();
   test_hold_first(dir);

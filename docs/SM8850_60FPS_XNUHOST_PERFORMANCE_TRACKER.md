@@ -1468,3 +1468,56 @@ pending. No claim of physical FPS or lock-wait savings. Do not
 change fence semantics, guest/Android refresh, HDR, thermal,
 recovery, frequency ownership, OneOS or live admission in this
 batch. No device access or GitHub Actions.
+
+### 2026-11-27 — PERF-P2-04/05 covered late damage in display helper
+
+Operator WSL PERF_GPU_DISPATCH_OFFLINE=PASS at
+8be9ec186907b4a4e5e2742c8e778f6a7af316cd: 29 fence, 166 GPU policy,
+159 KGSL drain and 19,866 native checks, zero failures; Android
+XNUHost build PASS. Evidence /tmp/oneios-perf-gpu.RXMxcd.
+SHA256 32dfc58e53d9201cb717da7e2cdab1b68e9619ed29a2a8492f3765be2ac4203d.
+DEVICE_ACCESS=NONE; not a real KGSL or FPS measurement.
+
+Historical full-bridges Framework-OFF receipt (180.2s):
+ANativeWindow lock/copy/post maxima 11.37/14.87/11.13ms, not
+simultaneous or additive. The existing full-frame post-lock drain
+already coalesces at most 32 records. It was not available for
+partial locks. Extend the same bound to partial locks, but consume
+only the covered prefix of the pending FIFO. Peek at the 20-byte
+legacy prefix without consuming, clip to the frame, require
+containment in the exact granted rectangle. Use the same complete
+record parser and trace accounting on consumption. Stop BEFORE
+the first uncovered, non-damage or incomplete-prefix record; do
+not reorder or discard a record behind it. Requires the existing
+single socket reader. Full locks retain the existing single recv
+per record, including barrier receipt; partial locks leave control
+records queued for the normal drain outside the lock. No new
+sleep, refresh policy, dirty-rectangle enlargement, format or
+resolution change. No claim of coherent SHM snapshot or unique
+physical frame presentation. Only successful valid-content posts
+are counted. Keep the existing trace sequence and provenance
+rules and original first four full copies.
+
+Late covered-only damage may already be included by the current
+copy, so no second damage-driven post is needed for that batch.
+This can remove redundant buffer work, not manufacture animation
+frames. Partial path adds a nonblocking peek per candidate (also
+one empty peek if nothing is queued); whether this is a net gain
+depends on actual workloads. Extend existing late-drain total
+counters/histogram to both full and partial locks, with
+post_lock_partial_attempts and post_lock_partial_damage_packets
+as separate subsets. Old receipts had full-only totals; compare
+using these fields and do not infer saved posts from packet counts.
+
+Extracted exact coverage/peek helper, real Linux SOCK_SEQPACKET
+fixture with 20,000 varied records per GCC and Clang ASan/UBSan:
+2,998 covered / 17,002 deferred; byte-identical records still
+queued after every peek. Empty socket, edge clipping and EOF
+also passed. This is a focused helper test, not the integrated
+Android or WSL CI. Added real parser/trace test for covered FIFO
+prefix, uncovered record and later covered record, cap, clipping,
+short prefix, Q boundary and EOF; added profiler counter regression.
+WSL native display, mode and Android helper builds pending.
+No change to XNUHost code, OneOS, thermal/frequency, recovery,
+kernel, display pacing policy or live admission. Next use the
+existing P2 evidence and benchmark criteria; no new lifecycle.
