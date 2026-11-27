@@ -849,3 +849,59 @@ and input lifecycle, vCPU/reset fencing, and external authorization
 before considering live admission. No physical present/panel idle or
 APFS unmount claim. Frequency provider remains BLOCKED_NO_OWNED_READBACK.
 No recovery, thermal policy, kernel, staging or frequency write change.
+
+### G25.0 operator receipt / G25.1A independent supervisor transport (2026-11-27 ICT)
+
+Operator WSL G25.0 OneiOS 47646c137fc96498f0d14d632a06d29d7e960ca8:
+701 coordinator checks, 19,858 XNUHost native checks, 159 KGSL
+accepted-timestamp checks, six display socket scenarios, zero failures.
+Android ARM64 XNUHost link and all five coordinator symbols PASS.
+SHA256 4bd41d601166341803a6186ffabde02db4f8be1afacf56ae64f5356bdd7ac49c.
+Evidence /tmp/oneios-g250.YPm0Bj, DEVICE_ACCESS=NONE. Real udmabuf
+import skipped. Starship directory-scan warning after completion is
+unrelated to CI. No physical GPU, display, IO or thermal qualification.
+
+G25.1A adds the separate-process owner/worker transport for the G25.0
+coordinator. Private AF_UNIX SOCK_SEQPACKET, nonblocking sends and reads,
+SCM_CREDENTIALS on every packet, expected distinct PID/UID/GID, pidfd
+liveness, absolute CLOCK_BOOTTIME timerfd, one outstanding command, exact
+owner/cycle/sequence/deadline validation, and phase/receipt-mask checks.
+The trusted launcher must pin identities and keep endpoint ownership
+exclusive; credentials are not protection against privileged root.
+Unsupported pidfd_open or timerfd fails initialization. One immutable
+deadline covers park, hold and explicit resume; completed cycles can
+start a fresh cycle with a new sequence. The owner independently bounds
+each exchange even when a worker callback blocks; its event loop must
+poll timerfd, peer socket and pidfd between exchanges. No production
+event loop or launcher is installed. Fault shuts down the channel and
+latches without automatic retry, cancellation, kill, thaw, reboot or
+return. Worker binding preserves the upstream guard and checks channel,
+deadline and owner lifetime before/after it at coordinator boundaries.
+This prevents another provider call after a detected owner loss, not the
+completion of an operation already in flight. Observed partial resume
+masks are retained for valid error receipts; no receipt on timeout is
+not proof of absence of side effects.
+
+Standalone Linux GCC and Clang ASan/UBSan: 141 parent checks, zero failed,
+child assertions and exit statuses checked. Real fork/socketpair/pidfd/
+timerfd, exact G25.0 quiesce.c blob 4c4bcc34b70cdaa94804cdae9d99744713f88e74
+and an equivalent minimal public coordinator header, stand-in providers.
+Two complete cycles, independent timeout with live blocked child,
+owner loss during a callback (no next provider), child death, denied and
+partial resume, bad inbound command, bad ACK sequence, wrong PID
+credentials, ancillary FD rejection/no retained FD, short/unsolicited
+packet, and parked deadline expiry. ASan/UBSan enabled; leak sanitizer
+disabled for process fixture, separate descriptor-count assertions.
+New native test in make test; production transport linked into Android
+XNUHost, no live caller. Full repository header/build and Android
+cross-link pending operator local CI.
+
+G25.1A is transport only. G25.1B must establish actual producer lifecycle
+(boot-console, GPU shadow writers, vCPU/task/reset and bridge/input
+ingress), complete immutable device membership, exact helper identity/
+lifetime and owner launch/event-loop integration with owned-group
+freeze/thaw. A blocked kernel syscall, scheduler starvation or platform
+suspend is not magically interrupted; no real-time guarantee or
+automatic physical quiescence proof. Frequency provider remains
+BLOCKED_NO_OWNED_READBACK. No OneOS change, live admission, staging,
+rearm, thermal policy, kernel, recovery or frequency write change.
