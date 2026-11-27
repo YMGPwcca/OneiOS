@@ -1673,3 +1673,32 @@ connected stock-managed root runner or proof of Framework-OFF
 mitigation. Local focused regression/build pending. Retain the previous
 tested performance runtime artifact and source hash; no stage/rearm,
 live benchmark, stock-service restart or GitHub Actions.
+
+### 2026-11-28 — stock-managed thermal source CI receipt
+
+Operator WSL NATIVE_THERMAL_OFFLINE=PASS at OneiOS
+99f40bb4f1df1b53eb8e72fb1b0e31c1494d4f4b / OneOS
+d1ff94975c355a219de4a13d667465eef91b3a65 (exact app gitlink).
+Thermal parser/bridge 120 checks, zero failures; native-raw fixture PASS;
+stock-managed controller 414 checks; existing C/Python parity 8640 samples;
+takeover/full-takeover fixtures 35+16 tests PASS. Android thermalctl and
+both controller/owned-group objects compiled. thermalctl SHA256
+52dcece4826a716bbdc8a2d5149d63f17c13379dfaf8792f56d86cd6438d40a8.
+Evidence /tmp/oneios-native-thermal.n9dZzx. DEVICE_ACCESS=NONE.
+
+Next concrete observation: run the exact new thermalctl's native-raw and
+native-hal in stock One UI, independently and with bounded timeout,
+without any framework stop or guest, clock/property/service change,
+or persistent runtime staging. This is an operator-selected diagnostic
+transfer of only that binary to a temporary directory; verify SHA,
+model/firmware, root context, boot identity and readback. Do not repeat
+the full offline suite or the earlier inventory. A successful native
+HAL reply demonstrates the reader/permissions on stock, not vendor
+policy survival after Framework OFF. The current root switcher still
+has no production caller for the stock controller, and the quiesce
+supervisor/board binding still needs its real session owner/providers.
+Removing the retired gate alone would enter the old thermal path.
+The separate frequency actuator is not required by the new design.
+Do not launch via the legacy profile or change any safety thresholds.
+No runtime code change in this receipt; the performance-only artifact
+at 8d463fa remains the tested offline candidate.
