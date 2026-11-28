@@ -183,6 +183,7 @@ static bool sm8850_full_bridge_admitted(void)
 static struct { uint32_t requested, reason, code; char why[96]; } stop_state;
 static pthread_mutex_t stop_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool guest_ready;
+static void session_file(const char *, const char *);
 /* Explicit inherited-control production hook. The stage admission remains
  * separate and fail closed; no command-line/environment bypass of the
  * retired Framework run. The root owner must supply the actual held child,
@@ -234,7 +235,19 @@ static bool stock_self_membership(void)
 static bool stock_stage_current(void)
 {
   uint64_t now;
+  char admission[192], seconds[32];
+  int n=snprintf(admission,sizeof admission,"%s %s %s",stock_boot.generation,
+    stock_boot.token,stock_boot.boot);
+  if(n<0||(size_t)n>=sizeof admission||stock_boot.deadline%1000000000u)return false;
+  snprintf(seconds,sizeof seconds,"%llu",(unsigned long long)(stock_boot.deadline/1000000000u));
+  // This record must come from the future independently qualified root
+  // switcher path, never from the guest or the legacy thermal workers.
   return !xhqs_now(&now)&&now<stock_boot.deadline&&getppid()==stock_boot.parent&&
+    stock_line("/data/control/framework.stock-admission",admission)&&
+    stock_line("/data/control/framework.deadline",seconds)&&
+    access("/data/control/thermal.guard.required",F_OK)!=0&&
+    access("/data/control/thermal.cap.required",F_OK)!=0&&
+    access("/data/control/thermal.cap.prearm.required",F_OK)!=0&&
     stock_line("/proc/sys/kernel/random/boot_id",stock_boot.boot)&&
     stock_line("/data/control/boot",stock_boot.boot)&&
     stock_line("/data/control/watchdog.generation",stock_boot.generation)&&
@@ -242,6 +255,21 @@ static bool stock_stage_current(void)
     stock_line("/data/control/framework.stock-profile","ui-v1")&&
     (stock_line("/data/control/state","starting")||stock_line("/data/control/state","running"))&&
     stock_self_membership();
+}
+static bool stock_runtime_admitted(void)
+{
+  char a[64],b[64];struct stat st;
+  ssize_t x=readlink("/proc/self/ns/mnt",a,sizeof a-1);
+  ssize_t y=readlink("/proc/1/ns/mnt",b,sizeof b-1);
+  if(x<=0||y<=0)return false;
+  a[x]=b[y]=0;
+  return stock_stage_current()&&strcmp(a,b)&&
+    !lstat("/data/control/stopped",&st)&&S_ISREG(st.st_mode)&&
+    stock_line("/data/control/framework.mode","run")&&
+    stock_line("/data/control/framework.return","reboot")&&
+    sm8850_prop_stopped("init.svc.zygote",false)&&
+    sm8850_prop_stopped("init.svc.zygote_next",false)&&
+    sm8850_prop_stopped("init.svc.zygote_secondary",true)&&sm8850_server_absent();
 }
 static void stock_fork_child(void)
 {
@@ -276,7 +304,7 @@ static int stock_boot_parse(void)
   len=sizeof pass;
   if(getsockopt(stock_boot.fd,SOL_SOCKET,SO_PASSCRED,&pass,&len)||!pass||
      fcntl(stock_boot.fd,F_SETFD,FD_CLOEXEC)||fcntl(stock_boot.helper,F_SETFD,FD_CLOEXEC)||
-     !stock_stage_current()||!sm8850_full_bridge_admitted())return -EPERM;
+     !stock_runtime_admitted())return -EPERM;
   if(pthread_atfork(NULL,NULL,stock_fork_child))return -EPERM;
   for(unsigned i=0;i<8;i++)unsetenv(names[i]);
   stock_boot.enabled=true;
@@ -314,6 +342,7 @@ static int stock_boot_start(uint64_t entry,uint64_t args)
   stock_boot.bound=true;
   close(stock_boot.helper);stock_boot.helper=-1;
   stock_boot.worker.ipc.start_guest=stock_guest_start;
+  session_file("stock.setup-ready", "ready\n"); // hint only; READY IPC is mandatory
   LOGI("STOCK_RUNTIME_SETUP_COMPLETE=YES; CPU0_WAITING_FOR_OWNER=YES");
   while(!stock_boot.worker.ipc.guest_started){
     uint64_t now;
@@ -340,6 +369,7 @@ static void stock_boot_shutdown(void)
   xhqb_worker_close(&stock_boot.worker);stock_boot.fd=-1;stock_boot.bound=false;
 }
 #else
+static bool stock_runtime_admitted(void) { return false; }
 static int stock_boot_parse(void)
 { return getenv("ONEIOS_STOCK_CONTROL_FD")?-ENOTSUP:0; }
 static int stock_boot_start(uint64_t entry,uint64_t args)
@@ -955,7 +985,7 @@ static int boot(void)
   // /dev/input or any Samsung CPU/HAL/panel device. Android Framework must
   // be down and its root-owned recovery admission match THIS boot.
   if ((!strcmp(config.input_script, XH_SM8850_INTERACTION_SCRIPT) && !config.sm8850_full_bridges) ||
-      (config.sm8850_full_bridges && !sm8850_full_bridge_admitted())) {
+      (config.sm8850_full_bridges && !(stock_boot.enabled ? stock_runtime_admitted() : sm8850_full_bridge_admitted()))) {
     LOGE("SM8850_FULL_BRIDGES=BLOCKED_FRAMEWORK_OR_STAGE_NOT_VERIFIED; no host hardware opened");
     return -1;
   }

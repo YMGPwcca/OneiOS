@@ -117,7 +117,15 @@ int xh_stock_runner_start_guest(struct xh_stock_runner *r)
      ms-c->last_native.ms>ONEIOS_THERMAL_MAX_SAMPLE_AGE_MS)return -EAGAIN;
   if(verify_session(r,&r->session->id)||outer_verify(r,false)||
      oneios_owned_groups_verify(&r->session->groups,false))return -EPERM;
+  // Membership verification may take time. The START operation cannot
+  // outlive either authorizing sample or the independent deadline.
+  uint64_t oldest=c->last.ms<c->last_native.ms?c->last.ms:c->last_native.ms;
+  if(oldest>UINT64_MAX/1000000u-ONEIOS_THERMAL_MAX_SAMPLE_AGE_MS)return -EOVERFLOW;
+  uint64_t sample_end=(oldest+ONEIOS_THERMAL_MAX_SAMPLE_AGE_MS)*1000000u;
+  if(xhqs_now(&now)||now>=r->deadline)return -ETIMEDOUT;
+  if(now>=sample_end)return -EAGAIN;
   uint64_t budget=(uint64_t)ONEIOS_THERMAL_ACK_MS*1000000u;
   uint64_t limit=r->deadline-now<budget?r->deadline:now+budget;
+  if(sample_end<limit)limit=sample_end;
   return xhqs_owner_start_until(r->peer,limit);
 }

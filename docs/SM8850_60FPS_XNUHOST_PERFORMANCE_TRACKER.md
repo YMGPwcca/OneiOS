@@ -2293,3 +2293,37 @@ the already offline-validated 8d463fa performance archive; no further
 speculative hot-path change until actual measurements or a concrete
 correctness issue. Stable 60 presented FPS remains the acceptance
 criterion, not post cadence. No new test request for this docs receipt.
+
+
+### 2026-11-28 — pre-guest production runtime wiring candidate
+
+The exact previously validated source pair remains 642431e / 0fa01e5.
+The next implementation is no longer only the integration fixture:
+XNUHost main accepts an explicit inherited, credentialed control endpoint,
+actual display helper pidfd, owner PID, session token, boot, generation
+and fixed BOOTTIME deadline. It binds the actual sealed board after
+setup and before entering CPU0. An authenticated READY checks the actual
+configured block membership; START is a separate one-time operation
+issued only after the real controller has a fresh running state and
+native observation, no hard latch and no raw hot junction. The startup
+vCPU mode atomically reserves pending CPU_ON threads before creation,
+and requires all real registered CPUs parked and all pending starts
+settled. Not-yet-requested CPUs are never reported as registered. The
+strict all-configured-CPU gate remains the default for older callers.
+The e2e fixture now parks/resumes before CPU0 and rejects early START.
+The factory fork cannot retain the controller's private descriptors.
+
+The source production runtime hook requires a separate current-generation
+stock admission record and explicitly refuses coexistence with legacy
+thermal guard/cap markers. The actual switcher does not yet publish
+this admission or drive this inherited channel. Do not construct the
+record by hand, bypass the root gate, or use the retired launcher.
+The root-side protected setup sampler, prearmed independent owner/
+deadline and complete descendant membership binding remain required
+before live full takeover. No changes to default peripherals, startup
+quota, stock thermal clocks, kernel, or recovery. The candidate is
+not yet compiled/tested. The consolidated script now covers startup
+CPU_ON and START in the existing fixture and compiles main/cpu for
+Android. Also require a real Android XNUHost link with the pinned
+drm2kgsl renderer before considering staging. No physical benchmark or
+new performance result is implied.
