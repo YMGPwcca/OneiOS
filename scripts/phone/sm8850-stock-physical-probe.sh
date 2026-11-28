@@ -74,9 +74,23 @@ adb_step 12 ADB_SHELL shell 'echo ADB_SHELL_OK'
 adb_step 12 SCRATCH_CREATE shell "mkdir -m 700 '$remote'"
 created=1
 echo "REMOTE_SCRATCH=$remote"
-# Disable sync compression to remove a variable from the retry.
-adb_step 25 PUSH_ACTUATORS push -Z "$D/actuators" "$remote/actuators"
-adb_step 25 PUSH_THERMALCTL push -Z "$D/thermalctl" "$remote/thermalctl"
+# ADB Sync printed a successful push but did not terminate on the
+# operator's WSL USB transport. Use a non-PTY binary-safe shell stream
+# instead. Require successful command exit AND the remote file hash;
+# no root probe is entered after an incomplete transfer.
+upload_stream() {
+    local name=$1 expected=$2 receipt
+    receipt=$(adb_step 25 "STREAM_$name" shell -T \
+        "umask 077; cat > '$remote/$name' && sha256sum '$remote/$name' | cut -d' ' -f1" \
+        < "$D/$name")
+    if [ "$receipt" != "$expected" ]; then
+        echo "REMOTE_HASH_MISMATCH=$name EXPECTED=$expected ACTUAL=$receipt" >&2
+        return 4
+    fi
+    echo "REMOTE_SHA256_$name=$receipt"
+}
+upload_stream actuators "$AH"
+upload_stream thermalctl "$TH"
 echo "ADB_UPLOADS=PASS"
 # All writes below concern only the fresh diagnostics and private test
 # leaves; the test process moves itself to the root CPU/v2 groups.
@@ -84,7 +98,7 @@ echo "ADB_UPLOADS=PASS"
 echo "===== DEVICE PROBE (bounded) ====="
 root_started=1
 set +e
-timeout -k 3s 80s "$ADB" shell "su -c 'timeout -k 2 60 /system/bin/sh -s $token $AH $TH'" <<'PHONE' | tee "$D/physical.log"
+timeout -k 3s 80s "$ADB" shell -T "su -c 'timeout -k 2 60 /system/bin/sh -s $token $AH $TH'" <<'PHONE' | tee "$D/physical.log"
 set -eu
 token=$1
 ah=$2
