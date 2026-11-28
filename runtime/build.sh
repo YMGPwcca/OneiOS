@@ -38,6 +38,13 @@ STAGE=${1:?usage: runtime/build.sh STAGE | --test}
 make -s -C "$ROOT/runtime/xnuhost" NDK="$NDK" build/android/xnuhost
 mkdir -p "$STAGE/bin"
 "$STRIP" -o "$STAGE/bin/xnuhost" "$ROOT/runtime/xnuhost/build/android/xnuhost"
+# Stock owner is a separate static executable; its exact OneOS gitlink is
+# required for this candidate. Absence does not enable the legacy gate.
+if [ -f "$ROOT/app/switcher/native/sm8850_stock_session.c" ]; then
+  make -s -C "$ROOT/runtime/xnuhost" NDK="$NDK" build/android/oneios-stock-session
+  "$STRIP" -o "$STAGE/bin/oneios-stock-session" "$ROOT/runtime/xnuhost/build/android/oneios-stock-session"
+  chmod 0755 "$STAGE/bin/oneios-stock-session"
+fi
 make -s -C "$ROOT/runtime/bridges" NDK="$NDK" build/android/oneios-audio
 "$STRIP" -o "$STAGE/bin/oneios-audio" "$ROOT/runtime/bridges/build/android/oneios-audio"
 cp "$ROOT/runtime/bridges/net/oneios-net.sh" "$STAGE/bin/oneios-net.sh"

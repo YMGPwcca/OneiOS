@@ -349,3 +349,24 @@ test: $(H)/test_timer_program $(H)/test_quiesce_input $(H)/test_quiesce_vcpu $(H
 clean:
 	rm -rf build
 .PHONY: all test check-arm64 check-task-profiler-arm64 bench-arm64 parallel-arm64 clean bench-profiler-arm64 check-profiler-benchmark-parser
+
+
+# Explicit stock-managed session owner, linked from the exact app gitlink.
+# Its read-only build-info mode does not authorize a physical launch.
+STOCK_NATIVE := ../../app/switcher/native
+STOCK_THERMAL := ../bridges/thermal
+STOCK_SRC := tools/stock-session-owner.c src/stock_session_runner.c src/stock_sample_reader.c \
+  src/stock_thermal_supervisor.c src/quiesce_supervisor.c src/quiesce.c \
+  $(STOCK_NATIVE)/sm8850_stock_session.c $(STOCK_NATIVE)/sm8850_owned_groups.c \
+  $(STOCK_NATIVE)/sm8850_thermal_source.c $(STOCK_NATIVE)/sm8850_thermal_controller.c \
+  $(STOCK_THERMAL)/stock_hal.c $(STOCK_THERMAL)/thermal.c ../bridges/cpu/topology.c \
+  ../bridges/hw/hw_backend.c ../bridges/hw/hw_log.c ../bridges/hal/hal.c \
+  ../bridges/wifi/aidl_parcel.c ../bridges/wifi/aidl_binder.c
+STOCK_INC := -Isrc -I$(STOCK_NATIVE) -I$(STOCK_THERMAL) -I../bridges/include
+STOCK_HDR := $(wildcard $(STOCK_NATIVE)/*.h $(STOCK_THERMAL)/*.h src/stock*.h src/quiesce*.h)
+$(A)/oneios-stock-session: $(STOCK_SRC) $(STOCK_HDR)
+	@mkdir -p $(A)
+	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) $(STOCK_INC) -static $(STOCK_SRC) -lm -o $@
+$(H)/oneios-stock-session: $(STOCK_SRC) $(STOCK_HDR)
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(STOCK_INC) -fsanitize=address,undefined $(STOCK_SRC) -lpthread -lm -o $@

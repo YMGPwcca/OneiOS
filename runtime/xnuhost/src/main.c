@@ -294,7 +294,8 @@ static int stock_boot_parse(void)
      n[2]<=1||n[2]>INT_MAX||!val[5]||strlen(val[5])!=32||
      strspn(val[5],"0123456789abcdef")!=32||!val[6]||!*val[6]||
      strlen(val[6])>=sizeof stock_boot.generation||!val[7]||strlen(val[7])!=36||
-     geteuid()!=0||config.selftest||!config.sm8850_full_bridges||*config.input_script)
+     geteuid()!=0||config.selftest||!config.sm8850_full_bridges||*config.input_script||
+     !getenv("ONEIOS_CAMERA")||strcmp(getenv("ONEIOS_CAMERA"),"0"))
     return -EPERM;
   stock_boot.fd=(int)n[0];stock_boot.helper=(int)n[1];stock_boot.parent=(pid_t)n[2];
   stock_boot.owner=n[3];stock_boot.deadline=n[4];
@@ -342,7 +343,9 @@ static int stock_boot_start(uint64_t entry,uint64_t args)
   stock_boot.bound=true;
   close(stock_boot.helper);stock_boot.helper=-1;
   stock_boot.worker.ipc.start_guest=stock_guest_start;
-  session_file("stock.setup-ready", "ready\n"); // hint only; READY IPC is mandatory
+  char blocks[32];
+  snprintf(blocks,sizeof blocks,"%u\n",config.ndisk);
+  session_file("stock.setup-ready", blocks); // hint only; READY IPC is mandatory
   LOGI("STOCK_RUNTIME_SETUP_COMPLETE=YES; CPU0_WAITING_FOR_OWNER=YES");
   while(!stock_boot.worker.ipc.guest_started){
     uint64_t now;
