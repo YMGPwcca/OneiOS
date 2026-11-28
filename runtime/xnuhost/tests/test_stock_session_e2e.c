@@ -62,14 +62,23 @@ static void wait_child(pid_t pid,bool timed_out)
   int status;CHECK(waitpid(pid,&status,0)==pid&&WIFEXITED(status));
   CHECK(!WEXITSTATUS(status)||(timed_out&&WEXITSTATUS(status)==125));
 }
+static pthread_t boot_threads[2];
+static int start_fixture_guest(void *ctx)
+{
+  (void)ctx;
+  for(unsigned i=0;i<2;i++) {
+    if(xhqv_reserve_start(i)||pthread_create(&boot_threads[i],NULL,vcpu,(void *)(uintptr_t)i))
+      return -EIO;
+  }
+  return 0;
+}
 static int worker_child(int fd,pid_t parent)
 {
   make_board(0);
-  CHECK(!xhqv_configure(2));
-  pthread_t th[2];
-  for(unsigned i=0;i<2;i++)CHECK(!pthread_create(&th[i],NULL,vcpu,(void *)(uintptr_t)i));
+  CHECK(!xhqv_configure(2)&&!xhqv_enable_startup());
   struct xhqb_worker w={0};
   CHECK(!xhqb_worker_init(&w,fd,parent,getuid(),getgid(),17,99,getuid(),getgid(),guard,NULL));
+  w.ipc.start_guest=start_fixture_guest;
   int r=xhqb_worker_run(&w);
   CHECK(r==-ENOTCONN||r==-ESRCH);
   // Final raw fault leaves the mock device/real producer gates parked.
@@ -143,10 +152,12 @@ int main(int argc,char **argv)
   CHECK(!xh_stock_runner_bind(&runner,&s,&l,&peer,&raw,&native,deadline,verify_owner,verify_outer,&proof));
   struct emulator e={s.groups.freezer,fp,false};pthread_t ack;
   CHECK(!pthread_create(&ack,NULL,emulate_freezer,&e));
+  CHECK(xh_stock_runner_start_guest(&runner)==-EINVAL);
   CHECK(xh_stock_runner_tick(&runner)==ONEIOS_THERMAL_RUNNING);
   put(dir,"sys/class/thermal/thermal_zone2/temp","104800\n");
   CHECK(xh_stock_runner_tick(&runner)==ONEIOS_THERMAL_PAUSED);
   CHECK(s.groups.freeze_confirmed&&s.groups.cpu_pct==10&&peer.phase==XHQ_PARKED);
+  CHECK(xh_stock_runner_start_guest(&runner)==-EAGAIN&&!peer.guest_started);
   uint64_t seq=peer.seq;
   put(dir,"sys/class/thermal/thermal_zone2/temp","45000\n");
   enum oneios_thermal_result result=ONEIOS_THERMAL_PAUSED;
@@ -156,6 +167,8 @@ int main(int argc,char **argv)
   }
   CHECK(result==ONEIOS_THERMAL_RUNNING&&!s.groups.freeze_confirmed&&peer.phase==XHQ_DONE);
   CHECK(s.groups.cpu_pct==10&&!s.controller.freq_applied);
+  CHECK(!xh_stock_runner_start_guest(&runner)&&peer.guest_started);
+  CHECK(xh_stock_runner_start_guest(&runner)==-EINVAL);
   put(dir,"sys/class/thermal/thermal_zone2/type","wrong-cpu\n");
   CHECK(xh_stock_runner_tick(&runner)==ONEIOS_THERMAL_FAULT_QUIESCED);
   CHECK(s.controller.fault&&s.groups.freeze_confirmed&&peer.phase==XHQ_PARKED);

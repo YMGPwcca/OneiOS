@@ -13,7 +13,7 @@
 
 #define MAGIC UINT32_C(0x31535158) /* XQS1, local same-ABI channel */
 #define ACK UINT32_C(0x80000000)
-enum { BEGIN = 1, STEP, RESUME, RUNTIME_READY };
+enum { BEGIN = 1, STEP, RESUME, RUNTIME_READY, GUEST_START };
 struct packet {
   uint64_t owner, cycle, seq, deadline;
   uint32_t magic, op, phase, closed, verified, attempted, reopened;
@@ -261,7 +261,7 @@ int xhqs_owner_ready_until(struct xhqs_owner *o, uint64_t limit)
   if ((r = before(limit)) || (r = arm(o, limit))) return owner_fault(o, r);
   if (o->seq == UINT64_MAX) return owner_fault(o, -EOVERFLOW);
   struct packet m = { .owner=o->owner, .seq=++o->seq, .deadline=limit,
-    .magic=MAGIC, .op=RUNTIME_READY }, a;
+    .magic=MAGIC, .op=RUNTIME_READY, .closed=o->members }, a;
   if ((r=send_packet(&o->peer,&m)) || (r=wait_ack(o,&a,limit)))
     return owner_fault(o,r);
   if (a.magic!=MAGIC || a.op!=(RUNTIME_READY|ACK) ||
@@ -275,6 +275,27 @@ int xhqs_owner_ready_until(struct xhqs_owner *o, uint64_t limit)
   if ((r=before(limit)) || (r=alive(&o->peer))) return owner_fault(o,r);
   if (!a.result) o->runtime_ready=true;
   return a.result;
+}
+int xhqs_owner_start_until(struct xhqs_owner *o,uint64_t limit)
+{
+  if(!o || !o->runtime_ready || o->guest_started ||
+     (o->phase!=XHQ_IDLE && o->phase!=XHQ_DONE)) return -EINVAL;
+  int r=xhqs_owner_check(o);
+  if(r)return r;
+  if((r=before(limit))||(r=arm(o,limit)))return owner_fault(o,r);
+  if(o->seq==UINT64_MAX)return owner_fault(o,-EOVERFLOW);
+  struct packet m={.owner=o->owner,.cycle=o->cycle,.seq=++o->seq,
+    .deadline=limit,.magic=MAGIC,.op=GUEST_START},a;
+  if((r=send_packet(&o->peer,&m))||(r=wait_ack(o,&a,limit)))return owner_fault(o,r);
+  if(a.magic!=MAGIC||a.op!=(GUEST_START|ACK)||a.owner!=m.owner||
+     a.seq!=m.seq||a.cycle!=m.cycle||a.deadline!=limit||
+     a.phase!=(unsigned)o->phase||a.closed!=o->closed||a.verified!=o->verified||
+     a.attempted!=o->attempted||a.reopened!=o->reopened||a.result>0)
+    return owner_fault(o,-EPROTO);
+  if(a.result)return owner_fault(o,a.result);
+  if((r=arm(o,0))||(r=before(limit))||(r=alive(&o->peer)))return owner_fault(o,r);
+  o->guest_started=true;
+  return 0;
 }
 static int exchange(struct xhqs_owner *o, unsigned op, uint64_t limit)
 {
@@ -361,11 +382,11 @@ int xhqs_worker_once(struct xhqs_worker *w)
   if (r) return worker_fault(w, r);
   struct xhq *q = w->q;
   if (m.magic != MAGIC || m.owner != q->owner || w->seq == UINT64_MAX || m.seq != w->seq+1 ||
-      m.phase || m.closed || m.verified || m.attempted || m.reopened || m.result ||
-      (m.op != BEGIN && m.op != STEP && m.op != RESUME && m.op != RUNTIME_READY))
+      m.phase || (m.op!=RUNTIME_READY && m.closed) || m.verified || m.attempted || m.reopened || m.result ||
+      (m.op != BEGIN && m.op != STEP && m.op != RESUME && m.op != RUNTIME_READY && m.op!=GUEST_START))
     return worker_fault(w,-EPROTO);
   if (m.op==RUNTIME_READY) {
-    if (m.cycle || q->cycle || q->phase!=XHQ_IDLE || w->runtime_ready ||
+    if (m.cycle || m.closed!=((1u<<(q->nblocks+2u))-1u) || q->cycle || q->phase!=XHQ_IDLE || w->runtime_ready ||
         !w->ready_check) return worker_fault(w,-EPROTO);
     if ((r=xhqs_worker_check(w,m.deadline))) return worker_fault(w,r);
     w->seq=m.seq;
@@ -378,6 +399,22 @@ int xhqs_worker_once(struct xhqs_worker *w)
     if ((check=send_packet(&w->peer,&a))) return worker_fault(w,check);
     if (!r) w->runtime_ready=true;
     else if (r!=-EAGAIN) worker_fault(w,r);
+    return 0;
+  }
+  if(m.op==GUEST_START) {
+    if(!w->runtime_ready||w->guest_started||!w->start_guest||m.cycle!=q->cycle||
+       (q->phase!=XHQ_IDLE&&q->phase!=XHQ_DONE)) return worker_fault(w,-EPROTO);
+    if((r=xhqs_worker_check(w,m.deadline)))return worker_fault(w,r);
+    w->seq=m.seq;
+    r=w->start_guest(w->start_ctx);
+    if(r>0)r=-EPROTO;
+    int c=xhqs_worker_check(w,m.deadline);
+    if(c)return worker_fault(w,c);
+    struct packet a={.owner=m.owner,.cycle=m.cycle,.seq=m.seq,.deadline=m.deadline,
+      .magic=MAGIC,.op=GUEST_START|ACK,.phase=q->phase,.closed=q->closed,
+      .verified=q->verified,.attempted=q->resume_attempted,.reopened=q->reopened,.result=r};
+    if((c=send_packet(&w->peer,&a)))return worker_fault(w,c);
+    if(r)worker_fault(w,r);else w->guest_started=true;
     return 0;
   }
   if (!m.cycle || (w->ready_check && !w->runtime_ready))

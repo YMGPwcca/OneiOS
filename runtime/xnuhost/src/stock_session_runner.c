@@ -97,3 +97,27 @@ enum oneios_thermal_result xh_stock_runner_tick(struct xh_stock_runner *r)
   }else r->last=oneios_stock_session_tick_sample(r->session,s,n);
   return r->last;
 }
+
+
+int xh_stock_runner_start_guest(struct xh_stock_runner *r)
+{
+  if(!r||!r->bound||!r->activated||r->peer->guest_started)return -EINVAL;
+  if(r->last!=ONEIOS_THERMAL_RUNNING)return r->last==ONEIOS_THERMAL_PAUSED?-EAGAIN:-EPERM;
+  struct oneios_thermal_controller *c=&r->session->controller;
+  uint64_t now;
+  if(xhqs_now(&now)||now>=r->deadline)return -ETIMEDOUT;
+  uint64_t ms=now/1000000u;
+  // Startup is an increase from zero guest execution. Unknown/stale
+  // native observations, hard latch, or hot raw data must not release it.
+  if(!c->ready||c->fault||c->paused||c->policy.hard||!c->last.seq||
+     c->last.cpu_mc>=70000||c->last.gpu_mc>=70000||c->last.ddr_mc>=70000||
+     ms<c->last.ms||ms-c->last.ms>ONEIOS_THERMAL_MAX_SAMPLE_AGE_MS||
+     !r->native_valid||!c->last_native.seq||c->last_native.seq!=r->native_cache.seq||
+     c->last_native.severity>=4||ms<c->last_native.ms||
+     ms-c->last_native.ms>ONEIOS_THERMAL_MAX_SAMPLE_AGE_MS)return -EAGAIN;
+  if(verify_session(r,&r->session->id)||outer_verify(r,false)||
+     oneios_owned_groups_verify(&r->session->groups,false))return -EPERM;
+  uint64_t budget=(uint64_t)ONEIOS_THERMAL_ACK_MS*1000000u;
+  uint64_t limit=r->deadline-now<budget?r->deadline:now+budget;
+  return xhqs_owner_start_until(r->peer,limit);
+}

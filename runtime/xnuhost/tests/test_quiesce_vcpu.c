@@ -105,15 +105,39 @@ static void invalid(void)
   CHECK(xhqv_poll(0) == -ESTALE && xhqv_poll(t) == -EAGAIN);
   xhqv_invalidate(); CHECK(xhqv_poll(t) == -ESTALE && xhqv_resume(t) == -ESTALE);
 }
+static void startup(void)
+{
+  uint64_t t=0;
+  CHECK(!xhqv_configure(8)&&!xhqv_enable_startup()&&!xhqv_ready());
+  // No threads exist yet. A real empty producer set can be parked,
+  // but cannot spawn CPU0 while closed.
+  CHECK(!xhqv_close(&t)&&!xhqv_poll(t));
+  CHECK(xhqv_reserve_start(0)==-EBUSY&&!xhqv_resume(t));
+  CHECK(!xhqv_reserve_start(0)&&xhqv_ready()==-EAGAIN);
+  CHECK(!xhqv_close(&t)&&xhqv_poll(t)==-EAGAIN);
+  pthread_t th[2];
+  __atomic_store_n(&allow,255,__ATOMIC_RELEASE);
+  CHECK(!pthread_create(&th[0],NULL,cpu,(void *)(uintptr_t)0));
+  wait_park(t);
+  CHECK(xhqv_reserve_start(1)==-EBUSY);
+  CHECK(!xhqv_resume(t)&&!xhqv_ready());
+  CHECK(!xhqv_reserve_start(1));
+  CHECK(!pthread_create(&th[1],NULL,cpu,(void *)(uintptr_t)1));
+  wait_mask(&entered,3);
+  CHECK(!xhqv_close(&t));wait_park(t);
+  CHECK(!xhqv_resume(t));
+  __atomic_store_n(&done,1,__ATOMIC_RELEASE);
+  CHECK(!pthread_join(th[0],NULL)&&!pthread_join(th[1],NULL));
+}
 int main(void)
 {
   alarm(30);
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 6; i++) {
     int p[2]; CHECK(pipe(p) == 0);
     pid_t pid = fork(); CHECK(pid >= 0);
     if (!pid) {
       close(p[0]); checks = 0;
-      if (i == 4) invalid(); else cycles(i);
+      if (i == 5) startup(); else if (i == 4) invalid(); else cycles(i);
       if (write(p[1], &checks, sizeof checks) != sizeof checks) _exit(2);
       _exit(0);
     }

@@ -10,17 +10,48 @@
 #define READY UINT32_C(0xff)
 #define PARKED (READY << 8)
 #define FAULT (UINT32_C(1) << 17)
+#define STARTING (READY << 18)
 _Static_assert(__atomic_always_lock_free(sizeof(uint32_t), 0), "signal-context gate requires lock-free atomics");
 uint32_t xhqv_state;
 static uint32_t expected;
 static uint64_t generation;
-static bool verified;
+static bool verified, startup_mode;
 
 int xhqv_configure(unsigned ncpu)
 {
   if (!ncpu || ncpu > XHQV_MAX_CPUS) return -EINVAL;
   uint32_t zero = 0, mask = (1u << ncpu) - 1u;
   return __atomic_compare_exchange_n(&expected, &zero, mask, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED) ? 0 : -EBUSY;
+}
+/* Select only before any vCPU can be created. In this mode the
+ * STARTING mask is an atomic reservation for a real pthread_create.
+ * Dormant CPUs are not falsely registered/parked. */
+int xhqv_enable_startup(void)
+{
+  if (!__atomic_load_n(&expected,__ATOMIC_ACQUIRE) ||
+      __atomic_load_n(&xhqv_state,__ATOMIC_ACQUIRE) || startup_mode) return -EBUSY;
+  startup_mode=true;
+  return 0;
+}
+int xhqv_reserve_start(unsigned index)
+{
+  if (!startup_mode) return 0;
+  if (index >= XHQV_MAX_CPUS || !(__atomic_load_n(&expected,__ATOMIC_ACQUIRE)&(1u<<index))) return -EINVAL;
+  uint32_t bit=1u<<index, pending=bit<<18;
+  uint32_t s=__atomic_load_n(&xhqv_state,__ATOMIC_ACQUIRE);
+  do {
+    if (s&FAULT) return -ESTALE;
+    if (s&(bit|pending)) return -EBUSY;
+    // A CPU already executing its CPU_ON trap may complete that
+    // request during a close. Once all existing producers are parked,
+    // no new reservation is allowed until resume (including CPU0).
+    if ((s&XHQV_CLOSED) && (s&READY)==((s&PARKED)>>8)) return -EBUSY;
+  } while(!__atomic_compare_exchange_n(&xhqv_state,&s,s|pending,false,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE));
+  return 0;
+}
+void xhqv_start_failed(void)
+{
+  if(startup_mode) xhqv_invalidate();
 }
 void xhqv_invalidate(void) { __atomic_fetch_or(&xhqv_state, FAULT, __ATOMIC_ACQ_REL); }
 void xhqv_invalidate_if_closed(void)
@@ -36,9 +67,11 @@ void xhqv_register(unsigned index)
   }
   uint32_t bit = 1u << index;
   uint32_t s = __atomic_load_n(&xhqv_state, __ATOMIC_ACQUIRE);
+  uint32_t pending=bit<<18, next;
   do {
-    if (s & (bit | XHQV_CLOSED)) { xhqv_invalidate(); return; }
-  } while (!__atomic_compare_exchange_n(&xhqv_state, &s, s | bit, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+    if ((s&(bit|FAULT)) || (startup_mode ? !(s&pending) : (s&XHQV_CLOSED))) { xhqv_invalidate(); return; }
+    next=(s|bit)&~pending;
+  } while (!__atomic_compare_exchange_n(&xhqv_state, &s, next, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
 }
 void xhqv_park(unsigned index)
 {
@@ -69,6 +102,7 @@ int xhqv_ready(void)
   uint32_t s=__atomic_load_n(&xhqv_state,__ATOMIC_ACQUIRE);
   if (!mask || (s & FAULT)) return -ESTALE;
   if (s & XHQV_CLOSED) return -EBUSY;
+  if(startup_mode) return (s&STARTING) ? -EAGAIN : 0;
   return (s & READY)==mask ? 0 : -EAGAIN;
 }
 int xhqv_close(uint64_t *ticket)
@@ -79,7 +113,7 @@ int xhqv_close(uint64_t *ticket)
   uint32_t s = __atomic_load_n(&xhqv_state, __ATOMIC_ACQUIRE);
   if (s & FAULT) return -ESTALE;
   if (s & XHQV_CLOSED) return -EBUSY;
-  if ((s & READY) != mask) return -EAGAIN;
+  if (!startup_mode && (s & READY) != mask) return -EAGAIN;
   if (generation == UINT64_MAX) return -EOVERFLOW;
   if (!__atomic_compare_exchange_n(&xhqv_state, &s, s | XHQV_CLOSED, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return -EAGAIN;
   verified = false;
@@ -90,7 +124,11 @@ static int check(uint64_t ticket, uint32_t s)
 {
   if (!ticket || ticket != generation || !(s & XHQV_CLOSED) || (s & FAULT)) return -ESTALE;
   uint32_t mask = __atomic_load_n(&expected, __ATOMIC_ACQUIRE);
-  if ((s & READY) != mask) return -ESTALE;
+  if(startup_mode) {
+    if(s&STARTING) return -EAGAIN;
+    if((s&READY)&~mask) return -ESTALE;
+    mask=s&READY;
+  } else if ((s & READY) != mask) return -ESTALE;
   return ((s & PARKED) >> 8) == mask ? 0 : -EAGAIN;
 }
 int xhqv_poll(uint64_t ticket)

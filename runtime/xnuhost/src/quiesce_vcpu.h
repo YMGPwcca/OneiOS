@@ -13,6 +13,12 @@
 #define XHQV_CLOSED (UINT32_C(1) << 16)
 extern uint32_t xhqv_state; /* internal atomic word; only gate implementation writes */
 int xhqv_configure(unsigned ncpu);
+/* Opt-in startup rendezvous. Call after configure and before CPU0.
+ * All actual CPU_ON thread creations must reserve first; legacy
+ * all-configured-CPU receipt remains the default. */
+int xhqv_enable_startup(void);
+int xhqv_reserve_start(unsigned index);
+void xhqv_start_failed(void);
 void xhqv_register(unsigned index);
 void xhqv_park(unsigned index);
 static inline void xhqv_checkpoint(unsigned index)

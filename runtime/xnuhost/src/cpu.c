@@ -489,12 +489,14 @@ int xh_cpu_start(unsigned index, uint64_t entry, uint64_t a0, uint64_t a1, uint6
   pthread_mutex_lock(&lock);
   if (v->thread) { pthread_mutex_unlock(&lock); return -2; }      // already on
   if (!entry && !g_upcalls.cpu_entry) { pthread_mutex_unlock(&lock); return -1; }
+  if (xhqv_reserve_start(index)) { pthread_mutex_unlock(&lock); return -1; }
   v->entry = entry; v->arg0 = a0; v->arg1 = a1; v->arg2 = a2;
   // The new thread starts with every signal blocked and opens its own mask.
   sigset_t all, old;
   sigfillset(&all);
   pthread_sigmask(SIG_SETMASK, &all, &old);
   int rc = pthread_create(&v->thread, NULL, vcpu_main, v);
+  if (rc) xhqv_start_failed();
   pthread_sigmask(SIG_SETMASK, &old, NULL);
   pthread_mutex_unlock(&lock);
   return rc ? -1 : 0;

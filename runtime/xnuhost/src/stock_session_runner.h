@@ -38,4 +38,7 @@ int xh_stock_runner_bind(struct xh_stock_runner *,struct oneios_stock_session *,
  * Missing mandatory raw input faults the actual stock controller.
  * Return value must not be treated as a startup/physical qualification. */
 enum oneios_thermal_result xh_stock_runner_tick(struct xh_stock_runner *);
+/* Release CPU0 exactly once, only with actual current controller state.
+ * EAGAIN holds startup; no thermal-only reboot. */
+int xh_stock_runner_start_guest(struct xh_stock_runner *);
 #endif

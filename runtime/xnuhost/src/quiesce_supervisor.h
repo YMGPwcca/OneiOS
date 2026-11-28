@@ -24,7 +24,7 @@ struct xhqs_owner {
   uint64_t owner, cycle, seq, deadline;
   unsigned members, closed, verified, attempted, reopened;
   enum xhq_phase phase;
-  bool runtime_ready;
+  bool runtime_ready, guest_started;
 };
 struct xhqs_worker {
   struct xhqs_peer peer;
@@ -39,7 +39,9 @@ struct xhqs_worker {
   /* Optional real runtime-ready handshake before the first BEGIN. */
   int (*ready_check)(void *);
   void *ready_ctx;
-  bool runtime_ready;
+  bool runtime_ready, guest_started;
+  int (*start_guest)(void *);
+  void *start_ctx;
 };
 int xhqs_pair(int fd[2]);
 int xhqs_now(uint64_t *ns);
@@ -68,6 +70,9 @@ int xhqs_owner_check(struct xhqs_owner *);
 /* Authenticated, bounded startup receipt. -EAGAIN means not yet ready;
  * this is not a parked receipt or physical admission. */
 int xhqs_owner_ready_until(struct xhqs_owner *, uint64_t call_limit);
+/* One authenticated START after the root controller is running. A READY
+ * receipt alone never authorizes entry into guest CPU0. */
+int xhqs_owner_start_until(struct xhqs_owner *, uint64_t call_limit);
 int xhqs_owner_begin(struct xhqs_owner *, uint64_t deadline);
 int xhqs_owner_step(struct xhqs_owner *);
 int xhqs_owner_resume(struct xhqs_owner *);
