@@ -2412,3 +2412,32 @@ stage replacement, Data rearm, kernel changes or benchmark is
 authorized by this receipt. The explicit stock startup gate remains
 closed pending physical qualification of the exact setup path and
 initial demand. Read-only preflight is not a physical startup PASS.
+
+
+### 2026-11-28 — physical prerequisite snapshot
+
+Operator read-only capture /tmp/oneios-stock-physical.fQrwRY.log:
+exact SM-S948B/m3q/SM8850 firmware, SELinux Enforcing, root in init
+mount namespace, all eight CPUs available. CPU v1 and unified v2 mounts
+are present, no oneios_guest.* leaves listed. Root shell starts in
+cpu:/general, so a dedicated probe process must join the CPU root
+before calling the production actuator (as switcher out_of_the_way
+does for its own process). Android Framework running, no xnuhost.
+Control state says running but cannot be treated as a live receipt.
+Boot 76c6e915-aee1-460c-b982-cfe76bec5dec differs from manifest boot
+f2497b9e-f3da-4051-bdba-522b9d984017. The staged thermalctl is absent,
+runtime old, data.consumed exists. MemAvailable 3520692 KiB while
+Framework ON, SwapFree 6567588 KiB; post-stop memory minimum remains
+separate. Raw CPU/GPU/DDR maxima 41.6/38.6/38.2 C, battery/LRP/AP
+32.3/34.1/34.6 C; hardware trip pseudo-zones not sampled as junctions.
+
+The next diagnostic uses actual production owned-group code against two
+fresh private kernel leaves and two idle child processes only, with
+Framework ON and exact firmware/SELinux identity. It exercises held
+launch, quota readback, real freeze/thaw ACK, tree observation and
+retirement, and separately queries native raw/HAL. The test's 10/20
+percent quotas apply only to idle children and do not qualify startup
+demand. Scratch files only; the existing runtime/manifest/Data and
+control state are not replaced. Do not infer full guest startup or FPS
+from this diagnostic. The admission gate remains closed. No rerun of
+the previously passing offline suites.
