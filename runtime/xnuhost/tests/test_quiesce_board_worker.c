@@ -8,6 +8,7 @@
 #include "oneios_bridge_proto.h"
 #include <errno.h>
 #include <pthread.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -122,7 +123,11 @@ static void scenario(int k)
       CHECK(r==-EIO&&w.q.phase==XHQ_FAULT&&w.released==(1u<<4));
       CHECK(!inner&&external==1&&(__atomic_load_n(&xhqv_state,__ATOMIC_ACQUIRE)&XHQV_CLOSED));
       CHECK(!xhqb_console_enter());
-      // Deliberate terminal fixture exit, never try to release failed gates.
+      // Keep the process/socket alive until the owner consumes the negative
+      // ACK and shuts down; otherwise peer death could win the ACK race.
+      struct pollfd p={.fd=w.ipc.peer.fd,.events=POLLIN};
+      CHECK(poll(&p,1,5000)==1 && (p.revents & (POLLIN|POLLHUP|POLLERR)));
+      // Deliberate terminal fixture exit, never release failed gates.
     }else{
       CHECK(r==-ENOTCONN||r==-ESRCH);
       CHECK(w.q.phase==XHQ_DONE&&!inner&&!external&&!w.prepared_cycle&&!w.released);
