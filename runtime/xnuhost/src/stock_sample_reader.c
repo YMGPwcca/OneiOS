@@ -85,7 +85,8 @@ static _Noreturn void child_loop(int fd,pid_t parent,uid_t uid,gid_t gid,
       rc=native(&id,seq,&reply.value.native);
       reply.status=rc<0?rc:rc?-EIO:0;
     }
-    if(send_record(fd,&reply))_exit(125);
+    rc=send_record(fd,&reply);
+    if(rc)_exit(rc==-EPIPE||rc==-ECONNRESET||rc==-ENOTCONN?0:125);
     // A raw error is terminal for its sequence/manifest; do not silently
     // resume with a fresh sequence. Keep endpoint alive for receipt.
     if(kind==XH_STOCK_RAW&&reply.status){

@@ -2193,3 +2193,46 @@ session membership/fault ownership, and explicit UI-profile selection
 if needed. No default profile or thermal policy change, no staging or
 physical run. Existing performance artifacts and local-first rules stay
 unchanged.
+
+
+### Guest launcher receipt and consolidated stock-session integration candidate
+
+Operator local result at OneiOS 2b394a0a79b21002405141c2a48d0779ad8cb345 /
+OneOS 209640c194a6e8eea23e98979542c60f016fe676: 479 owned-group/held-launch
+checks PASS, Android API30 ARM64 native compile PASS,
+GUEST_LAUNCH_HOST_OFFLINE=PASS, DEVICE_ACCESS=NONE;
+evidence /tmp/oneios-guest-launch.Jo0F7X.
+
+The new stock runner consumes mandatory raw data from its own bounded
+reader process, and optional native severity from a distinct process
+without waiting for Binder in the raw loop. Reader ownership is
+pidfd-pinned, each record credential-checked, sequence and session
+identity checked, with BOOTTIME timerfd limits and terminal raw errors.
+An actual missing/invalid native observation clears its cache; an
+in-flight read may reuse only a still-fresh authenticated observation.
+No frequency vote. The root-side runner binds the actual stock-session
+controller only after a credential-checked READY from the real board
+worker (all vCPUs registered, sealed input and board, pinned display
+helper). A READY receipt is not a park receipt or launch admission.
+The new runner joins these existing APIs, including private-root
+ownership readback; complete descendant verification, independent
+owner/deadline supervision and startup protection remain external.
+
+One consolidated local script exercises actual launch fork/exec,
+raw parser/sampler, stock controller, supervisor, board worker,
+vCPU/input/console gates and pause/resume/fault. The cgroup filesystem,
+native HAL and GPU/block/display/bridge device providers are simulated.
+The slow native reader test verifies independent raw progress. Android
+native object compile is included; no device access. This is a source
+candidate and has not yet passed the consolidated local run.
+
+Do not claim a production launcher is enabled: the actual switcher and
+XNUHost main have no production caller yet. The previous startup CFS
+experiment reached 95.7 C; an initial quota is not yet qualified.
+Legacy full-run gate remains retired. A selected UI-only profile would
+need to avoid unsupported camera/encoder/net/active capture/script
+providers explicitly, not silently. Need a pre-guest/startup protection
+handoff and exact process/namespace/recovery ownership before live
+admission. No physical FPS improvement claimed. Keep the prior
+performance package and original profile intact. No more peripheral
+milestones or separate frequency actuator for the 60 FPS goal.
