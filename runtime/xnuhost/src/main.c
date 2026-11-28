@@ -4,6 +4,10 @@
 #include "xnuhost.h"
 #include "gpu3d.h"
 #include "quiesce_board.h"
+#include "quiesce_board_worker.h"
+#include <poll.h>
+#include <limits.h>
+#include <sys/socket.h>
 #include "quiesce_vcpu.h"
 #include "quiesce_input.h"
 #include "sm8850_stage_admission.h"
@@ -179,6 +183,169 @@ static bool sm8850_full_bridge_admitted(void)
 static struct { uint32_t requested, reason, code; char why[96]; } stop_state;
 static pthread_mutex_t stop_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool guest_ready;
+/* Explicit inherited-control production hook. The stage admission remains
+ * separate and fail closed; no command-line/environment bypass of the
+ * retired Framework run. The root owner must supply the actual held child,
+ * helper pidfd, generation and independent session deadline. */
+static struct {
+  bool enabled, bound, threaded;
+  int fd, helper;
+  pid_t parent;
+  uint64_t owner, deadline, entry, args;
+  char token[33], generation[96], boot[37];
+  pthread_t thread;
+  struct xhqb_worker worker;
+} stock_boot={.fd=-1,.helper=-1};
+
+#ifdef __ANDROID__
+static bool stock_uint(const char *s,uint64_t *v)
+{
+  if(!s||!*s||strspn(s,"0123456789")!=strlen(s))return false;
+  char *end;errno=0;
+  unsigned long long n=strtoull(s,&end,10);
+  if(errno||*end||!n)return false;
+  *v=n;return true;
+}
+static bool stock_line(const char *path,const char *want)
+{
+  char b[192];
+  return sm8850_stage_line(path,b,sizeof b)&&!strcmp(b,want);
+}
+static bool stock_self_membership(void)
+{
+  FILE *fp=fopen("/proc/self/cgroup","re");
+  if(!fp)return false;
+  char b[512],want[80];
+  snprintf(want,sizeof want,"/oneios_guest.%s",stock_boot.token);
+  bool cpu=false,unified=false;
+  while(fgets(b,sizeof b,fp)){
+    char *a=strchr(b,':'),*z=a?strchr(a+1,':'):NULL;
+    if(!z)continue;
+    *a++=0;*z++=0;z[strcspn(z,"\r\n")]=0;
+    if(strcmp(z,want))continue;
+    if(!strcmp(b,"0")&&!*a)unified=true;
+    char *save=NULL;
+    for(char *k=strtok_r(a,",",&save);k;k=strtok_r(NULL,",",&save))
+      if(!strcmp(k,"cpu"))cpu=true;
+  }
+  bool ok=!ferror(fp)&&cpu&&unified;
+  fclose(fp);return ok;
+}
+static bool stock_stage_current(void)
+{
+  uint64_t now;
+  return !xhqs_now(&now)&&now<stock_boot.deadline&&getppid()==stock_boot.parent&&
+    stock_line("/proc/sys/kernel/random/boot_id",stock_boot.boot)&&
+    stock_line("/data/control/boot",stock_boot.boot)&&
+    stock_line("/data/control/watchdog.generation",stock_boot.generation)&&
+    stock_line("/data/control/framework.launch",stock_boot.token)&&
+    stock_line("/data/control/framework.stock-profile","ui-v1")&&
+    (stock_line("/data/control/state","starting")||stock_line("/data/control/state","running"))&&
+    stock_self_membership();
+}
+static void stock_fork_child(void)
+{
+  // The task factory is a fork without exec. FD_CLOEXEC alone is
+  // insufficient; never share the worker endpoint with guest tasks.
+  if(stock_boot.fd>=0)close(stock_boot.fd);
+  if(stock_boot.helper>=0)close(stock_boot.helper);
+  if(stock_boot.bound&&stock_boot.worker.ipc.peer.pidfd>=0)
+    close(stock_boot.worker.ipc.peer.pidfd);
+}
+static int stock_boot_parse(void)
+{
+  const char *names[]={"ONEIOS_STOCK_CONTROL_FD","ONEIOS_STOCK_HELPER_PIDFD",
+    "ONEIOS_STOCK_OWNER_PID","ONEIOS_STOCK_OWNER_ID","ONEIOS_STOCK_DEADLINE_NS",
+    "ONEIOS_STOCK_TOKEN","ONEIOS_STOCK_GENERATION","ONEIOS_STOCK_BOOT"};
+  const char *val[8];bool any=false;
+  for(unsigned i=0;i<8;i++){val[i]=getenv(names[i]);any|=val[i]!=NULL;}
+  if(!any)return 0;
+  uint64_t n[5];
+  for(unsigned i=0;i<5;i++)if(!stock_uint(val[i],&n[i]))return -EINVAL;
+  if(n[0]<3||n[0]>INT_MAX||n[1]<3||n[1]>INT_MAX||n[0]==n[1]||
+     n[2]<=1||n[2]>INT_MAX||!val[5]||strlen(val[5])!=32||
+     strspn(val[5],"0123456789abcdef")!=32||!val[6]||!*val[6]||
+     strlen(val[6])>=sizeof stock_boot.generation||!val[7]||strlen(val[7])!=36||
+     geteuid()!=0||config.selftest||!config.sm8850_full_bridges||*config.input_script)
+    return -EPERM;
+  stock_boot.fd=(int)n[0];stock_boot.helper=(int)n[1];stock_boot.parent=(pid_t)n[2];
+  stock_boot.owner=n[3];stock_boot.deadline=n[4];
+  strcpy(stock_boot.token,val[5]);strcpy(stock_boot.generation,val[6]);strcpy(stock_boot.boot,val[7]);
+  int type=0,pass=0;socklen_t len=sizeof type;
+  if(getsockopt(stock_boot.fd,SOL_SOCKET,SO_TYPE,&type,&len)||type!=SOCK_SEQPACKET)return -EPROTO;
+  len=sizeof pass;
+  if(getsockopt(stock_boot.fd,SOL_SOCKET,SO_PASSCRED,&pass,&len)||!pass||
+     fcntl(stock_boot.fd,F_SETFD,FD_CLOEXEC)||fcntl(stock_boot.helper,F_SETFD,FD_CLOEXEC)||
+     !stock_stage_current()||!sm8850_full_bridge_admitted())return -EPERM;
+  if(pthread_atfork(NULL,NULL,stock_fork_child))return -EPERM;
+  for(unsigned i=0;i<8;i++)unsetenv(names[i]);
+  stock_boot.enabled=true;
+  return 0;
+}
+static int stock_worker_guard(void *ctx,uint64_t owner,uint64_t cycle,enum xhq_phase phase)
+{
+  (void)ctx;(void)cycle;(void)phase;
+  return owner==stock_boot.owner&&!xh_stopping()&&stock_stage_current() ? 0:-ESTALE;
+}
+static int stock_guest_start(void *ctx)
+{
+  (void)ctx;
+  if(!stock_stage_current()||xh_stopping()||xhqv_ready())return -EPERM;
+  return xh_cpu_start(0,stock_boot.entry,stock_boot.args,
+    (uint64_t)(uintptr_t)xh_vector(),(uint64_t)(uintptr_t)&g_vcpu[0].cpu)?-EIO:0;
+}
+static void *stock_worker_thread(void *arg)
+{
+  (void)arg;
+  int r=xhqb_worker_run(&stock_boot.worker);
+  if(!xh_stopping()) {
+    LOGE("stock controller: worker channel ended (%d)",r);
+    xh_stop(XH_HALT_PANIC,1,"stock controller channel fault");
+  }
+  return NULL;
+}
+static int stock_boot_start(uint64_t entry,uint64_t args)
+{
+  if(xhqv_enable_startup())return -1;
+  stock_boot.entry=entry;stock_boot.args=args;
+  int r=xhqb_worker_init(&stock_boot.worker,stock_boot.fd,stock_boot.parent,0,0,
+    stock_boot.owner,stock_boot.helper,0,0,stock_worker_guard,NULL);
+  if(r){LOGE("stock controller: board bind refused (%d)",r);return -1;}
+  stock_boot.bound=true;
+  close(stock_boot.helper);stock_boot.helper=-1;
+  stock_boot.worker.ipc.start_guest=stock_guest_start;
+  LOGI("STOCK_RUNTIME_SETUP_COMPLETE=YES; CPU0_WAITING_FOR_OWNER=YES");
+  while(!stock_boot.worker.ipc.guest_started){
+    uint64_t now;
+    if(xhqs_now(&now)||now>=stock_boot.deadline||!stock_stage_current()||xh_stopping())return -1;
+    struct pollfd p[]={{.fd=stock_boot.fd,.events=POLLIN},
+      {.fd=stock_boot.worker.ipc.peer.pidfd,.events=POLLIN}};
+    int n=poll(p,2,100);
+    if(n<0){if(errno==EINTR)continue;return -1;}
+    if(p[1].revents||p[0].revents&(POLLHUP|POLLERR|POLLNVAL))return -1;
+    if(!(p[0].revents&POLLIN))continue;
+    r=xhqs_worker_once(&stock_boot.worker.ipc);
+    if(stock_boot.worker.ipc.fault||(r&&r!=-EAGAIN))return -1;
+  }
+  if(pthread_create(&stock_boot.thread,NULL,stock_worker_thread,NULL))return -1;
+  stock_boot.threaded=true;
+  LOGI("STOCK_GUEST_START=AUTHORIZED_BY_CONTROLLER");
+  return 0;
+}
+static void stock_boot_shutdown(void)
+{
+  if(!stock_boot.bound)return;
+  shutdown(stock_boot.fd,SHUT_RDWR);
+  if(stock_boot.threaded)pthread_join(stock_boot.thread,NULL);
+  xhqb_worker_close(&stock_boot.worker);stock_boot.fd=-1;stock_boot.bound=false;
+}
+#else
+static int stock_boot_parse(void)
+{ return getenv("ONEIOS_STOCK_CONTROL_FD")?-ENOTSUP:0; }
+static int stock_boot_start(uint64_t entry,uint64_t args)
+{ (void)entry;(void)args;return -ENOTSUP; }
+static void stock_boot_shutdown(void) {}
+#endif
 static bool interaction_ready;
 static uint64_t boot_fb_pa;
 static unsigned fb_width, fb_height, fb_hz;
@@ -1044,7 +1211,7 @@ static int boot(void)
         return -1;
       }
     }
-    if (thermal) br_thermal_on_cap(thermal, thermal_step, NULL);
+    if (thermal && !stock_boot.enabled) br_thermal_on_cap(thermal, thermal_step, NULL);
     br_bridge_config bridge = { .haptic = haptic, .hci_factory = hidl ? br_hci_open_hidl : sim ? br_hci_open_sim : NULL,
                                 .brightness = brightness, .battery = battery, .thermal = thermal };
     bool have_bridge = br_bridge_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, &bridge) != NULL;
@@ -1287,6 +1454,7 @@ static int boot(void)
 
   if (xh_cpu_init(config.ncpu)) { LOGE("cannot set up %u CPUs", config.ncpu); return -1; }
   if (!xh_vector()) { LOGE("this build cannot enter the kernel (not AArch64 Linux)"); return -1; }
+  if (stock_boot.enabled) return stock_boot_start(layout.entry_va,layout.args_va);
   return xh_cpu_start(0, layout.entry_va, layout.args_va, (uint64_t)(uintptr_t)xh_vector(), (uint64_t)(uintptr_t)&g_vcpu[0].cpu);
 }
 
@@ -1546,6 +1714,7 @@ int main(int argc, char **argv)
   xh_config_defaults(&config);
   if (xh_config_args(&config, argc, argv) || xh_config_finish(&config)) return EXIT_SETUP;
   xh_log_open(NULL, config.log_level);
+  if (stock_boot_parse()) { LOGE("stock controller: inherited startup contract refused"); return EXIT_SETUP; }
   LOGI("xnuhost: session ABI %d, mode %s, pid %d", config.session_abi, config.mode, getpid());
   host_facts();
   if (!config.selftest) ram_choice_log();
@@ -1603,7 +1772,7 @@ int main(int argc, char **argv)
     LOGE("boot arguments: bt-transport-override=10 gives bluetoothd its own simulated controller, in its own process: "
          "nothing reaches the phone's controller (docs/hardware.md 4); take it out");
   xh_perf_init(&config);
-  if (boot()) { xh_tasks_shutdown(); return EXIT_SETUP; }
+  if (boot()) { stock_boot_shutdown(); xh_tasks_shutdown(); return EXIT_SETUP; }
 
   sigset_t waited;
   sigemptyset(&waited);
@@ -1705,6 +1874,7 @@ int main(int argc, char **argv)
     uint64_t limit = (uint64_t)(getenv("XNUHOST_DUMP_MB") ? strtoul(getenv("XNUHOST_DUMP_MB"), NULL, 0) : 64) << 20;
     if (dump) { fwrite(g_mem.host, 1, g_mem.size < limit ? g_mem.size : limit, dump); fclose(dump); }
   }
+  stock_boot_shutdown();
   xh_tasks_shutdown();
   if (haptic) br_haptic_close(haptic);      // stops the motor
   if (camera) br_camera_close(camera);      // the helper closes the camera and exits
@@ -1723,7 +1893,7 @@ int main(int argc, char **argv)
   LOGI("memory: the guest's RAM: %llu MiB held to the end, %llu MiB of it locked; the exit gives all of it back to the host",
        (unsigned long long)(g_mem.size >> 20), (unsigned long long)(__atomic_load_n(&g_ramfix.locked, __ATOMIC_RELAXED) >> 20));
   if (stop_state.reason == XH_HALT_RETURN) session_file("return.request", "the guest asked to return\n");
-  if (stop_state.reason == XH_HALT_RESTART) guest_restart();     // returns only if it could not
+  if (stop_state.reason == XH_HALT_RESTART && !stock_boot.enabled) guest_restart();     // returns only if it could not
   int code = stop_state.reason == XH_HALT_RESTART ? EXIT_RESTART : stop_state.reason == XH_HALT_PANIC ? EXIT_PANIC :
              stop_state.code ? EXIT_PANIC : EXIT_GUEST_OFF;
   LOGI("exit %d", code);

@@ -60,18 +60,19 @@ void xhqv_invalidate_if_closed(void)
   while ((s & XHQV_CLOSED) && !(s & FAULT))
     if (__atomic_compare_exchange_n(&xhqv_state, &s, s | FAULT, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
 }
-void xhqv_register(unsigned index)
+int xhqv_register(unsigned index)
 {
   if (index >= XHQV_MAX_CPUS || !(__atomic_load_n(&expected, __ATOMIC_ACQUIRE) & (1u << index))) {
-    xhqv_invalidate(); return;
+    xhqv_invalidate(); return -EINVAL;
   }
   uint32_t bit = 1u << index;
   uint32_t s = __atomic_load_n(&xhqv_state, __ATOMIC_ACQUIRE);
   uint32_t pending=bit<<18, next;
   do {
-    if ((s&(bit|FAULT)) || (startup_mode ? !(s&pending) : (s&XHQV_CLOSED))) { xhqv_invalidate(); return; }
+    if ((s&(bit|FAULT)) || (startup_mode ? !(s&pending) : (s&XHQV_CLOSED))) { xhqv_invalidate(); return -ESTALE; }
     next=(s|bit)&~pending;
   } while (!__atomic_compare_exchange_n(&xhqv_state, &s, next, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+  return 0;
 }
 void xhqv_park(unsigned index)
 {

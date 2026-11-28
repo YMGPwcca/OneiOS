@@ -20,10 +20,11 @@ export ASAN_OPTIONS=detect_leaks=0
 echo "===== SUPERVISOR / BOARD REGRESSION ====="
 make -C "$R/runtime/xnuhost" -j"${JOBS:-8}" \
   build/host/test_quiesce_supervisor build/host/test_quiesce_board \
-  build/host/test_quiesce_board_worker
+  build/host/test_quiesce_board_worker build/host/test_quiesce_vcpu
 "$R/runtime/xnuhost/build/host/test_quiesce_supervisor"
 "$R/runtime/xnuhost/build/host/test_quiesce_board"
 "$R/runtime/xnuhost/build/host/test_quiesce_board_worker"
+"$R/runtime/xnuhost/build/host/test_quiesce_vcpu"
 echo "===== STOCK SESSION COMPATIBILITY ====="
 "$CC" "${common[@]}" "$R/app/tests/test_sm8850_stock_session.c" \
   "$N/sm8850_stock_session.c" "$N/sm8850_thermal_controller.c" \
@@ -69,7 +70,7 @@ echo "===== ANDROID NATIVE COMPILE ====="
 NDK="${ANDROID_NDK_ROOT:-${NDK:-$HOME/Android/Sdk/ndk/28.2.13676358}}"
 AC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
 test -x "$AC"
-for src in "$S/stock_sample_reader.c" "$S/stock_session_runner.c" \
+for src in "$S/main.c" "$S/cpu.c" "$S/stock_sample_reader.c" "$S/stock_session_runner.c" \
     "$S/stock_thermal_supervisor.c" "$S/quiesce_supervisor.c" \
     "$S/quiesce_board_worker.c" "$S/quiesce_input.c" "$S/quiesce_vcpu.c" \
     "$N/sm8850_stock_session.c" "$N/sm8850_thermal_source.c"; do

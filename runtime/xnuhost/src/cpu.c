@@ -429,7 +429,7 @@ static void *vcpu_main(void *arg)
   if (!entry) { entry = (uint64_t)(uintptr_t)g_upcalls.cpu_entry; a1 = a0; a0 = (uint64_t)(uintptr_t)&v->cpu; }
   LOGI("cpu%u: entering the kernel at 0x%llx", v->cpu.index, (unsigned long long)entry);
   v->started = true;
-  xhqv_register(v->cpu.index);
+  if (xhqv_register(v->cpu.index)) { xh_stop(XH_HALT_PANIC, 1, "vCPU registration fault"); return NULL; }
   xhqv_checkpoint(v->cpu.index);
   xh_arch_enter(&v->cpu, entry, a0, a1, a2, (uint64_t)(uintptr_t)(v->boot_stack + BOOT_STACK));
 }
