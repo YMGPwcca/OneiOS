@@ -2090,3 +2090,37 @@ CI repeat, runtime build or device action required by this receipt.
 Production stock thermal supervisor and full guest admission remain
 unchanged/incomplete. This is a documentation-only gitlink refresh;
 the tested artifacts remain identified by their original revisions.
+
+
+### 2026-11-28 — stock session receipt / bounded supervisor connection
+
+Operator focused local receipt: OneOS f1f0000a2313b8377b730144c3439b1499d03bfc
+on feat/sm8850-stock-session-integration, owned group 401 checks,
+stock session assembly 23 checks, zero failures; STOCK_SESSION_OFFLINE=PASS,
+DEVICE_ACCESS=NONE, evidence /tmp/oneios-stock-session.FDp9vZ.
+This is the selected companion commit for this separate integration branch.
+
+Connect the actual stock controller callbacks to the existing independent
+XNUHost supervisor owner, without requiring an owned frequency provider.
+Split bounded operation deadlines from the fixed whole-cycle deadline.
+Each exchange uses the earlier limit and restores the whole-cycle timer
+on success; timeout faults the channel, never extends the cycle or
+pretends the remote worker stopped. The root-side stock adapter requires
+external authenticated membership and outer-producer verification.
+It uses real supervisor park/resume receipts, refuses thawed/parked
+mismatches, refreshes the receipt while the worker can execute, and
+does not issue IPC to a frozen worker. No clock votes or new thermal
+thresholds.
+
+Source candidate only: the production launcher still must prove exact
+process-tree membership and bind a real XNUHost worker, including its
+outer producer park/release sequence. Raw reads and HAL still require
+independent supervision. Current full-profile camera/encoder/network/
+capture providers are not certified by the GPU/block/display protocol.
+No feature silently disabled. This commit leaves the legacy launch gate
+unchanged. The focused host fixture connects the actual controller and
+supervisor over a real process/socket boundary with mocked board/group
+operations; it is not a device or live admission result. Run only the
+new focused regression and the existing supervisor suite with the
+bounded-call cases. No repeat of the 424 group/session checks.
+The 60 FPS physical A/B remains the next performance goal.

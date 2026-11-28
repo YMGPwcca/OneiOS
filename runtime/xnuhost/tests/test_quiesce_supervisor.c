@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -184,6 +185,29 @@ int main(void)
   int status; CHECK(waitpid(c.pid, &status, WNOHANG) == 0); /* worker remains blocked */
   CHECK(xhqs_owner_resume(&c.owner) == -ETIMEDOUT && xhqs_owner_begin(&c.owner, deadline(5000)) == -ETIMEDOUT);
   CHECK(write(c.release, &byte, 1) == 1); finish(&c);
+  /* A short operation timeout is not the whole park/hold deadline. */
+  c = launch(STALL);
+  uint64_t cycle_end = deadline(8000);
+  CHECK(xhqs_owner_begin_until(&c.owner, cycle_end, deadline(1000)) == 0);
+  CHECK(c.owner.deadline == cycle_end);
+  CHECK(xhqs_owner_step_until(&c.owner, deadline(1000)) == -EAGAIN);
+  uint64_t op_end = deadline(300);
+  CHECK(xhqs_owner_step_until(&c.owner, op_end) == -ETIMEDOUT);
+  uint64_t observed = 0; CHECK(xhqs_now(&observed) == 0 && observed < cycle_end);
+  CHECK(c.owner.phase == XHQ_FAULT && c.owner.deadline == cycle_end);
+  p = (struct pollfd){ .fd = c.report, .events = POLLIN };
+  CHECK(poll(&p, 1, 1000) == 1 && read(c.report, &byte, 1) == 1);
+  CHECK(write(c.release, &byte, 1) == 1); finish(&c);
+  c = launch(NORMAL);
+  cycle_end = deadline(5000);
+  CHECK(xhqs_owner_begin_until(&c.owner, cycle_end, deadline(1000)) == 0);
+  park(&c.owner);
+  /* A successful short exchange restores the hold timer, not the short limit. */
+  CHECK(xhqs_owner_step_until(&c.owner, deadline(1000)) == 0);
+  struct itimerspec hold;
+  CHECK(timerfd_gettime(c.owner.timerfd, &hold) == 0 && hold.it_value.tv_sec >= 2);
+  CHECK(xhqs_owner_resume_until(&c.owner, deadline(1000)) == 0 && drive(&c.owner) == 0);
+  finish(&c);
   c = launch(DEATH);
   CHECK(xhqs_owner_begin(&c.owner, deadline(5000)) == 0);
   int r = drive(&c.owner); CHECK((r == -ESRCH || r == -ENOTCONN) && c.owner.phase == XHQ_FAULT); finish(&c);

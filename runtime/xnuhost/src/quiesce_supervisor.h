@@ -59,6 +59,12 @@ int xhqs_owner_check(struct xhqs_owner *);
 int xhqs_owner_begin(struct xhqs_owner *, uint64_t deadline);
 int xhqs_owner_step(struct xhqs_owner *);
 int xhqs_owner_resume(struct xhqs_owner *);
+/* The cycle deadline covers park/hold/resume. The earlier absolute
+ * call limit bounds one exchange without shortening/extending the cycle
+ * on success. Timeout latches the existing terminal channel fault. */
+int xhqs_owner_begin_until(struct xhqs_owner *, uint64_t cycle_deadline, uint64_t call_limit);
+int xhqs_owner_step_until(struct xhqs_owner *, uint64_t call_limit);
+int xhqs_owner_resume_until(struct xhqs_owner *, uint64_t call_limit);
 /* Execute at most one command on a dedicated worker. -EAGAIN means no
  * command ready; 0 means a response was sent, NOT that it succeeded.
  * Other errors latch worker fault. No call may be made from a device handler. */

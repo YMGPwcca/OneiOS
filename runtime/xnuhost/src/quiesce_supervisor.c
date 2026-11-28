@@ -203,17 +203,17 @@ static int arm(struct xhqs_owner *o, uint64_t ns)
   if (t.it_value.tv_sec < 0 || (uint64_t)t.it_value.tv_sec != ns / 1000000000u) return -EOVERFLOW;
   return timerfd_settime(o->timerfd, TFD_TIMER_ABSTIME, &t, NULL) ? -errno : 0;
 }
-static int wait_ack(struct xhqs_owner *o, struct packet *a)
+static int wait_ack(struct xhqs_owner *o, struct packet *a, uint64_t limit)
 {
   struct pollfd f[] = {{ .fd = o->timerfd, .events = POLLIN },
                        { .fd = o->peer.pidfd, .events = POLLIN },
                        { .fd = o->peer.fd, .events = POLLIN }};
   for (;;) {
-    int r = before(o->deadline);
+    int r = before(limit);
     if (r) return r;
     int n = poll(f, 3, -1);
     if (n < 0) { if (errno == EINTR) continue; return -errno; }
-    if ((r = before(o->deadline))) return r;
+    if ((r = before(limit))) return r;
     if (f[0].revents) return -ETIMEDOUT;
     if (f[1].revents) return -ESRCH;
     if (f[2].revents & (POLLHUP | POLLERR | POLLNVAL)) return -ENOTCONN;
@@ -221,7 +221,7 @@ static int wait_ack(struct xhqs_owner *o, struct packet *a)
     r = recv_packet(&o->peer, a);
     if (r == -EAGAIN || r == -EINTR) continue;
     if (r) return r;
-    if ((r = before(o->deadline))) return r;
+    if ((r = before(limit))) return r;
     return alive(&o->peer);
   }
 }
@@ -252,16 +252,17 @@ int xhqs_owner_check(struct xhqs_owner *o)
   r = recv_packet(&o->peer, &a);
   return r == -EAGAIN ? 0 : owner_fault(o, r ? r : -EPROTO);
 }
-static int exchange(struct xhqs_owner *o, unsigned op)
+static int exchange(struct xhqs_owner *o, unsigned op, uint64_t limit)
 {
   int r = xhqs_owner_check(o);
   if (r) return r;
-  if ((r = before(o->deadline))) return owner_fault(o, r);
+  if (limit > o->deadline) limit = o->deadline;
+  if ((r = before(limit)) || (r = arm(o, limit))) return owner_fault(o, r);
   struct packet a;
   if (o->seq == UINT64_MAX) return owner_fault(o, -EOVERFLOW);
   struct packet m = { .owner = o->owner, .cycle = o->cycle, .seq = ++o->seq,
                       .deadline = o->deadline, .magic = MAGIC, .op = op };
-  if ((r = send_packet(&o->peer, &m)) || (r = wait_ack(o, &a))) return owner_fault(o, r);
+  if ((r = send_packet(&o->peer, &m)) || (r = wait_ack(o, &a, limit))) return owner_fault(o, r);
   if (a.magic != MAGIC || a.op != (op | ACK) || a.owner != m.owner || a.cycle != m.cycle ||
       a.seq != m.seq || a.deadline != m.deadline || a.result > 0 || a.phase > XHQ_FAULT ||
       (a.closed & ~o->members) || (a.verified & ~a.closed) || (a.attempted & ~a.closed) ||
@@ -276,15 +277,17 @@ static int exchange(struct xhqs_owner *o, unsigned op)
       (op == RESUME && (a.result || a.phase != XHQ_RESUME_CHECK)) ||
       (op == STEP && (!step_phase(o->phase, a.phase) ||
         ((!a.result) != (a.phase == XHQ_PARKED || a.phase == XHQ_DONE))))) return owner_fault(o, -EPROTO);
-  if ((r = before(o->deadline)) || (r = alive(&o->peer))) return owner_fault(o, r);
+  if ((r = before(limit)) || (r = alive(&o->peer))) return owner_fault(o, r);
   o->phase = (enum xhq_phase)a.phase;
   if (o->phase == XHQ_DONE) {
     struct itimerspec off = {0};
     if (timerfd_settime(o->timerfd, 0, &off, NULL)) return owner_fault(o, -errno);
+  } else if ((r = before(o->deadline)) || (r = arm(o, o->deadline))) {
+    return owner_fault(o, r);
   }
   return a.result;
 }
-int xhqs_owner_begin(struct xhqs_owner *o, uint64_t deadline)
+int xhqs_owner_begin_until(struct xhqs_owner *o, uint64_t deadline, uint64_t limit)
 {
   if (!o) return -EINVAL;
   if (o->fault) return o->fault;
@@ -292,25 +295,31 @@ int xhqs_owner_begin(struct xhqs_owner *o, uint64_t deadline)
   if (o->cycle == UINT64_MAX) return owner_fault(o, -EOVERFLOW);
   int r = before(deadline);
   if (r) return owner_fault(o, r);
-  if ((r = arm(o, deadline))) return owner_fault(o, r);
+  if ((r = before(limit))) return owner_fault(o, r);
   o->cycle++; o->deadline = deadline;
   o->closed = o->verified = o->attempted = o->reopened = 0;
-  return exchange(o, BEGIN);
+  return exchange(o, BEGIN, limit);
 }
-int xhqs_owner_step(struct xhqs_owner *o)
+int xhqs_owner_begin(struct xhqs_owner *o, uint64_t deadline)
+{ return xhqs_owner_begin_until(o, deadline, deadline); }
+int xhqs_owner_step_until(struct xhqs_owner *o, uint64_t limit)
 {
   if (!o) return -EINVAL;
   if (o->fault) return o->fault;
   if (o->phase == XHQ_IDLE || o->phase == XHQ_DONE) return -EBUSY;
-  return exchange(o, STEP);
+  return exchange(o, STEP, limit);
 }
-int xhqs_owner_resume(struct xhqs_owner *o)
+int xhqs_owner_step(struct xhqs_owner *o)
+{ return o ? xhqs_owner_step_until(o, o->deadline) : -EINVAL; }
+int xhqs_owner_resume_until(struct xhqs_owner *o, uint64_t limit)
 {
   if (!o) return -EINVAL;
   if (o->fault) return o->fault;
   if (o->phase != XHQ_PARKED) return -EBUSY;
-  return exchange(o, RESUME);
+  return exchange(o, RESUME, limit);
 }
+int xhqs_owner_resume(struct xhqs_owner *o)
+{ return o ? xhqs_owner_resume_until(o, o->deadline) : -EINVAL; }
 static int worker_fault(struct xhqs_worker *w, int r)
 {
   w->fault = r == -EAGAIN ? -ENOBUFS : r < 0 ? r : -EPROTO;
