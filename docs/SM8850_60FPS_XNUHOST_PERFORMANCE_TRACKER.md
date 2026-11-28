@@ -2236,3 +2236,60 @@ handoff and exact process/namespace/recovery ownership before live
 admission. No physical FPS improvement claimed. Keep the prior
 performance package and original profile intact. No more peripheral
 milestones or separate frequency actuator for the 60 FPS goal.
+
+
+### 2026-11-28 — consolidated stock session integration receipt and remaining startup boundary
+
+Operator WSL receipt at OneiOS 642431ef9efa66d79aaaae403a7aef0683544d75 /
+OneOS 0fa01e56e3839826a6d7aebe7dd7e0b2d07235a4:
+independent supervisor IPC 170 parent checks; board/console 2666 checks;
+board worker 30 parent checks; session compatibility 23; stock supervisor
+41; full integration fixture 64 parent checks. All PASS, no reported
+sanitizer failures, Android API30 ARM64 native compile PASS.
+STOCK_SESSION_INTEGRATION_OFFLINE=PASS, DEVICE_ACCESS=NONE.
+Evidence /tmp/oneios-stock-integration.4BtlSR/integration.log and
+/tmp/oneios-stock-e2e.NoXspa. This is a real host-process integration
+fixture with simulated hardware and cgroupfs, not a linked/staged
+production runner or physical thermal qualification.
+
+Close the component-level regression campaign; do not repeat these
+suites separately or extend peripheral/frequency research. Source audit
+at that exact revision shows a real startup dependency, not just a
+missing call: boot() in runtime/xnuhost/src/main.c builds the devices
+and calls xh_cpu_init() then xh_cpu_start(0); secondary vCPUs register
+as the guest starts them. xhqv_ready() requires the entire configured
+mask. xhqb_worker_init() also requires a live connected display helper
+with a readiness receipt, and xh_stock_runner_bind() requires a
+successful runtime READY. There is no caller in main or switcher.
+The tested held-child exec barrier cannot be treated as this receipt.
+The existing inner shell independently migrates to the legacy freezer
+group, then the outer shell migrates the already started display
+helper. Neither is compatible with the new two-leaf owner.
+
+Next production change must connect a protected pre-guest setup phase,
+a startup-safe vCPU/device rendezvous (including not-yet-started CPUs
+and outstanding registration), authenticated root/worker/display handoff,
+independent sampling/deadline/fault ownership and verified process
+membership in one integrated path. Do not solve the startup dependency
+by weakening READY, spoofing a parked ACK, freezing undrained GPU
+providers as if drained, using an unqualified startup quota, or opening
+the retired full-run gate. Historical CFS-only startup reached a sampled
+95.7 C; stock native mitigation under sustained Framework-off guest
+load remains unqualified. No temperature-triggered reboot is introduced.
+The previous full-bridges profile already disables wifi/haptics/encoder;
+camera and capture behavior must be explicitly selected, not silently
+changed. This receipt makes no source/admission change and authorizes
+no staging, rearm or physical run.
+
+Separate optional performance path: the existing Framework-on visual
+preview (scripts/phone/sm8850-ios-gpu-visual.py) can provide an earlier
+bounded interactive comparison of old/new performance runtimes while
+keeping Android Framework and stock thermal services. Its existing
+four-vCPU, bridges-off profile is not comparable to the eight-vCPU
+full takeover; it needs its own matched A/B, explicit operator decision,
+current preflight/protection and presentation measurement. Do not
+reuse the historical fixed-cap or no-guard full-run commands. Keep
+the already offline-validated 8d463fa performance archive; no further
+speculative hot-path change until actual measurements or a concrete
+correctness issue. Stable 60 presented FPS remains the acceptance
+criterion, not post cadence. No new test request for this docs receipt.
