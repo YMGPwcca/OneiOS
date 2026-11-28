@@ -23,6 +23,8 @@ struct xh_stock_runner {
   int (*verify)(void *,const struct oneios_thermal_identity *);
   int (*outer)(void *,bool);
   void *ctx;
+  struct oneios_thermal_native_sample native_cache;
+  bool native_valid;
   bool attempted,bound,activated;
   enum oneios_thermal_result last;
 };

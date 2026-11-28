@@ -55,23 +55,41 @@ int xh_stock_runner_bind(struct xh_stock_runner *r,struct oneios_stock_session *
   if(rc)return rc;
   r->bound=true;return 0;
 }
+/* Keep the most recent authenticated native observation only while
+ * fresh. A pending newer read is not a fabricated zero; an actual read
+ * failure invalidates the cache immediately. Pipeline the next request
+ * so recovery does not depend on HAL winning a race with the raw reader. */
+static void collect_native(struct xh_stock_runner *r)
+{
+  if(!r->native)return;
+  if(r->native->fault){r->native_valid=false;return;}
+  if(!r->native->pending)return;
+  struct xh_stock_reading n;
+  int rc=xh_stock_reader_take(r->native,false,&n);
+  if(!rc){r->native_cache=n.native;r->native_valid=true;}
+  else if(rc!=-EAGAIN)r->native_valid=false;
+}
 enum oneios_thermal_result xh_stock_runner_tick(struct xh_stock_runner *r)
 {
   if(!r||!r->bound)return ONEIOS_THERMAL_REFUSED;
   if(r->activated&&r->last!=ONEIOS_THERMAL_RUNNING&&r->last!=ONEIOS_THERMAL_PAUSED)return r->last;
   uint64_t now,limit;
-  struct xh_stock_reading raw,native;
+  struct xh_stock_reading raw;
   const struct oneios_thermal_sample *s=NULL;
   const struct oneios_thermal_native_sample *n=NULL;
   if(!xhqs_now(&now)&&now<r->deadline){
     uint64_t budget=(uint64_t)ONEIOS_THERMAL_MAX_SAMPLE_AGE_MS*1000000u;
     limit=r->deadline-now<budget?r->deadline:now+budget;
-    if(r->native&&!r->native->pending&&!r->native->fault)
-      (void)xh_stock_reader_request(r->native,limit);
+    collect_native(r);
+    if(r->native&&!r->native->pending&&!r->native->fault &&
+       xh_stock_reader_request(r->native,limit))r->native_valid=false;
     if(!xh_stock_reader_request(r->raw,limit)&&!xh_stock_reader_take(r->raw,true,&raw))
       s=&raw.raw;
-    if(r->native&&r->native->pending&&!xh_stock_reader_take(r->native,false,&native))
-      n=&native.native;
+    collect_native(r);
+    if(r->native_valid&&!xhqs_now(&now)&&now/1000000u>=r->native_cache.ms&&
+       now/1000000u-r->native_cache.ms<=ONEIOS_THERMAL_MAX_SAMPLE_AGE_MS)
+      n=&r->native_cache;
+    else r->native_valid=false;
   }
   if(!r->activated){
     r->activated=true;
