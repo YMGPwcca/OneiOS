@@ -131,6 +131,18 @@ static int finish_resume(void *ctx,uint64_t owner,uint64_t cycle)
   w->prepared_cycle=0; w->released=0;
   return 0;
 }
+static int runtime_ready(void *ctx)
+{
+  struct xhqb_worker *w=ctx;
+  if (!w->ready || w->q.phase!=XHQ_IDLE || w->q.cycle) return -ESTALE;
+  int r=xhqb_match(&w->binding.board);
+  if (!r) r=xh_display_quiesce_verify_helper();
+  if (!r) r=xhqi_ready();
+  if (!r) r=xhqv_ready();
+  if (!r) r=w->binding.guard(w->binding.ctx,w->q.owner,0,XHQ_IDLE);
+  if (!r) r=xhqb_match(&w->binding.board);
+  return r;
+}
 int xhqb_worker_init(struct xhqb_worker *w,int fd,pid_t pid,uid_t uid,gid_t gid,
     uint64_t owner,int helper_pidfd,uid_t helper_uid,gid_t helper_gid,
     int (*guard)(void *,uint64_t,uint64_t,enum xhq_phase),void *ctx)
@@ -148,6 +160,7 @@ int xhqb_worker_init(struct xhqb_worker *w,int fd,pid_t pid,uid_t uid,gid_t gid,
   if (!r) r=xhqs_worker_init(&w->ipc,fd,pid,uid,gid,&w->q);
   if (r) return r; // no rebind on the same process after a partial init
   w->ipc.finish_resume=finish_resume; w->ipc.finish_ctx=w;
+  w->ipc.ready_check=runtime_ready; w->ipc.ready_ctx=w;
   w->ready=true;
   return 0;
 }

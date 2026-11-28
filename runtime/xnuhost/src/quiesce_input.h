@@ -28,6 +28,8 @@ static inline bool xhqi_reader_checkpoint(void)
 /* Terminal shutdown of the reader (not resume); wake it so join and
  * release of the exclusive touchscreen are not blocked by park. */
 void xhqi_reader_stop(void);
+/* Read-only registry/startup check. Active scripts are unsupported. */
+int xhqi_ready(void);
 int xhqi_close(uint64_t *ticket);
 int xhqi_poll(uint64_t ticket);
 /* Explicitly authorized release, only after every other drain/reopen.

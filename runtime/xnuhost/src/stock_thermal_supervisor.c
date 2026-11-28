@@ -135,7 +135,7 @@ int xh_stock_supervisor_bind(struct xh_stock_supervisor *b,
     int (*outer)(void *, bool), void *ctx, struct oneios_thermal_ops *out)
 {
   if (!b || !peer || !groups || !id || !verify || !outer || !out ||
-      peer->phase != XHQ_IDLE || !peer->owner || !peer->members)
+      peer->phase != XHQ_IDLE || !peer->runtime_ready || !peer->owner || !peer->members)
     return -EINVAL;
   *b = (struct xh_stock_supervisor){ .peer=peer, .groups=groups, .id=*id,
     .session_deadline=session_deadline, .session_verify=verify, .outer_verify=outer, .ctx=ctx };

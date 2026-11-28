@@ -2,6 +2,7 @@
 #define XH_QUIESCE_SUPERVISOR_H
 
 #include "quiesce.h"
+#include <stdbool.h>
 #include <sys/types.h>
 
 /* Private Linux/Android AF_UNIX SOCK_SEQPACKET channel. Create before
@@ -23,6 +24,7 @@ struct xhqs_owner {
   uint64_t owner, cycle, seq, deadline;
   unsigned members, closed, verified, attempted, reopened;
   enum xhq_phase phase;
+  bool runtime_ready;
 };
 struct xhqs_worker {
   struct xhqs_peer peer;
@@ -34,6 +36,10 @@ struct xhqs_worker {
   /* Optional one-time worker-owned outer release, before DONE ACK. */
   int (*finish_resume)(void *, uint64_t owner, uint64_t cycle);
   void *finish_ctx;
+  /* Optional real runtime-ready handshake before the first BEGIN. */
+  int (*ready_check)(void *);
+  void *ready_ctx;
+  bool runtime_ready;
 };
 int xhqs_pair(int fd[2]);
 int xhqs_now(uint64_t *ns);
@@ -59,6 +65,9 @@ void xhqs_worker_close(struct xhqs_worker *);
  * packets or timer events yourself). Check is NOT a renewed park receipt.
  * No autonomous event loop or production launcher is installed here. */
 int xhqs_owner_check(struct xhqs_owner *);
+/* Authenticated, bounded startup receipt. -EAGAIN means not yet ready;
+ * this is not a parked receipt or physical admission. */
+int xhqs_owner_ready_until(struct xhqs_owner *, uint64_t call_limit);
 int xhqs_owner_begin(struct xhqs_owner *, uint64_t deadline);
 int xhqs_owner_step(struct xhqs_owner *);
 int xhqs_owner_resume(struct xhqs_owner *);

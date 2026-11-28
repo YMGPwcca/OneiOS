@@ -69,6 +69,17 @@ void xhqi_reader_stop(void)
   pthread_cond_broadcast(&changed);
   pthread_mutex_unlock(&lock);
 }
+int xhqi_ready(void)
+{
+  int r=try_lock();
+  if (r) return r;
+  if (fault || (flag() & XHQI_STOP)) r=-ESTALE;
+  else if (!sealed) r=-EAGAIN;
+  else if (flag() & XHQI_CLOSED) r=-EBUSY;
+  else if (active & (1u<<XHQI_SCRIPT)) r=-ENOTSUP;
+  pthread_mutex_unlock(&lock);
+  return r;
+}
 int xhqi_close(uint64_t *ticket)
 {
   if (!ticket) return -EINVAL;

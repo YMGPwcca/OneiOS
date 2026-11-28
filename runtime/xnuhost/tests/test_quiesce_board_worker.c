@@ -97,7 +97,7 @@ int br_snd_quiesce_poll(xh_virtio *d,uint64_t t)
 int br_snd_quiesce_resume(xh_virtio *d,uint64_t t)
 { CHECK(!br_snd_quiesce_poll(d,t)&&external==3&&!inner);external=1;last_release=2;return 0; }
 static int guard(void *ctx,uint64_t owner,uint64_t cycle,enum xhq_phase p)
-{ (void)ctx;CHECK(owner==17&&cycle&&p!=XHQ_FAULT);return 0; }
+{ (void)ctx;CHECK(owner==17&&(cycle||p==XHQ_IDLE)&&p!=XHQ_FAULT);return 0; }
 static uint64_t end(void)
 { uint64_t n;CHECK(!xhqs_now(&n));return n+5000000000ull; }
 static int drive(struct xhqs_owner *o)
@@ -142,6 +142,10 @@ static void scenario(int k)
   close(fd[1]);
   if(k!=2){
     struct xhqs_owner o;CHECK(!xhqs_owner_init(&o,fd[0],pid,getuid(),getgid(),17,1));
+    int ready;
+    uint64_t limit=end();
+    do {ready=xhqs_owner_ready_until(&o,limit);if(ready==-EAGAIN)usleep(1000);}while(ready==-EAGAIN);
+    CHECK(!ready&&o.runtime_ready);
     for(unsigned i=0;i<(k==1?1u:2u);i++){
       CHECK(!xhqs_owner_begin(&o,end()));
       CHECK(!drive(&o)&&o.phase==XHQ_PARKED&&o.verified==7);

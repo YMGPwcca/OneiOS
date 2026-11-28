@@ -13,7 +13,7 @@
 
 #define MAGIC UINT32_C(0x31535158) /* XQS1, local same-ABI channel */
 #define ACK UINT32_C(0x80000000)
-enum { BEGIN = 1, STEP, RESUME };
+enum { BEGIN = 1, STEP, RESUME, RUNTIME_READY };
 struct packet {
   uint64_t owner, cycle, seq, deadline;
   uint32_t magic, op, phase, closed, verified, attempted, reopened;
@@ -253,6 +253,29 @@ int xhqs_owner_check(struct xhqs_owner *o)
   r = recv_packet(&o->peer, &a);
   return r == -EAGAIN ? 0 : owner_fault(o, r ? r : -EPROTO);
 }
+int xhqs_owner_ready_until(struct xhqs_owner *o, uint64_t limit)
+{
+  if (!o || o->phase != XHQ_IDLE || o->cycle || o->runtime_ready) return -EINVAL;
+  int r = xhqs_owner_check(o);
+  if (r) return r;
+  if ((r = before(limit)) || (r = arm(o, limit))) return owner_fault(o, r);
+  if (o->seq == UINT64_MAX) return owner_fault(o, -EOVERFLOW);
+  struct packet m = { .owner=o->owner, .seq=++o->seq, .deadline=limit,
+    .magic=MAGIC, .op=RUNTIME_READY }, a;
+  if ((r=send_packet(&o->peer,&m)) || (r=wait_ack(o,&a,limit)))
+    return owner_fault(o,r);
+  if (a.magic!=MAGIC || a.op!=(RUNTIME_READY|ACK) ||
+      a.owner!=m.owner || a.seq!=m.seq || a.deadline!=limit ||
+      a.cycle || a.phase!=XHQ_IDLE || a.closed || a.verified ||
+      a.attempted || a.reopened || a.result>0)
+    return owner_fault(o,-EPROTO);
+  if (a.result && a.result!=-EAGAIN) return owner_fault(o,a.result);
+  struct itimerspec off={0};
+  if (timerfd_settime(o->timerfd,0,&off,NULL)) return owner_fault(o,-errno);
+  if ((r=before(limit)) || (r=alive(&o->peer))) return owner_fault(o,r);
+  if (!a.result) o->runtime_ready=true;
+  return a.result;
+}
 static int exchange(struct xhqs_owner *o, unsigned op, uint64_t limit)
 {
   int r = xhqs_owner_check(o);
@@ -338,8 +361,27 @@ int xhqs_worker_once(struct xhqs_worker *w)
   if (r) return worker_fault(w, r);
   struct xhq *q = w->q;
   if (m.magic != MAGIC || m.owner != q->owner || w->seq == UINT64_MAX || m.seq != w->seq+1 ||
-      !m.cycle || m.phase || m.closed || m.verified || m.attempted || m.reopened || m.result ||
-      (m.op != BEGIN && m.op != STEP && m.op != RESUME)) return worker_fault(w, -EPROTO);
+      m.phase || m.closed || m.verified || m.attempted || m.reopened || m.result ||
+      (m.op != BEGIN && m.op != STEP && m.op != RESUME && m.op != RUNTIME_READY))
+    return worker_fault(w,-EPROTO);
+  if (m.op==RUNTIME_READY) {
+    if (m.cycle || q->cycle || q->phase!=XHQ_IDLE || w->runtime_ready ||
+        !w->ready_check) return worker_fault(w,-EPROTO);
+    if ((r=xhqs_worker_check(w,m.deadline))) return worker_fault(w,r);
+    w->seq=m.seq;
+    r=w->ready_check(w->ready_ctx);
+    if (r>0) r=-EPROTO;
+    int check=xhqs_worker_check(w,m.deadline);
+    if (check) return worker_fault(w,check);
+    struct packet a={.owner=m.owner,.seq=m.seq,.deadline=m.deadline,
+      .magic=MAGIC,.op=RUNTIME_READY|ACK,.result=r};
+    if ((check=send_packet(&w->peer,&a))) return worker_fault(w,check);
+    if (!r) w->runtime_ready=true;
+    else if (r!=-EAGAIN) worker_fault(w,r);
+    return 0;
+  }
+  if (!m.cycle || (w->ready_check && !w->runtime_ready))
+    return worker_fault(w,-EPROTO);
   if ((m.op == BEGIN && (q->cycle == UINT64_MAX || m.cycle != q->cycle+1 ||
       (q->phase != XHQ_IDLE && q->phase != XHQ_DONE))) ||
       (m.op != BEGIN && (m.cycle != q->cycle || m.deadline != q->deadline))) return worker_fault(w, -ESTALE);

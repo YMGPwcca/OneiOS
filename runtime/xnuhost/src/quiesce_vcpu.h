@@ -23,6 +23,8 @@ static inline void xhqv_checkpoint(unsigned index)
  * releases parked CPUs or changes the existing process shutdown path. */
 void xhqv_invalidate(void);
 void xhqv_invalidate_if_closed(void);
+/* Read-only registration status, not a parked-vCPU receipt. */
+int xhqv_ready(void);
 int xhqv_close(uint64_t *ticket);
 int xhqv_poll(uint64_t ticket);
 /* Only after all other drains/reopens and external authorization. */

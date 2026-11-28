@@ -63,6 +63,14 @@ void xhqv_park(unsigned index)
   }
   errno = saved;
 }
+int xhqv_ready(void)
+{
+  uint32_t mask=__atomic_load_n(&expected,__ATOMIC_ACQUIRE);
+  uint32_t s=__atomic_load_n(&xhqv_state,__ATOMIC_ACQUIRE);
+  if (!mask || (s & FAULT)) return -ESTALE;
+  if (s & XHQV_CLOSED) return -EBUSY;
+  return (s & READY)==mask ? 0 : -EAGAIN;
+}
 int xhqv_close(uint64_t *ticket)
 {
   if (!ticket) return -EINVAL;

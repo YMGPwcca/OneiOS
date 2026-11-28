@@ -53,6 +53,7 @@ static int close_gate(void *ctx,unsigned member,uint64_t *t)
 { (void)ctx; *t=member+1; return 0; }
 static int poll_gate(void *ctx,unsigned member,uint64_t t)
 { (void)ctx; return t==member+1 ? 0 : -EINVAL; }
+static int fixture_ready(void *ctx) { (void)ctx; return 0; }
 static const struct xhq_ops worker_ops={clock_ns,guard,close_gate,poll_gate,poll_gate};
 static pid_t launch(struct fixture *f)
 {
@@ -66,6 +67,7 @@ static pid_t launch(struct fixture *f)
     struct xhq q; struct xhqs_worker w;
     CHECK(!xhq_init(&q,&worker_ops,NULL,17,1));
     CHECK(!xhqs_worker_init(&w,fd[1],owner,getuid(),getgid(),&q));
+    w.ready_check=fixture_ready;
     for (;;) {
       struct pollfd p={.fd=w.peer.fd,.events=POLLIN};
       CHECK(poll(&p,1,15000)==1);
@@ -97,6 +99,8 @@ int main(void)
   struct fixture f; pid_t pid=launch(&f);
   struct xh_stock_supervisor b; struct oneios_thermal_ops ops;
   uint64_t now; CHECK(!xhqs_now(&now));
+  CHECK(xh_stock_supervisor_bind(&b,&f.peer,&f.g,&id,now+30000000000ull,verify,outer,&f,&ops)==-EINVAL);
+  CHECK(!xhqs_owner_ready_until(&f.peer,now+1000000000ull));
   CHECK(!xh_stock_supervisor_bind(&b,&f.peer,&f.g,&id,now+30000000000ull,verify,outer,&f,&ops));
   CHECK(!ops.frequency_set && !ops.frequency_verify);
   struct oneios_thermal_controller c;
