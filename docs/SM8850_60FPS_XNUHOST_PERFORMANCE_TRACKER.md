@@ -2382,3 +2382,33 @@ or peripheral decision is inferred. No physical FPS result yet.
 The existing consolidated script supports --owner-only: run the changed
 E2E with actual host ancestry verification, shell syntax and real host/
 ARM64 owner and GPU3D XNUHost link, without the prior component suites.
+
+
+### 2026-11-28 — root owner build receipt; proceed to physical prerequisites
+
+Local operator receipt for 9b47ebb5b3458e14e730e0d452dc005b2b69cb2f /
+7122987e9b0439393b3852051eba0fbd685a5db8: E2E 75 parent checks
+PASS, host and ARM64 owner link PASS, ARM64 GPU3D XNUHost link PASS,
+switcher syntax PASS. STOCK_OWNER_INTEGRATION_OFFLINE=PASS,
+DEVICE_ACCESS=NONE. Local evidence /tmp/oneios-stock-owner.7tsgxh,
+fixture /tmp/oneios-stock-e2e.kKnTXP. Android owner SHA256
+a829b2452739ab13df4171de377f5eba54c9d3023bf4d4f21da4416777d01783;
+XNUHost SHA256
+5bd61bd8265712aba190bd0ed2b6d7a4b6438b07ce4e40615cbfe16a89727a3a.
+
+Follow-up OneOS 4eb9d0bf897c2c1c4c7621938a016c5705d0470d fixes literal
+shell PID expansion in three new internal launcher paths; this is a
+shell-only source correction, not a new native binary or device PASS.
+The source export accidentally emitted a single dollar where a double
+dollar was required; syntax alone did not detect that. Keep the two
+already-linked artifacts and check the corrected script syntax and
+actual PID expression locally. No repeated unchanged regression batch.
+
+Next obtain current phone evidence while Framework is ON: model/build,
+SELinux, current boot, root namespace, cgroup mounts/controllers,
+thermal manifest freshness, raw junction/aux values, native thermal
+HAL/service visibility, RAM/swap/free space and stage state. No stop,
+stage replacement, Data rearm, kernel changes or benchmark is
+authorized by this receipt. The explicit stock startup gate remains
+closed pending physical qualification of the exact setup path and
+initial demand. Read-only preflight is not a physical startup PASS.
