@@ -2165,3 +2165,31 @@ selected UI-performance-only profile could avoid those providers, but
 would not be equivalent to a full-peripheral benchmark. Do not resume
 the retired legacy launch. Focus on actual presented-frame 60 FPS
 validation; no new peripheral milestone or frequency actuator.
+
+
+### Board worker receipt and owned launcher bootstrap
+
+Operator local result: OneiOS 22d8dd2507ae3bea4d833ddb72d97cfdfd179d3a / OneOS
+f1f0000a2313b8377b730144c3439b1499d03bfc; board and console 2666 checks,
+independent supervisor IPC 170 parent checks, board worker 26 parent checks,
+zero failures; ASan/UBSan build; BOARD_WORKER_BATCH_OFFLINE=PASS,
+DEVICE_ACCESS=NONE; evidence /tmp/oneios-board-worker.CBS3Mx.
+The first attempt only lacked archived bridge headers; no source failure.
+
+OneOS 209640c194a6e8eea23e98979542c60f016fe676 now supplies the native two-root launch
+bootstrap: parent-owned held children, pidfds, a private pre-exec barrier,
+explicit inherited-FD whitelist, fresh private CPU and freezer leaf
+membership, exact root-only membership readback before release. It
+retains exclusive waitpid ownership and does not adopt arbitrary PIDs.
+This replaces the intended startup ordering, not the currently retired
+shell path. The old display-helper post-start migration is not used by
+this API. The focused host fixture exercises real fork/exec and barrier
+behavior with simulated cgroup files; Android compile and local execution
+pending. The candidate is source-only, not launch permission. The root
+membership observation is not proof of escaped descendants, and bootstrap
+release is not a guest-ready or thermal-admission receipt. Remaining:
+namespace/worker-ready handoff, independent raw/HAL supervision, full
+session membership/fault ownership, and explicit UI-profile selection
+if needed. No default profile or thermal policy change, no staging or
+physical run. Existing performance artifacts and local-first rules stay
+unchanged.
