@@ -2327,3 +2327,58 @@ CPU_ON and START in the existing fixture and compiles main/cpu for
 Android. Also require a real Android XNUHost link with the pinned
 drm2kgsl renderer before considering staging. No physical benchmark or
 new performance result is implied.
+
+
+### 2026-11-28 — startup PASS receipt and root-side production source candidate
+
+Operator local exact pair OneiOS 22f2699582d64357cbff667a17eea9b01040e1d0 /
+OneOS 0fa01e56e3839826a6d7aebe7dd7e0b2d07235a4:
+170 supervisor, 2666 board, 30 board-worker parent checks, 668 vCPU,
+23 stock session, 41 stock supervisor, 68 E2E parent checks PASS.
+Android native compile and actual static ARM64 XNUHost link with pinned
+drm2kgsl PASS. STOCK_STARTUP_CI=PASS, XNUHOST_GPU3D_BUILD=PASS,
+DEVICE_ACCESS=NONE. Evidence /tmp/oneios-stock-startup.JMY1HA,
+fixture /tmp/oneios-stock-e2e.FVUujU, binary SHA256
+b5704f1e915a5bab3a2a890d0604f3f77235e31aa033e1ada91dcda350329ef0.
+Do not repeat the unchanged component suites.
+
+The next source batch adds an actual root-side oneios-stock-session
+executable and switcher call sites, with exact app gitlink
+7122987e9b0439393b3852051eba0fbd685a5db8. It prearms independent raw/HAL
+reader children before Framework stop, creates token-owned private CPU
+and freezer leaves, waits for the current-generation admission and
+deadline, and holds both actual root children before exec. It retains
+the display helper on Android's side, uses the existing private mount
+namespace for XNUHost, and never migrates either into the legacy
+oneios_session group. Native display app_process gets an explicit
+Android bootclasspath/runtime environment allowlist. The owner obtains
+the authenticated board READY before controller activation and START;
+the setup-ready file carries only a block-count hint and grants no
+authority. The independent framework deadline and watcher verify owner
+PID/birth and raw heartbeat; owner verifies recovery identities.
+Subreaper ancestry snapshots reconcile both private leaf PID sets and
+exclude the sampler children. This is not an atomic kernel containment
+proof; process churn, SELinux access and observer overhead are not yet
+qualified on the phone. Terminal cleanup only kills the pinned guest
+leaf and unreaped direct children, never thaws or claims a GPU drain.
+
+Explicit candidate ui-v1 disables camera, built-in input scripts and
+automatic root screenshot captures; no silent change to the existing
+profile. No new kernel/module, DVFS or frequency vote. The initial
+CPU demand budget remains deliberately unselected. Before READY, the
+setup policy only reduces demand; valid severe temperature during
+unbound setup retires that incomplete setup rather than pretending
+that its GPU drained. The owner itself never requests a thermal reboot;
+the existing independent reboot-only recovery can return after a
+startup fault. Normal admitted controller pauses are separate.
+
+The new source is NOT a physical admission. The root switcher's
+framework_stock_startup_qualified() deliberately returns false; old
+full-run gate and CLI/wrapper refusal remain in force. Do not hand-write
+an admission marker or bypass the guard. Need actual build/link and
+revised E2E fixture result, then qualify startup protection and explicit
+profile on real hardware before full-run admission. No default quota
+or peripheral decision is inferred. No physical FPS result yet.
+The existing consolidated script supports --owner-only: run the changed
+E2E with actual host ancestry verification, shell syntax and real host/
+ARM64 owner and GPU3D XNUHost link, without the prior component suites.

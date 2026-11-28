@@ -17,6 +17,8 @@ common=(-std=gnu11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -pt
   -I"$R/runtime/loader/include" -I"$R/runtime/bridges/include"
   -I"$R/runtime/bridges/encoder" -I"$R/drivers/bridge" -I"$R/drivers/camera")
 export ASAN_OPTIONS=detect_leaks=0
+case "${1:-}" in ""|--owner-only) ;; *) exit 2 ;; esac
+if [ "${1:-}" != --owner-only ]; then
 echo "===== SUPERVISOR / BOARD REGRESSION ====="
 make -C "$R/runtime/xnuhost" -j"${JOBS:-8}" \
   build/host/test_quiesce_supervisor build/host/test_quiesce_board \
@@ -35,6 +37,7 @@ echo "===== STOCK CONTROLLER / SUPERVISOR ====="
   "$S/stock_thermal_supervisor.c" "$S/quiesce_supervisor.c" "$S/quiesce.c" \
   "$N/sm8850_thermal_controller.c" -o "$D/stock-supervisor"
 "$D/stock-supervisor"
+fi
 echo "===== SUPERVISED RAW SESSION E2E ====="
 "$CC" "${common[@]}" -DONEIOS_RAW_SOURCE_TEST \
   "$T/test_stock_session_e2e.c" "$S/stock_sample_reader.c" \
@@ -66,6 +69,26 @@ put("sys/class/power_supply/battery/lrp", "300\n")
 put("sys/class/sec/sec-ap-thermistor/temperature", "400\n")
 PY
 "$D/e2e" "$D/raw"
+if [ "${1:-}" = --owner-only ]; then
+    echo "===== ROOT OWNER AND SWITCHER ====="
+    bash -n "$R/app/switcher/assets/oneios_switch.sh"
+    bash -n "$R/runtime/build.sh"
+    NDK="${ANDROID_NDK_ROOT:-${NDK:-$HOME/Android/Sdk/ndk/28.2.13676358}}"
+    test -f "$R/external/virglrenderer/src/drm/drm2kgsl/drm2kgsl_renderer.c"
+    make -C "$R/runtime/xnuhost" -j"${JOBS:-8}" NDK="$NDK" \
+        build/host/oneios-stock-session build/android/oneios-stock-session \
+        build/android/xnuhost
+    "$R/runtime/xnuhost/build/host/oneios-stock-session" --build-info
+    test "$(cat "$R/runtime/xnuhost/build/android/gpu3d.mode")" = drm2kgsl
+    sha256sum "$R/runtime/xnuhost/build/android/oneios-stock-session" \
+        "$R/runtime/xnuhost/build/android/xnuhost"
+    echo "STOCK_OWNER_LINK=PASS"
+    echo "STOCK_SWITCHER_SYNTAX=PASS"
+    echo "STOCK_OWNER_INTEGRATION_OFFLINE=PASS"
+    echo "DEVICE_ACCESS=NONE"
+    echo "EVIDENCE=$D"
+    exit 0
+fi
 echo "===== ANDROID NATIVE COMPILE ====="
 NDK="${ANDROID_NDK_ROOT:-${NDK:-$HOME/Android/Sdk/ndk/28.2.13676358}}"
 AC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"

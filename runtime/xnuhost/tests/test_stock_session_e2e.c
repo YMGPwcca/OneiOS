@@ -86,13 +86,16 @@ static int worker_child(int fd,pid_t parent)
   xhqb_worker_close(&w);
   _exit(0);
 }
-struct ownership { struct oneios_guest_launch *launch; struct xhqs_owner *peer; };
+struct ownership { struct oneios_guest_launch *launch; struct xhqs_owner *peer; pid_t controls[2]; };
 static int verify_owner(void *ctx,const struct oneios_thermal_identity *id)
 {
   struct ownership *o=ctx;
   if(strcmp(id->token,test_id.token))return -ESTALE;
-  // Fixture has exactly two roots and no guest descendants (only threads).
-  return oneios_guest_launch_check_roots(o->launch)?-EPERM:0;
+  for(unsigned i=0;i<3;i++){
+    if(!oneios_guest_launch_check_tree(o->launch,o->controls,2))return 0;
+    if(errno!=EAGAIN)break;
+  }
+  return -EPERM;
 }
 static int verify_outer(void *ctx,bool paused)
 {
@@ -108,6 +111,7 @@ int main(int argc,char **argv)
   }
   CHECK(argc==2&&argv[1][0]=='/');
   alarm(60);
+  CHECK(!prctl(PR_SET_CHILD_SUBREAPER,1,0,0,0));
   int dir=open(argv[1],DIR_FLAGS);CHECK(dir>=0);
   CHECK(!mkdirat(dir,"cpu",0700)&&!mkdirat(dir,"freezer",0700));
   int cp=openat(dir,"cpu",DIR_FLAGS),fp=openat(dir,"freezer",DIR_FLAGS);
@@ -142,7 +146,17 @@ int main(int argc,char **argv)
   close(sock[1]);close(display[0]);
   CHECK(!oneios_guest_launch_release(&l));
   struct xhqs_owner peer;CHECK(!xhqs_owner_init(&peer,sock[0],l.root[0].pid,getuid(),getgid(),17,1));
-  struct ownership proof={&l,&peer};
+  struct ownership proof={.launch=&l,.peer=&peer,.controls={raw.child,native.child}};
+  CHECK(!verify_owner(&proof,&test_id));
+  // A live unexpected direct child (e.g. an orphan adopted by the
+  // subreaper) cannot be silently classified as a stock service.
+  pid_t orphan=fork();CHECK(orphan>=0);
+  if(!orphan){for(;;)pause();}
+  CHECK(oneios_guest_launch_check_tree(&l,proof.controls,2)==-1);
+  CHECK(!kill(orphan,SIGKILL));
+  int orphan_status;
+  CHECK(waitpid(orphan,&orphan_status,0)==orphan&&WIFSIGNALED(orphan_status));
+  CHECK(!verify_owner(&proof,&test_id));
   struct xh_stock_runner runner={0};CHECK(!xhqs_now(&now));
   uint64_t deadline=now+40000000000ull;
   CHECK(xh_stock_runner_bind(&runner,&s,&l,&peer,&raw,&native,deadline,verify_owner,verify_outer,&proof)==-EINVAL);

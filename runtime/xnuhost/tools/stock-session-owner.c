@@ -114,12 +114,36 @@ static int heartbeat(struct owner *o,const char *phase,const struct oneios_therm
     if(n<=0||(size_t)n>=sizeof b)return -EOVERFLOW;
     return record(o,"stock.owner.heartbeat",b);
 }
-static bool ns_equal(pid_t a,pid_t b)
+static int ns_relation(pid_t a,pid_t b)
 {
     char p[64],q[64];struct stat x,y;
     snprintf(p,sizeof p,"/proc/%ld/ns/mnt",(long)a);
     snprintf(q,sizeof q,"/proc/%ld/ns/mnt",(long)b);
-    return !stat(p,&x)&&!stat(q,&y)&&x.st_dev==y.st_dev&&x.st_ino==y.st_ino;
+    if(stat(p,&x)||stat(q,&y))return -1;
+    return x.st_dev==y.st_dev&&x.st_ino==y.st_ino;
+}
+static bool ns_equal(pid_t a,pid_t b){return ns_relation(a,b)==1;}
+static bool recovery_alive(struct owner *o,const char *key)
+{
+    char b[96],pidtext[32],birth[32],extra,statpath[64],data[4096];
+    uint64_t pid;
+    if(line_at(o->ctl,key,b,sizeof b,true)||
+       sscanf(b,"%31s %31s %c",pidtext,birth,&extra)!=2||
+       number(pidtext,&pid)||pid<=1||pid>INT_MAX)return false;
+    snprintf(statpath,sizeof statpath,"/proc/%llu/stat",(unsigned long long)pid);
+    if(line_at(AT_FDCWD,statpath,data,sizeof data,false))return false;
+    char *tail=strrchr(data,')'),*save=NULL;
+    if(!tail)return false;
+    char *state=strtok_r(tail+1," ",&save);
+    if(!state||!strcmp(state,"Z")||!strcmp(state,"X"))return false;
+    // The state is field 3; starttime is field 22.
+    char *start=state;
+    for(unsigned i=0;i<19&&start;i++)start=strtok_r(NULL," ",&save);
+    return start&&!strcmp(start,birth)&&ns_equal((pid_t)pid,1);
+}
+static bool recovery_current(struct owner *o)
+{
+    return recovery_alive(o,"framework.guard")&&recovery_alive(o,"framework.watcher");
 }
 static bool trusted_executable(const char *p)
 {
@@ -202,7 +226,7 @@ static int admitted_deadline(struct owner *o)
        line_at(o->ctl,"framework.deadline",text,sizeof text,true)||
        number(text,&seconds)||seconds>UINT64_MAX/NS_PER_S||
        xhqs_now(&now)||seconds*NS_PER_S<=now||
-       seconds*NS_PER_S-now>600u*NS_PER_S)return -EPERM;
+       seconds*NS_PER_S-now>600u*NS_PER_S||!recovery_current(o))return -EPERM;
     o->deadline=seconds*NS_PER_S;return 0;
 }
 static int verify_tree(struct owner *o)
@@ -221,8 +245,8 @@ static int verify_owner(void *ctx,const struct oneios_thermal_identity *id)
     uint64_t now;
     if(strcmp(id->boot,o->id.boot)||strcmp(id->generation,o->id.generation)||
        strcmp(id->token,o->id.token)||!current(o)||xhqs_now(&now)||now>=o->deadline||
-       !ns_equal(o->launch.root[ONEIOS_GUEST_DISPLAY].pid,1)||
-       ns_equal(o->launch.root[ONEIOS_GUEST_XNUHOST].pid,1))return -ESTALE;
+       !recovery_current(o)||!ns_equal(o->launch.root[ONEIOS_GUEST_DISPLAY].pid,1)||
+       ns_relation(o->launch.root[ONEIOS_GUEST_XNUHOST].pid,1)!=0)return -ESTALE;
     return verify_tree(o);
 }
 static int verify_outer(void *ctx,bool parked)
@@ -241,8 +265,25 @@ static int launch_roots(struct owner *o)
     if(oneios_guest_launch_init(&o->launch,&o->session.groups)||xhqs_pair(pair))return -EPERM;
     o->channel=pair[0];
     char *const display[]={"/system/bin/sh",SWITCH,"--stock-display",NULL};
-    char *const env[]={"PATH=/system/bin:/system/xbin","HOME=/",NULL};
+    // Preserve Android's bootclasspath/runtime roots for app_process,
+    // not arbitrary loader overrides or inherited ONEIOS_* settings.
+    const char *keys[]={"ANDROID_ROOT","ANDROID_DATA","ANDROID_RUNTIME_ROOT",
+        "ANDROID_ART_ROOT","ANDROID_I18N_ROOT","ANDROID_TZDATA_ROOT",
+        "BOOTCLASSPATH","DEX2OATBOOTCLASSPATH","SYSTEMSERVERCLASSPATH"};
+    char *env[12]={"PATH=/system/bin:/system/xbin","HOME=/"};
+    unsigned ne=2;
+    for(unsigned i=0;i<sizeof keys/sizeof keys[0];i++){
+        const char *v=getenv(keys[i]);
+        if(!v)continue;
+        if(asprintf(&env[ne],"%s=%s",keys[i],v)<0){
+            for(unsigned j=2;j<ne;j++)free(env[j]);
+            close(pair[1]);return -ENOMEM;
+        }
+        ne++;
+    }
+    env[ne]=NULL;
     int rc=oneios_guest_launch_hold(&o->launch,ONEIOS_GUEST_DISPLAY,display[0],display,env,NULL,0);
+    for(unsigned j=2;j<ne;j++)free(env[j]);
     if(rc){close(pair[1]);return -EPERM;}
     o->helper_copy=fcntl(o->launch.root[ONEIOS_GUEST_DISPLAY].pidfd,F_DUPFD_CLOEXEC,3);
     if(o->helper_copy<0){close(pair[1]);return -errno;}
@@ -266,7 +307,7 @@ static int launch_roots(struct owner *o)
     char ids[64];
     snprintf(ids,sizeof ids,"%ld %ld\n",(long)o->launch.root[ONEIOS_GUEST_XNUHOST].pid,
       (long)o->launch.root[ONEIOS_GUEST_DISPLAY].pid);
-    if(record(o,"stock.roots",ids)||!current(o)||
+    if(record(o,"stock.roots",ids)||!current(o)||!recovery_current(o)||
        oneios_guest_launch_release(&o->launch))return -EPERM;
     return 0;
 }
@@ -294,7 +335,7 @@ static int bind_ready(struct owner *o)
 }
 static void nap(void)
 {
-    nanosleep(&(struct timespec){.tv_nsec=250000000L},NULL);
+    nanosleep(&(struct timespec){.tv_nsec=500000000L},NULL);
 }
 /* The caller has already armed independent deadline/recovery. The
  * PREARM heartbeat is evidence only; it cannot release either child. */
@@ -318,7 +359,7 @@ static int drive(struct owner *o,unsigned pct)
     }
     if(launch_roots(o))return -EPERM;
     for(;;){
-        if(!current(o))return -ECANCELED;
+        if(!current(o)||!recovery_current(o))return -ECANCELED;
         int r=sample_setup(o,o->deadline,!o->ready);
         if(r)return r;
         r=setup_reduce(o);
