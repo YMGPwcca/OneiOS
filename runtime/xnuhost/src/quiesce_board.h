@@ -57,6 +57,10 @@ struct xhqb_binding {
   int (*guard)(void *, uint64_t, uint64_t, enum xhq_phase);
   void *ctx;
 };
+/* Actual immutable board classification and outer-ticket verification,
+ * shared by the original binding and the independent board worker. */
+int xhqb_binding_snapshot(struct xhqb_binding *);
+int xhqb_binding_verify(const struct xhqb_binding *);
 int xhqb_runtime_init(struct xhq *, struct xhqb_binding *, uint64_t owner,
                       uint64_t console_ticket, uint64_t vcpu_ticket, uint64_t input_ticket, uint64_t bridge_ticket, uint64_t sound_ticket,
                       int (*guard)(void *, uint64_t, uint64_t, enum xhq_phase), void *);

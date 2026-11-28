@@ -2124,3 +2124,44 @@ operations; it is not a device or live admission result. Run only the
 new focused regression and the existing supervisor suite with the
 bounded-call cases. No repeat of the 424 group/session checks.
 The 60 FPS physical A/B remains the next performance goal.
+
+
+### Stock-managed supervisor receipt and actual XNUHost board worker
+
+Operator local result at OneiOS 2c495584dfddce2ee31d8bc5dc3d8a27e4542698 /
+OneOS f1f0000a2313b8377b730144c3439b1499d03bfc:
+170 bounded independent IPC parent checks, 39 stock supervisor checks,
+zero failures; STOCK_SUPERVISOR_OFFLINE=PASS; DEVICE_ACCESS=NONE;
+evidence /tmp/oneios-stock-supervisor.CX7PjH. This validates the IPC
+and actual controller with simulated actuator operations, not the phone.
+
+Connect the actual sealed board to an independent control worker:
+reuse existing input, vCPU/tracked-task, boot console, control bridge,
+sound and GPU/block/display gates. The worker starts with no closed
+outer gates; each authenticated BEGIN parks and verifies actual outer
+producers before the existing inner coordinator can close GPU/block.
+The existing helper pidfd binding is mandatory. Check owner liveness,
+cycle deadline and external membership/authorization at provider
+boundaries; -EAGAIN retries do not extend the deadline. DONE is not
+acknowledged until the real outer release succeeds; vCPUs release last.
+A partial release retains fault, never reports a successful resume.
+The normal path adds no frame polling. Worker is built into XNUHost,
+but no current main/launcher caller or live-admission change is made.
+
+New focused fixture uses actual board registry, vCPU rendezvous threads,
+input and console gates, independent IPC and coordinator, mock GPU,
+block, bridge, sound and display providers. It exercises two cycles,
+partial outer release failure, unsupported mapped transport refusal.
+Local compile/test and Android link pending. No new device access.
+
+Remaining launch boundary is explicit: root creator must put the
+blocked-start process tree and display helper in the two owned leaves,
+keep monitor/deadline outside, authenticate the control channel and
+helper pidfd, supervise source sampling, bind the worker at the real
+boot lifecycle, and handle startup/fault/retirement. Camera, encoder,
+network, active capture and a running input script are still unsupported
+by the verified park path. No feature is silently removed; a separately
+selected UI-performance-only profile could avoid those providers, but
+would not be equivalent to a full-peripheral benchmark. Do not resume
+the retired legacy launch. Focus on actual presented-frame 60 FPS
+validation; no new peripheral milestone or frequency actuator.

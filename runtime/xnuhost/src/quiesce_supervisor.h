@@ -31,6 +31,9 @@ struct xhqs_worker {
   void *upstream_ctx;
   uint64_t seq;
   int fault;
+  /* Optional one-time worker-owned outer release, before DONE ACK. */
+  int (*finish_resume)(void *, uint64_t owner, uint64_t cycle);
+  void *finish_ctx;
 };
 int xhqs_pair(int fd[2]);
 int xhqs_now(uint64_t *ns);
@@ -68,5 +71,8 @@ int xhqs_owner_resume_until(struct xhqs_owner *, uint64_t call_limit);
 /* Execute at most one command on a dedicated worker. -EAGAIN means no
  * command ready; 0 means a response was sent, NOT that it succeeded.
  * Other errors latch worker fault. No call may be made from a device handler. */
+/* For the sole worker owner during a command: check deadline, peer
+ * liveness and absence of unexpected pending commands. */
+int xhqs_worker_check(struct xhqs_worker *, uint64_t deadline);
 int xhqs_worker_once(struct xhqs_worker *);
 #endif

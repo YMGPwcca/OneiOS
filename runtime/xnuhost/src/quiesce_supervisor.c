@@ -141,9 +141,10 @@ int xhqs_owner_init(struct xhqs_owner *o, int fd, pid_t pid, uid_t uid, gid_t gi
  * Recheck around the upstream guard at every coordinator boundary. An
  * owner fault/disconnect prevents the next provider call, not the completion
  * of one already in progress. The original guard still owns all other proofs. */
-static int worker_channel_check(struct xhqs_worker *w)
+int xhqs_worker_check(struct xhqs_worker *w, uint64_t deadline)
 {
-  int r = before(w->q->deadline);
+  if (!w || !w->q || w->fault) return w && w->fault ? w->fault : -EINVAL;
+  int r = before(deadline);
   if (r) return r;
   if ((r = alive(&w->peer))) return r;
   struct pollfd p = { .fd = w->peer.fd, .events = POLLIN };
@@ -160,9 +161,9 @@ static int bound_now(void *ctx, uint64_t *ns)
 static int bound_guard(void *ctx, uint64_t owner, uint64_t cycle, enum xhq_phase phase)
 {
   struct xhqs_worker *w = ctx;
-  int r = worker_channel_check(w);
+  int r = xhqs_worker_check(w, w->q->deadline);
   if (!r) r = w->upstream.guard(w->upstream_ctx, owner, cycle, phase);
-  return r ? r : worker_channel_check(w);
+  return r ? r : xhqs_worker_check(w, w->q->deadline);
 }
 static int bound_close(void *ctx, unsigned m, uint64_t *t)
 {
@@ -345,7 +346,22 @@ int xhqs_worker_once(struct xhqs_worker *w)
   if ((r = before(m.deadline)) || (r = alive(&w->peer))) return worker_fault(w, r);
   w->seq = m.seq;
   if (m.op == BEGIN) { uint64_t cycle = 0; r = xhq_begin(q, m.owner, m.deadline, &cycle); if (!r && cycle != m.cycle) r = -EPROTO; }
-  else if (m.op == STEP) r = xhq_step(q, m.owner, m.cycle);
+  else if (m.op == STEP) {
+    enum xhq_phase prior = q->phase;
+    r = xhq_step(q, m.owner, m.cycle);
+    // The actual board worker releases the outer producers only after all
+    // inner providers reopened. Never ACK DONE before that succeeds.
+    if (!r && prior == XHQ_RESUMING && q->phase == XHQ_DONE && w->finish_resume) {
+      r = xhqs_worker_check(w, m.deadline);
+      if (!r) r = w->finish_resume(w->finish_ctx, m.owner, m.cycle);
+      if (!r) r = xhqs_worker_check(w, m.deadline);
+      if (r) {
+        q->fault = r < 0 && r != -EAGAIN ? r : -EPROTO;
+        q->phase = XHQ_FAULT;
+        r = q->fault;
+      }
+    }
+  }
   else r = xhq_request_resume(q, m.owner, m.cycle);
   struct packet a = { .owner = m.owner, .cycle = m.cycle, .seq = m.seq, .deadline = m.deadline,
     .magic = MAGIC, .op = m.op | ACK, .phase = q->phase, .closed = q->closed,
